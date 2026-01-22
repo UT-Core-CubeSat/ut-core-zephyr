@@ -27,21 +27,21 @@ Complete ALL steps in the guide including:
 After completing the official guide, clone our custom board and apps:
 cmd
 
-cd %HOMEPATH%\zephyr-workspace
-git clone https://github.com/braydonphillips/ut-core-zephyr.git ut-core
+    cd %HOMEPATH%\zephyr-workspace
+    git clone https://github.com/braydonphillips/ut-core-zephyr.git ut-core
 
 3. Set Board Root (Required for Our Custom Board)
 
 This tells Zephyr where to find our ut_core board:
 cmd
 
-setx BOARD_ROOT %HOMEPATH%\zephyr-workspace\ut-core
+    setx BOARD_ROOT %HOMEPATH%\zephyr-workspace\ut-core
 
 Important: Close and reopen CMD, then reactivate the virtual environment:
 cmd
 
-cd %HOMEPATH%\zephyr-workspace
-.venv\Scripts\activate.bat
+    cd %HOMEPATH%\zephyr-workspace
+    .venv\Scripts\activate.bat
 
 Building Applications
 Build an Application
@@ -49,7 +49,7 @@ Build an Application
 From the zephyr-workspace directory with .venv activated:
 cmd
 
-west build -p always -b ut_core ut-core\app\<app-name>
+    west build -p always -b ut_core ut-core\app\<app-name>
 
 Example apps:
 
@@ -59,7 +59,7 @@ Example apps:
 Flash to Board
 cmd
 
-west flash
+    west flash
 
 Daily Workflow
 
