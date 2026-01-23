@@ -64,8 +64,7 @@ cmd
 Daily Workflow
 
 Every time you open CMD:
-
-    Navigate to workspace and activate virtual environment:
+Navigate to workspace and activate virtual environment:
 
 cmd
 
