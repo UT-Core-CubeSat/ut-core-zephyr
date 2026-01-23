@@ -69,10 +69,10 @@ Every time you open CMD:
 
 cmd
 
-   cd %HOMEPATH%\zephyr-workspace
-   .venv\Scripts\activate.bat
+    cd %HOMEPATH%\zephyr-workspace
+    .venv\Scripts\activate.bat
 
-    Build/flash as needed
+Build/flash as needed
 
 Troubleshooting
 Board Not Found
