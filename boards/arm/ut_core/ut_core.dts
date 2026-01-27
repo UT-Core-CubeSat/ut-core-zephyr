@@ -129,3 +129,52 @@
 &otghs_phy {
 	status = "disabled";
 };
+
+/* ============================================== */
+/* FDCAN CLOCK FIX   */
+/* ============================================== */
+
+&rcc {
+    /* Change 4 to 16 for stability */
+    clock-frequency = <DT_FREQ_M(16)>; 
+};
+
+/* 1. Enable PLL1 to generate 80 MHz from your 4 MHz MSIS */
+&pll1 {
+    status = "okay";
+    clocks = <&clk_msis>;
+    
+    /* NEW MATH for 16 MHz Input:
+     * Input = 16 MHz
+     * div-m = 1   -> Ref = 16 MHz
+     * mul-n = 10  -> VCO = 160 MHz (Same VCO as before)
+     * div-q = 2   -> PLL1_Q = 80 MHz (Perfect for CAN)
+     * div-r = 2   -> PLL1_R = 80 MHz
+     */
+    div-m = <1>;
+    mul-n = <10>; /* Changed from 40 to 10 */
+    div-q = <2>;
+    div-r = <2>;
+    div-p = <2>;
+};
+
+/* 2. Tell FDCAN1 to use that new PLL1_Q clock */
+&fdcan1 {
+    status = "okay";
+    
+    /* * 
+     * Index 0: Register Bus Clock (APB1_2)
+     * Index 1: Kernel Clock Source = PLL1_Q (Value 1)
+     */
+    clocks = <&rcc STM32_CLOCK_BUS_APB1_2 0x00000200>,
+             <&rcc STM32_SRC_PLL1_Q FDCAN1_SEL(1)>;
+
+    bus-speed = <500000>;
+    sample-point = <875>;
+    bus-speed-data = <500000>;
+    sample-point-data = <875>;
+    
+    /* Ensure pins are linked */
+    pinctrl-0 = <&fdcan1_rx_pa11 &fdcan1_tx_pa12>;
+    pinctrl-names = "default";
+};

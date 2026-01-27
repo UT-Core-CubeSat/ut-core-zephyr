@@ -61,55 +61,82 @@ int main(void)
 		return 0;
 	}
 
-	/* Set CAN bitrate */
-	ret = can_set_bitrate(can_dev, 500000); /* 500 kbps */
-	if (ret) {
-		printk("Failed to set CAN bitrate (%d)\n", ret);
-		return 0;
-	}
+    /* 1. Set CAN Bitrate */
+    ret = can_set_bitrate(can_dev, 500000);
+    if (ret) {
+        printk("Failed to set CAN bitrate (%d)\n", ret);
+        return 0;
+    }
 
-	/* Start CAN controller */
-	ret = can_start(can_dev);
-	if (ret) {
-		printk("Failed to start CAN (%d)\n", ret);
-		return 0;
-	}
+    /* 2. ENABLE LOOPBACK MODE (Critical for single-board testing) */
+    ret = can_set_mode(can_dev, CAN_MODE_LOOPBACK);
+    if (ret) {
+        printk("Failed to set loopback mode (%d)\n", ret);
+        return 0;
+    }
 
-	printk("CAN started successfully\n");
+    /* 3. Start CAN controller */
+    ret = can_start(can_dev);
+    if (ret) {
+        printk("Failed to start CAN (%d)\n", ret);
+        return 0;
+    }
+    
+    printk("CAN started successfully in LOOPBACK mode\n");
 
-	/* ========================= */
-	/* CAN FRAME SETUP           */
-	/* ========================= */
-
-	struct can_frame frame = {
-		.id = 0x123,
-		.flags = CAN_FRAME_IDE, /* Standard ID */
-		.dlc = 8,
-		.data = { 0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x12, 0x34 }
-	};
+    /* 4. Fix the Frame Flags */
+    struct can_frame frame = {
+        .id = 0x123,
+        /* ERROR FIX: CAN_FRAME_IDE is for Extended (29-bit) IDs. 
+           For Standard (11-bit) IDs like 0x123, use 0. */
+        .flags = 0, 
+        .dlc = 8,
+        .data = { 0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x12, 0x34 }
+    };
 
 	/* ========================= */
 	/* MAIN LOOP                 */
 	/* ========================= */
 
-	while (1) {
+/* ========================= */
+    /* MAIN LOOP                 */
+    /* ========================= */
 
-		ret = can_send(can_dev, &frame, K_MSEC(100), NULL, NULL);
+    while (1) {
+        printk("Sending CAN frame...\n");
 
-		if (ret == 0) {
-			printk("CAN frame sent\n");
+        /* Try to send (Non-blocking) */
+        ret = can_send(can_dev, &frame, K_NO_WAIT, NULL, NULL);
 
-			/* TX OK: LED0 ON */
-			gpio_pin_set_dt(&led0, 1);
-			gpio_pin_set_dt(&led1, 0);
-		} else {
-			printk("CAN send failed (%d)\n", ret);
+        if (ret == 0) {
+            printk("CAN frame sent (Success)\n");
 
-			/* TX FAIL: LED1 ON */
-			gpio_pin_set_dt(&led0, 0);
-			gpio_pin_set_dt(&led1, 1);
-		}
+            /* SUCCESS INDICATION: Blink LED0 */
+            /* 1. Turn LED0 ON (Green?) */
+            gpio_pin_set_dt(&led0, 1);
+            /* 2. Turn LED1 OFF (Red?) */
+            gpio_pin_set_dt(&led1, 0);
 
-		k_msleep(1000);
-	}
+            /* Keep it ON briefly so you can see the flash */
+            k_msleep(100); 
+
+            /* 3. Turn LED0 OFF */
+            gpio_pin_set_dt(&led0, 0);
+
+            /* Wait the rest of the second before next send */
+            k_msleep(900);
+
+        } else {
+            printk("CAN send failed (%d)\n", ret);
+
+            /* FAILURE INDICATION: Solid LED1 */
+            /* 1. Turn LED0 OFF */
+            gpio_pin_set_dt(&led0, 0);
+            /* 2. Turn LED1 ON */
+            gpio_pin_set_dt(&led1, 1);
+
+            /* Wait 1 second before retrying */
+            k_msleep(1000);
+        }
+    }
 }
