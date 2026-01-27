@@ -11,7 +11,7 @@
 
 
 / {
-	leds {
+	pins {
 		compatible = "gpio-leds";
 
 		led0: led_0 {
@@ -27,6 +27,16 @@
 		led2: led_2 {
 			gpios = <&gpioc 15 GPIO_ACTIVE_HIGH>;
 			label = "LED2_PC15";
+		};
+
+		pb10: pb10 {
+			gpios = <&gpiob 10 GPIO_ACTIVE_HIGH>;
+			label = "pb10";
+		};
+
+		pd2: pd2 {
+			gpios = <&gpiod 2 GPIO_ACTIVE_HIGH>;
+			label = "pd2";
 		};
 	};
 };
@@ -60,6 +70,14 @@
 };
 
 &gpioc {
+	status = "okay";
+};
+
+&gpiod {
+    status = "okay";
+};
+
+&gpioh {
     status = "okay";
 };
 

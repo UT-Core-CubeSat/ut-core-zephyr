@@ -23,10 +23,12 @@
 	};
 
 	aliases {
-		led0 = &led0;
-		led1 = &led1;
-		led2 = &led2;
+		led0  = &led0;
+		led1  = &led1;
+		led2  = &led2;
 		fram0 = &fram0;
+		pb10  = &pb10;
+		pd2   = &pd2;
 	};
 };
 
