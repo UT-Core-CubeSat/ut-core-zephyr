@@ -1,1 +1,54 @@
+/* app.overlay */
 
+/ {
+    /* (Optional) Defines for readability if needed, usually built-in */
+};
+
+/* 1. Configure PLL1 to take your 4MHz MSIS and boost it */
+&pll1 {
+    status = "okay";
+    
+    /* Input source: MSIS (4MHz per your setup) */
+    clocks = <&clk_msis>;
+    
+    /* * PLL Calculation:
+     * Input = 4 MHz
+     * Div-M = 1  --> Ref = 4 MHz
+     * Mul-N = 40 --> VCO = 160 MHz
+     * Div-Q = 2  --> PLL1_Q Output = 80 MHz (Perfect for CAN)
+     * Div-R = 2  --> PLL1_R Output = 80 MHz (Available for System if you want later)
+     */
+    div-m = <1>;
+    mul-n = <40>;
+    div-q = <2>;
+    div-r = <2>;
+    div-p = <2>;
+};
+
+/* 2. Configure FDCAN to use that new PLL1_Q clock */
+&fdcan1 {
+    status = "okay";
+    
+    /* * Line 1: Register Clock (APB1)
+     * Line 2: Kernel Clock (The one we just fixed!). We select PLL1_Q (Value 1).
+     */
+    clocks = <&rcc STM32_CLOCK_BUS_APB1_2 0x00000200>,
+             <&rcc STM32_SRC_PLL1_Q FDCAN1_SEL(1)>;
+
+    /* Bus settings */
+    bus-speed = <500000>;
+    sample-point = <875>;
+    bus-speed-data = <500000>;
+    sample-point-data = <875>;
+
+    /* Pin definitions (Make sure these match your board layout!) */
+    pinctrl-0 = <&fdcan1_rx_pa11 &fdcan1_tx_pa12>;
+    pinctrl-names = "default";
+};
+
+/* 3. Ensure the RCC knows to keep the Q output enabled */
+&rcc {
+    /* We add the PLL configuration here to ensure the clock subsystem handles it */
+    clocks = <&clk_msis>;
+    clock-frequency = <DT_FREQ_M(4)>; /* Keeps your system running safely at 4MHz */
+};
