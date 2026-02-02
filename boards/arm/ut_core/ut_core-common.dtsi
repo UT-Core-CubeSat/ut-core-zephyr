@@ -9,41 +9,48 @@
 #include <zephyr/dt-bindings/gpio/gpio.h>
 #include <zephyr/dt-bindings/pinctrl/stm32-pinctrl.h>
 
-
 / {
-	pins {
-		compatible = "gpio-leds";
+pins {
+compatible = "gpio-leds";
 
-		led0: led_0 {
-			gpios = <&gpioc 13 GPIO_ACTIVE_HIGH>;
-			label = "LED0_PC13";
-		};
+led0: led_0 {
+gpios = <&gpioc 13 GPIO_ACTIVE_HIGH>;
+label = "LED0_PC13";
+};
 
-		led1: led_1 {
-			gpios = <&gpioc 14 GPIO_ACTIVE_HIGH>;
-			label = "LED1_PC14";
-		};
+led1: led_1 {
+gpios = <&gpioc 14 GPIO_ACTIVE_HIGH>;
+label = "LED1_PC14";
+};
 
-		led2: led_2 {
-			gpios = <&gpioc 15 GPIO_ACTIVE_HIGH>;
-			label = "LED2_PC15";
-		};
+led2: led_2 {
+gpios = <&gpioc 15 GPIO_ACTIVE_HIGH>;
+label = "LED2_PC15";
+};
 
-		pb10: pb10 {
-			gpios = <&gpiob 10 GPIO_ACTIVE_HIGH>;
-			label = "pb10";
-		};
+pb10: pb10 {
+gpios = <&gpiob 10 GPIO_ACTIVE_HIGH>;
+label = "pb10";
+};
 
-		pd2: pd2 {
-			gpios = <&gpiod 2 GPIO_ACTIVE_HIGH>;
-			label = "pd2";
-		};
-	};
+
+
+pd2: pd2 {
+gpios = <&gpiod 2 GPIO_ACTIVE_HIGH>;
+label = "pd2";
+};
+
+};
+
 };
 
 /* Internal 48 MHz oscillator (safe; useful later for USB) */
 &clk_hsi48 {
-	status = "disabled";
+status = "disabled";
+};
+
+&clk_hsi {
+    status = "okay";
 };
 
 /* No external crystals */
@@ -64,13 +71,12 @@
   apb3-prescaler = <1>;
 };
 
-
 &gpiob {
-	status = "okay";
+status = "okay";
 };
 
 &gpioc {
-	status = "okay";
+status = "okay";
 };
 
 &gpiod {
@@ -80,4 +86,3 @@
 &gpioh {
     status = "okay";
 };
-

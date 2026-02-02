@@ -4,34 +4,31 @@
  */
 
 /dts-v1/;
-
 #include "ut_core-common.dtsi"
 #include <zephyr/dt-bindings/spi/spi.h>
 
-
 / {
-	model = "UT-CORE STM32U5A5";
-	compatible = "utahtech,ut-core-stm32u5a5";
+model = "UT-CORE STM32U5A5";
+compatible = "utahtech,ut-core-stm32u5a5";
+#address-cells = <1>;
+#size-cells = <1>;
 
-	#address-cells = <1>;
-	#size-cells = <1>;
-
-	chosen {
-		/* No UART console on this board */
-		zephyr,sram = &sram0;
-		zephyr,flash = &flash0;
-	};
-
-	aliases {
-		led0  = &led0;
-		led1  = &led1;
-		led2  = &led2;
-		fram0 = &fram0;
-		pb10  = &pb10;
-		pd2   = &pd2;
-	};
+chosen {
+/* No UART console on this board */
+zephyr,sram = &sram0;
+zephyr,flash = &flash0;
 };
 
+aliases {
+led0  = &led0;
+led1  = &led1;
+led2  = &led2;
+fram0 = &fram0;
+pb10  = &pb10;
+pd2   = &pd2;
+};
+
+};
 
 &gpiob {
     fram_wp_hog {
@@ -43,25 +40,22 @@
 };
 
 &pinctrl {
-	status = "okay";
+status = "okay";
+i2c1_scl_pb6: i2c1_scl_pb6 {
+pinmux = <STM32_PINMUX('B', 6, AF4)>;
+drive-open-drain;
+bias-pull-up;
+};
 
-	i2c1_scl_pb6: i2c1_scl_pb6 {
-		pinmux = <STM32_PINMUX('B', 6, AF4)>;
-		drive-open-drain;
-		bias-pull-up;
-	};
+i2c1_sda_pb7: i2c1_sda_pb7 {
+pinmux = <STM32_PINMUX('B', 7, AF4)>;
+drive-open-drain;
+bias-pull-up;
+};
 
-	i2c1_sda_pb7: i2c1_sda_pb7 {
-		pinmux = <STM32_PINMUX('B', 7, AF4)>;
-		drive-open-drain;
-		bias-pull-up;
-	};
-
-
-	spi2_sck_pb13: spi2_sck_pb13 {
+spi2_sck_pb13: spi2_sck_pb13 {
         pinmux = <STM32_PINMUX('B', 13, AF5)>;
     };
-
     spi2_miso_pb14: spi2_miso_pb14 {
         pinmux = <STM32_PINMUX('B', 14, AF5)>;
     };
@@ -70,22 +64,20 @@
         pinmux = <STM32_PINMUX('B', 15, AF5)>;
     };
 
-	fdcan1_rx_pa11: fdcan1_rx_pa11 {
-		pinmux = <STM32_PINMUX('A', 11, AF9)>;
-	};
+fdcan1_rx_pa11: fdcan1_rx_pa11 {
+pinmux = <STM32_PINMUX('A', 11, AF9)>;
+};
 
-	fdcan1_tx_pa12: fdcan1_tx_pa12 {
-		pinmux = <STM32_PINMUX('A', 12, AF9)>;
-	};
-
-
+fdcan1_tx_pa12: fdcan1_tx_pa12 {
+pinmux = <STM32_PINMUX('A', 12, AF9)>;
+};
 };
 
 &i2c1 {
-	pinctrl-0 = <&i2c1_scl_pb6 &i2c1_sda_pb7>;
-	pinctrl-names = "default";
-	clock-frequency = <I2C_BITRATE_STANDARD>; /* 100 kHz */
-	status = "okay";
+pinctrl-0 = <&i2c1_scl_pb6 &i2c1_sda_pb7>;
+pinctrl-names = "default";
+clock-frequency = <I2C_BITRATE_STANDARD>; /* 100 kHz */
+status = "okay";
 };
 
 &spi2 {
@@ -93,75 +85,78 @@
     pinctrl-0 = <&spi2_sck_pb13 &spi2_miso_pb14 &spi2_mosi_pb15>;
     pinctrl-names = "default";
     cs-gpios = <&gpiob 4 GPIO_ACTIVE_LOW>; /* CS1 = PB4 */
-
     fram0: fram@0 {
         compatible = "zephyr,spidev";
         reg = <0>;
-		status = "okay";
-
+status = "okay";
         spi-max-frequency = <250000>;
-
         duplex = <SPI_FULL_DUPLEX>;
         frame-format = <SPI_FRAME_FORMAT_MOTOROLA>;
     };
 };
 
 &fdcan1 {
-	status = "okay";
-	pinctrl-0 = <&fdcan1_rx_pa11 &fdcan1_tx_pa12>;
-	pinctrl-names = "default";
+status = "okay";
+pinctrl-0 = <&fdcan1_rx_pa11 &fdcan1_tx_pa12>;
+pinctrl-names = "default";
 };
 
-
 &swj_port {
-	status = "disabled";
-	/delete-property/ pinctrl-0;
-	/delete-property/ pinctrl-1;
-	/delete-property/ pinctrl-2;
-	/delete-property/ pinctrl-names;
+status = "disabled";
+/delete-property/ pinctrl-0;
+/delete-property/ pinctrl-1;
+/delete-property/ pinctrl-2;
+/delete-property/ pinctrl-names;
 };
 
 /* Not using USB during bring-up */
 &usbotg_hs {
-	status = "disabled";
+status = "disabled";
 };
 
 &otghs_phy {
-	status = "disabled";
+status = "disabled";
 };
 
 /* ============================================== */
 /* FDCAN CLOCK FIX   */
 /* ============================================== */
 
-&rcc {
-    /* Change 4 to 16 for stability */
-    clock-frequency = <DT_FREQ_M(16)>; 
-};
-
 /* 1. Enable PLL1 to generate 80 MHz from your 4 MHz MSIS */
 &pll1 {
     status = "okay";
     clocks = <&clk_msis>;
-    
-    /* NEW MATH for 16 MHz Input:
-     * Input = 16 MHz
-     * div-m = 1   -> Ref = 16 MHz
-     * mul-n = 10  -> VCO = 160 MHz (Same VCO as before)
-     * div-q = 2   -> PLL1_Q = 80 MHz (Perfect for CAN)
-     * div-r = 2   -> PLL1_R = 80 MHz
+    /* * PLL Math:
+     * Input (MSIS) = 4 MHz
+     * div-m = 1   -> Ref Input = 4 MHz
+     * mul-n = 40  -> VCO = 160 MHz
+     * div-q = 2   -> PLL1_Q Output = 80 MHz (Perfect for CAN)
+     * div-r = 2   -> PLL1_R Output = 80 MHz
      */
     div-m = <1>;
-    mul-n = <10>; /* Changed from 40 to 10 */
+    mul-n = <40>;
     div-q = <2>;
     div-r = <2>;
     div-p = <2>;
 };
 
+
+
+/* 3. CRITICAL: Switch System CPU to use PLL1 (80 MHz) */
+&rcc {
+    clocks = <&pll1>;
+    clock-frequency = <DT_FREQ_M(80)>;
+    ahb-prescaler = <1>;
+    apb1-prescaler = <1>;
+    apb2-prescaler = <1>;
+    apb3-prescaler = <1>;
+};
+
+
 /* 2. Tell FDCAN1 to use that new PLL1_Q clock */
+
 &fdcan1 {
     status = "okay";
-    
     /* * 
      * Index 0: Register Bus Clock (APB1_2)
      * Index 1: Kernel Clock Source = PLL1_Q (Value 1)
@@ -173,8 +168,9 @@
     sample-point = <875>;
     bus-speed-data = <500000>;
     sample-point-data = <875>;
-    
+
     /* Ensure pins are linked */
     pinctrl-0 = <&fdcan1_rx_pa11 &fdcan1_tx_pa12>;
     pinctrl-names = "default";
 };
+
