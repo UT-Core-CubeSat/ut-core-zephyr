@@ -8,7 +8,6 @@
 #include "ut_core-common.dtsi"
 #include <zephyr/dt-bindings/spi/spi.h>
 
-
 / {
 	model = "UT-CORE STM32U5A5";
 	compatible = "utahtech,ut-core-stm32u5a5";
@@ -18,33 +17,44 @@
 
 	chosen {
 		/* No UART console on this board */
-		zephyr,sram = &sram0;
+		zephyr,sram  = &sram0;
 		zephyr,flash = &flash0;
 	};
 
 	aliases {
-		led0  = &led0;
-		led1  = &led1;
-		led2  = &led2;
-		fram0 = &fram0;
-		pb10  = &pb10;
-		pd2   = &pd2;
+		led0   = &led0;
+		led1   = &led1;
+		led2   = &led2;
+
+		fram0  = &fram0;
+
+		pb10   = &pb10;
+		pd2    = &pd2;
+
+		canen  = &canengpio;
+		canstb = &canstbgpio;
 	};
 };
 
-
+/* =========================
+ * GPIO hogs
+ * ========================= */
 &gpiob {
-    fram_wp_hog {
-        gpio-hog;
-        gpios = <5 GPIO_ACTIVE_LOW>;   /* PB5 */
-        output-high;                   /* logical HIGH => inactive (because ACTIVE_LOW) */
-        line-name = "FRAM_WP";
-    };
+	fram_wp_hog {
+		gpio-hog;
+		gpios = <5 GPIO_ACTIVE_LOW>;   /* PB5 */
+		output-high;                   /* logical HIGH => inactive (ACTIVE_LOW) */
+		line-name = "FRAM_WP";
+	};
 };
 
+/* =========================
+ * Pin control
+ * ========================= */
 &pinctrl {
 	status = "okay";
 
+	/* I2C1 PB6/PB7 */
 	i2c1_scl_pb6: i2c1_scl_pb6 {
 		pinmux = <STM32_PINMUX('B', 6, AF4)>;
 		drive-open-drain;
@@ -57,19 +67,20 @@
 		bias-pull-up;
 	};
 
-
+	/* SPI2 PB13/14/15 */
 	spi2_sck_pb13: spi2_sck_pb13 {
-        pinmux = <STM32_PINMUX('B', 13, AF5)>;
-    };
+		pinmux = <STM32_PINMUX('B', 13, AF5)>;
+	};
 
-    spi2_miso_pb14: spi2_miso_pb14 {
-        pinmux = <STM32_PINMUX('B', 14, AF5)>;
-    };
+	spi2_miso_pb14: spi2_miso_pb14 {
+		pinmux = <STM32_PINMUX('B', 14, AF5)>;
+	};
 
-    spi2_mosi_pb15: spi2_mosi_pb15 {
-        pinmux = <STM32_PINMUX('B', 15, AF5)>;
-    };
+	spi2_mosi_pb15: spi2_mosi_pb15 {
+		pinmux = <STM32_PINMUX('B', 15, AF5)>;
+	};
 
+	/* FDCAN1 PA11/PA12 */
 	fdcan1_rx_pa11: fdcan1_rx_pa11 {
 		pinmux = <STM32_PINMUX('A', 11, AF9)>;
 	};
@@ -77,42 +88,42 @@
 	fdcan1_tx_pa12: fdcan1_tx_pa12 {
 		pinmux = <STM32_PINMUX('A', 12, AF9)>;
 	};
-
-
 };
 
+/* =========================
+ * I2C
+ * ========================= */
 &i2c1 {
+	status = "okay";
 	pinctrl-0 = <&i2c1_scl_pb6 &i2c1_sda_pb7>;
 	pinctrl-names = "default";
 	clock-frequency = <I2C_BITRATE_STANDARD>; /* 100 kHz */
-	status = "okay";
 };
 
+/* =========================
+ * SPI2 + FRAM spidev
+ * ========================= */
 &spi2 {
-    status = "okay";
-    pinctrl-0 = <&spi2_sck_pb13 &spi2_miso_pb14 &spi2_mosi_pb15>;
-    pinctrl-names = "default";
-    cs-gpios = <&gpiob 4 GPIO_ACTIVE_LOW>; /* CS1 = PB4 */
+	status = "okay";
+	pinctrl-0 = <&spi2_sck_pb13 &spi2_miso_pb14 &spi2_mosi_pb15>;
+	pinctrl-names = "default";
 
-    fram0: fram@0 {
-        compatible = "zephyr,spidev";
-        reg = <0>;
+	cs-gpios = <&gpiob 4 GPIO_ACTIVE_LOW>; /* CS1 = PB4 */
+
+	fram0: fram@0 {
+		compatible = "zephyr,spidev";
+		reg = <0>;
 		status = "okay";
 
-        spi-max-frequency = <250000>;
-
-        duplex = <SPI_FULL_DUPLEX>;
-        frame-format = <SPI_FRAME_FORMAT_MOTOROLA>;
-    };
+		spi-max-frequency = <250000>;
+		duplex = <SPI_FULL_DUPLEX>;
+		frame-format = <SPI_FRAME_FORMAT_MOTOROLA>;
+	};
 };
 
-&fdcan1 {
-	status = "okay";
-	pinctrl-0 = <&fdcan1_rx_pa11 &fdcan1_tx_pa12>;
-	pinctrl-names = "default";
-};
-
-
+/* =========================
+ * Disable SWJ during bring-up
+ * ========================= */
 &swj_port {
 	status = "disabled";
 	/delete-property/ pinctrl-0;
@@ -122,10 +133,70 @@
 };
 
 /* Not using USB during bring-up */
-&usbotg_hs {
-	status = "disabled";
+&usbotg_hs { status = "disabled"; };
+&otghs_phy  { status = "disabled"; };
+
+/* =========================
+ * CLOCKING
+ *  - MSIS input (nominally 16 MHz)
+ *  - PLL1 makes 80 MHz SYSCLK + 80 MHz PLL1_Q for FDCAN
+ * ========================= */
+
+/*
+ * Enable PLL1 to generate 80 MHz from 16 MHz MSIS:
+ * Input = 16 MHz
+ * div-m = 1   -> Ref = 16 MHz
+ * mul-n = 10  -> VCO = 160 MHz
+ * div-q = 2   -> PLL1_Q = 80 MHz (CAN kernel clock)
+ * div-r = 2   -> PLL1_R = 80 MHz
+ */
+&pll1 {
+	status = "okay";
+	clocks = <&clk_msis>;
+
+	div-m = <1>;
+	mul-n = <10>;
+	div-q = <2>;
+	div-r = <2>;
+	div-p = <2>;
 };
 
-&otghs_phy {
-	status = "disabled";
+/*
+ * Switch System CPU clock to PLL1 (80 MHz) for stability.
+ * Single &rcc block (no conflicting duplicates).
+ */
+&rcc {
+	clocks = <&pll1>;
+	clock-frequency = <DT_FREQ_M(80)>;
+
+	ahb-prescaler  = <1>;
+	apb1-prescaler = <1>;
+	apb2-prescaler = <1>;
+	apb3-prescaler = <1>;
+};
+
+/* =========================
+ * FDCAN1
+ * ========================= */
+&fdcan1 {
+	status = "okay";
+
+	pinctrl-0 = <&fdcan1_rx_pa11 &fdcan1_tx_pa12>;
+	pinctrl-names = "default";
+
+	/*
+	 * clocks[0] = bus/reg clock (APB1_2)
+	 * clocks[1] = kernel clock source = PLL1_Q
+	 */
+	clocks = <&rcc STM32_CLOCK_BUS_APB1_2 0x00000200>,
+	         <&rcc STM32_SRC_PLL1_Q FDCAN1_SEL(1)>;
+
+	/* Optional but explicit */
+	clk-divider = <1>;
+
+	bitrate = <500000>;
+	sample-point = <875>;
+
+	/* REQUIRED for this Zephyr STM32U5 FDCAN driver */
+	bosch,mram-cfg = <0x0 28 8 3 3 0 3 3>;
 };

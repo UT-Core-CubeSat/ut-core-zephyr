@@ -448,7 +448,7 @@ int main() {
   k_work_schedule(&wdog_work, K_MSEC(250));
   k_work_schedule(&telem_work, K_MSEC(1000));
 
-  // Mode enters SAFE after boot unless you decide otherwise
+  // Mode enters SAFE after boot unless we decide otherwise
   request_mode(Mode::SAFE);
 
   // Main thread can sleep forever; system lives in threads/work items

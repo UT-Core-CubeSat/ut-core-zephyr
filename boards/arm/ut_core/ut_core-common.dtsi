@@ -38,6 +38,16 @@
 			gpios = <&gpiod 2 GPIO_ACTIVE_HIGH>;
 			label = "pd2";
 		};
+
+		canengpio: canengpio {
+        	gpios = <&gpioa 10 GPIO_ACTIVE_HIGH>; /* PA10 */
+        	label = "CAN_TRANSCEIVER_EN";
+    	};
+
+		canstbgpio: canstbgpio {
+        	gpios = <&gpioa 9 GPIO_ACTIVE_HIGH>; /* PA9 */
+        	label = "CAN_STB";
+		};
 	};
 };
 
@@ -64,6 +74,11 @@
   apb3-prescaler = <1>;
 };
 
+
+
+&gpioa {
+	status = "okay";
+};
 
 &gpiob {
 	status = "okay";
