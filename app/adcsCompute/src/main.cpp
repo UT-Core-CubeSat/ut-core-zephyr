@@ -91,7 +91,7 @@ extern "C" int main(void) {
         if (cycle_us > timing_stats.max_cycle_us) timing_stats.max_cycle_us = cycle_us;
         
         // Print stats every 1 second
-        uint64_t now = k_uptime_ms();
+        uint64_t now = k_uptime_get();
         if (now - timing_stats.last_print_time >= 1000) {
             uint64_t avg_cycle_us = timing_stats.total_time_us / timing_stats.cycle_count;
             float frequency = (timing_stats.cycle_count * 1000.0f) / (now - timing_stats.last_print_time);

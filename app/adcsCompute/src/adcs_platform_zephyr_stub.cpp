@@ -55,11 +55,11 @@ Math::Vec<4> getReactionWheelSpeeds() {
 }
 
 void sendWheelTorques(const Math::Vec<4>& t) {
-    printkVec<4>("RW torque cmd: ", t);
+    // printkVec<4>("RW torque cmd: ", t);
 }
 
 void sendMTQDipoles(const Math::Vec<3>& m) {
-    printkVec<3>("MTQ dipole cmd: ", m);
+    // printkVec<3>("MTQ dipole cmd: ", m);
 }
 
 } // namespace ADCSPlatform
