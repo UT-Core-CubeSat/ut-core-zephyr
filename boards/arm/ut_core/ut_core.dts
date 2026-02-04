@@ -140,8 +140,6 @@ status = "disabled";
     div-p = <2>;
 };
 
-
-
 /* 3. CRITICAL: Switch System CPU to use PLL1 (80 MHz) */
 &rcc {
     clocks = <&pll1>;
@@ -151,7 +149,6 @@ status = "disabled";
     apb2-prescaler = <1>;
     apb3-prescaler = <1>;
 };
-
 
 /* 2. Tell FDCAN1 to use that new PLL1_Q clock */
 
