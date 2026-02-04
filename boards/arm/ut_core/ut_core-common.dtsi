@@ -35,13 +35,21 @@ label = "pb10";
 
 
 
-pd2: pd2 {
-gpios = <&gpiod 2 GPIO_ACTIVE_HIGH>;
-label = "pd2";
-};
+		pd2: pd2 {
+			gpios = <&gpiod 2 GPIO_ACTIVE_HIGH>;
+			label = "pd2";
+		};
 
-};
+		canengpio: canengpio {
+        	gpios = <&gpioa 10 GPIO_ACTIVE_HIGH>; /* PA10 */
+        	label = "CAN_TRANSCEIVER_EN";
+    	};
 
+		canstbgpio: canstbgpio {
+        	gpios = <&gpioa 9 GPIO_ACTIVE_HIGH>; /* PA9 */
+        	label = "CAN_STB";
+		};
+	};
 };
 
 /* Internal 48 MHz oscillator (safe; useful later for USB) */
@@ -69,6 +77,12 @@ status = "disabled";
   apb1-prescaler = <1>;
   apb2-prescaler = <1>;
   apb3-prescaler = <1>;
+};
+
+
+
+&gpioa {
+	status = "okay";
 };
 
 &gpiob {
