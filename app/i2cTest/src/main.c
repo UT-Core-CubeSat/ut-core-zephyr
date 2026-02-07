@@ -24,15 +24,14 @@
 static const struct device *const i2c_bus = DEVICE_DT_GET(I2C_BUS_NODE);
 
 // Temperature register address on the sensor.
-// Most TI TMPxxx (and compatible) parts use register 0x00 for the temperature
-// value. If you use a different sensor family, check its datasheet and change
-// this.
+// TI TMP275 (and compatible) parts use register 0x00 for the temperature value. 
+// If you use a different sensor family, check its datasheet and change this.
 #define TEMP_REG 0x00
 
 // I2C 7-bit slave addresses for our temp sensors.
-// 0x48..0x4D are the standard TMP102/TMP75 address range (pins A0/A1/A2 set
-// to GND/VCC combinations). Each physical sensor on the bus must have a
-// unique address. Order here defines index 0..5 in the telemetry array.
+// 0x48..0x4D are the address range for the TMP275 (pins A0/A1/A2 set to GND/VCC combinations). 
+// Each physical sensor on the bus must have a unique address. 
+// Order here defines index 0..5 in the telemetry array.
 static const uint8_t temp_addrs[] = { 0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D };
 #define NUM_SENSORS ((uint8_t)(sizeof(temp_addrs) / sizeof(temp_addrs[0])))
 
