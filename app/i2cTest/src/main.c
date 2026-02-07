@@ -2,104 +2,126 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include <stdio.h>
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
-#include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/i2c.h>
+#include <zephyr/sys/printk.h>
+#include <stdint.h>
+#include <stdbool.h>
 
-/* LED aliases from devicetree */
-#define LED0_NODE DT_ALIAS(led0)
-#define LED1_NODE DT_ALIAS(led1)
+/* ===================== Devicetree ===================== */
 
-/* I2C bus node (change if your bus label isn't i2c1) */
 #define I2C_BUS_NODE DT_NODELABEL(i2c1)
+static const struct device *const i2c_bus = DEVICE_DT_GET(I2C_BUS_NODE);
 
-/* Your sensor 7-bit address: 1001000b = 0x48 */
-#define TEMP_SENSOR_ADDR 0x48
-
-/* Most of these sensors use register pointer 0x00 for temperature */
+/* Most TMP/TI-style sensors use register pointer 0x00 for temperature */
 #define TEMP_REG 0x00
 
-static const struct gpio_dt_spec led0 = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
-static const struct gpio_dt_spec led1 = GPIO_DT_SPEC_GET(LED1_NODE, gpios);
+/* 1001000..1001101 = 0x48..0x4D */
+static const uint8_t temp_addrs[] = { 0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D };
+#define NUM_SENSORS ((uint8_t)(sizeof(temp_addrs) / sizeof(temp_addrs[0])))
 
-static const struct device *i2c_bus = DEVICE_DT_GET(I2C_BUS_NODE);
+/* ===================== Telemetry Types ===================== */
 
-static int read_temp_c(float *temp_c)
+struct temp_sample {
+	uint8_t addr;     /* I2C 7-bit address */
+	int16_t temp_q4;  /* temperature in Q4 (degC * 16) */
+	int status;       /* 0 = OK, else i2c error */
+};
+
+struct temp_telemetry {
+	uint32_t t_ms;                 /* when sampled (uptime ms) */
+	struct temp_sample s[NUM_SENSORS];
+};
+
+/* ===================== Small Helpers ===================== */
+
+static void print_temp_q4(int16_t t_q4)
 {
-	uint8_t reg = TEMP_REG;
-	uint8_t buf[2];
-
-	/* Write register pointer, then read 2 bytes */
-	int ret = i2c_write_read(i2c_bus, TEMP_SENSOR_ADDR, &reg, 1, buf, 2);
-	if (ret != 0) {
-		return ret;
-	}
-
-	/* Combine bytes: MSB first */
-	int16_t raw16 = (int16_t)((buf[0] << 8) | buf[1]);
-
-	/*
-	 * Table indicates 0.0625°C/LSB with left alignment (lower 4 bits unused).
-	 * So shift right by 4 to get signed temperature counts.
-	 */
-	int16_t counts = raw16 >> 4;
-
-	*temp_c = (float)counts * 0.0625f;
-	return 0;
+	/* Q4 to integer: divide by 16 and round */
+	int32_t temp_c = (t_q4 + 8) / 16;  /* +8 for rounding */
+	printk("%ld", (long)temp_c);
 }
 
-int main(void)
+/* ===================== The One Function You Wanted ===================== */
+/*
+ * Reads all sensors into 'out'.
+ * Returns number of sensors that responded successfully (status == 0).
+ */
+static int temp_telemetry_read_all(const struct device *bus, struct temp_telemetry *out)
 {
-	int ret;
-
-	/* LEDs */
-	if (!gpio_is_ready_dt(&led0) || !gpio_is_ready_dt(&led1)) {
-		printk("LED GPIO not ready\n");
+	if (out == NULL || bus == NULL) {
 		return 0;
 	}
 
-	ret = gpio_pin_configure_dt(&led0, GPIO_OUTPUT_INACTIVE);
-	if (ret < 0) return 0;
+	out->t_ms = (uint32_t)k_uptime_get_32();
 
-	ret = gpio_pin_configure_dt(&led1, GPIO_OUTPUT_INACTIVE);
-	if (ret < 0) return 0;
+	int ok = 0;
 
-	/* I2C bus */
+	for (uint8_t i = 0; i < NUM_SENSORS; i++) {
+		uint8_t reg = TEMP_REG;
+		uint8_t buf[2] = {0};
+
+		out->s[i].addr = temp_addrs[i];
+
+		int ret = i2c_write_read(bus, temp_addrs[i], &reg, 1, buf, 2);
+		out->s[i].status = ret;
+
+		if (ret == 0) {
+			/*
+			 * Common format: 12-bit signed temperature left-justified in 16-bit reg.
+			 * raw >> 4 gives Q4 (degC * 16).
+			 * If your sensor is different, this is the ONLY line you change.
+			 */
+			int16_t raw = (int16_t)((buf[0] << 8) | buf[1]);
+			out->s[i].temp_q4 = (int16_t)(raw >> 4);
+			ok++;
+		} else {
+			out->s[i].temp_q4 = 0;
+		}
+	}
+
+	return ok;
+}
+
+static void temp_telemetry_print(const struct temp_telemetry *t)
+{
+	printk("t=%lu ms | ", (unsigned long)t->t_ms);
+
+	for (uint8_t i = 0; i < NUM_SENSORS; i++) {
+		printk("0x%02X:", t->s[i].addr);
+
+		if (t->s[i].status == 0) {
+			print_temp_q4(t->s[i].temp_q4);
+			printk("C");
+		} else {
+			printk("ERR(%d)", t->s[i].status);
+		}
+
+		if (i + 1 < NUM_SENSORS) {
+			printk("  ");
+		}
+	}
+
+	printk("\n");
+}
+
+/* ===================== Main ===================== */
+
+int main(void)
+{
 	if (!device_is_ready(i2c_bus)) {
 		printk("I2C bus not ready\n");
 		return 0;
 	}
 
-	/* Probe sensor by attempting a temperature read once */
-	float temp = 0.0f;
-	ret = read_temp_c(&temp);
-	if (ret == 0) {
-		gpio_pin_set_dt(&led0, 1); /* Found sensor */
-		printk("Temp sensor found at 0x%02X. First read: %.4f C\n", TEMP_SENSOR_ADDR, temp);
-	} else {
-		gpio_pin_set_dt(&led0, 0);
-		printk("Temp sensor NOT found at 0x%02X (err %d)\n", TEMP_SENSOR_ADDR, ret);
-		/* You can choose to stop here; I’ll keep looping and retrying */
-	}
+	printk("Temp poller: reading %d sensors on i2c1 (0x48..0x4D)\n", NUM_SENSORS);
+
+	struct temp_telemetry telem;
 
 	while (1) {
-		ret = read_temp_c(&temp);
-		if (ret == 0) {
-			printk("Temp: %.4f C\n", temp);
-
-			/* LED1 on if temp > 40 C */
-			gpio_pin_set_dt(&led1, (temp > 40.0f) ? 1 : 0);
-
-			/* Keep LED0 on if comms are good */
-			gpio_pin_set_dt(&led0, 1);
-		} else {
-			printk("I2C read error: %d\n", ret);
-			gpio_pin_set_dt(&led0, 0);
-			gpio_pin_set_dt(&led1, 0);
-		}
-
+		(void)temp_telemetry_read_all(i2c_bus, &telem);
+		temp_telemetry_print(&telem);
 		k_msleep(500);
 	}
 
