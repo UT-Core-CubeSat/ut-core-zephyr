@@ -4,7 +4,7 @@
  * -----------------------------------------------------------------------------
  * CUBESAT TEMPERATURE TELEMETRY - I2C temp sensor reader
  * -----------------------------------------------------------------------------
- * Reads multiple I2C temperature sensors (e.g. TMP102/TMP75 style) and fills
+ * Reads multiple I2C temperature sensors (e.g. TMP275 style) and fills
  * a telemetry struct. Used for thermal monitoring on the satellite (e.g.
  * battery, payload, OBC, solar panels). All temps are stored in Q4 fixed-point
  * for precision without floating point.
@@ -74,7 +74,7 @@ static void print_temp_q4(int16_t t_q4) {
 // Reads all configured I2C temperature sensors and fills a telemetry struct.
 //
 // INPUTS:
-//   bus  - Zephyr I2C device (e.g. i2c1). Must be valid and ready.
+//   bus  - Zephyr I2C device (e.g. i2c 1 or 2). Must be valid and ready.
 //   out  - Pointer to a struct temp_telemetry. Must not be NULL. This is
 //          where we write the timestamp and one temp_sample per sensor.
 //          The struct lives in RAM (e.g. in main() as "struct temp_telemetry telem").
@@ -155,7 +155,13 @@ static int temp_telemetry_read_all(const struct device *bus, struct temp_telemet
 			// Big-endian: buf[0]=MSB, buf[1]=LSB. Cast to int16_t for sign.
 			// Right-shift by 4 gives Q4 (value = degC * 16). This is the only
 			// place that’s sensor-specific; different chip => change this block.
+
+			// << 8 = shift left 8 bits (put first byte in high half). | = combine with second byte.
+			// So: raw = [buf[0]][buf[1]] as one 16-bit number (big-endian). int16_t = signed.
 			int16_t raw = (int16_t)((buf[0] << 8) | buf[1]);
+
+			// >> 4 = shift right 4 bits. Sensor puts 12-bit temp in top bits; bottom 4 are fraction we drop.
+			// Result is already Q4 (degC * 16). Example: 25.5 C -> raw 0x1980 -> 0x198 -> 408 = 25.5*16.
 			out->s[i].temp_q4 = (int16_t)(raw >> 4);
 			ok++;
 		} else {
