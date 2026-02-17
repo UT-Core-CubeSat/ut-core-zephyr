@@ -40,8 +40,8 @@ compatible = "utahtech,ut-core-stm32u5a5";
 &gpiob {
 	fram_wp_hog {
 		gpio-hog;
-		gpios = <5 GPIO_ACTIVE_LOW>;   /* PB5 */
-		output-high;                   /* logical HIGH => inactive (ACTIVE_LOW) */
+		gpios = <5 GPIO_ACTIVE_HIGH>;  /* PB5 */
+		output-high;                   /* physical HIGH = WP de-asserted (WP is active-low) */
 		line-name = "FRAM_WP";
 	};
 };
@@ -106,16 +106,14 @@ compatible = "utahtech,ut-core-stm32u5a5";
 	pinctrl-0 = <&spi2_sck_pb13 &spi2_miso_pb14 &spi2_mosi_pb15>;
 	pinctrl-names = "default";
 
-	cs-gpios = <&gpiob 4 GPIO_ACTIVE_LOW>; /* CS1 = PB4 */
+	cs-gpios = <&gpiob 4 GPIO_ACTIVE_LOW>; /* CS0 = PB4 (FRAM) */
 
 	fram0: fram@0 {
 		compatible = "zephyr,spidev";
 		reg = <0>;
 		status = "okay";
 
-		spi-max-frequency = <250000>;
-		duplex = <SPI_FULL_DUPLEX>;
-		frame-format = <SPI_FRAME_FORMAT_MOTOROLA>;
+		spi-max-frequency = <40000000>;
 	};
 };
 
