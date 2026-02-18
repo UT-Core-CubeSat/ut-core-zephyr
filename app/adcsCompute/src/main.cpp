@@ -1,20 +1,26 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/drivers/gpio.h>
+#include <inttypes.h>
 
 #include "ADCSCore.hpp"
 #include "adcs_platform.hpp"
 
-// Timing measurement structure
 struct LoopTimingStats {
-    uint64_t cycle_count = 0;
-    uint64_t min_cycle_us = UINT64_MAX;
-    uint64_t max_cycle_us = 0;
-    uint64_t total_time_us = 0;
-    uint64_t last_print_time = 0;
+    uint64_t cycle_count;
+    uint64_t min_cycle_us;
+    uint64_t max_cycle_us;
+    uint64_t total_time_us;
+    uint64_t window_start_ms;
 };
 
-static LoopTimingStats timing_stats;
+static LoopTimingStats timing_stats = {
+    .cycle_count = 0,
+    .min_cycle_us = UINT64_MAX,
+    .max_cycle_us = 0,
+    .total_time_us = 0,
+    .window_start_ms = 0,
+};
 
 #define LED_NODE DT_ALIAS(led0)
 #if !DT_NODE_HAS_STATUS(LED_NODE, okay)
@@ -22,7 +28,6 @@ static LoopTimingStats timing_stats;
 #endif
 static const struct gpio_dt_spec led0 = GPIO_DT_SPEC_GET(LED_NODE, gpios);
 
-// takes adcs by reference
 static void controlLoopOnce(ADCS::Core &adcs) {
     ADCS::SensorData sensors{};
     sensors.unix_time     = ADCSPlatform::getUnixTime();
@@ -49,63 +54,58 @@ extern "C" int main(void) {
         printk("LED0 GPIO device is not ready\n");
         return 0;
     }
-
     if (gpio_pin_configure_dt(&led0, GPIO_OUTPUT_INACTIVE) < 0) {
         printk("Failed to configure LED0\n");
         return 0;
     }
 
-    // Marker A - 2 Blinks
-    for (int i = 0; i < 4; i++) {
-        gpio_pin_toggle_dt(&led0);
-        k_msleep(1000);
-    }
-    k_msleep(500);
-
-    // local construction (not global)
     ADCS::Core adcs;
 
-    // Marker B - 3 Blinks
-    for (int i = 0; i < 6; i++) {
-        gpio_pin_toggle_dt(&led0);
-        k_msleep(1000);
-    }
-    k_msleep(500);
+    timing_stats.window_start_ms = k_uptime_get();
 
     while (1) {
-        uint64_t loop_start = k_uptime_ticks();
-        
+        uint64_t start_cyc = k_cycle_get_64();
+
+        // optional marker pulse
         gpio_pin_toggle_dt(&led0);
-        // k_msleep(5); 
         gpio_pin_toggle_dt(&led0);
 
         controlLoopOnce(adcs);
-        
-        uint64_t loop_end = k_uptime_ticks();
-        uint64_t cycle_us = k_cyc_to_us_near64(loop_end - loop_start);
-        
-        // Update statistics
+
+        uint64_t end_cyc = k_cycle_get_64();
+        uint64_t cycle_us = k_cyc_to_us_near64(end_cyc - start_cyc);
+
         timing_stats.cycle_count++;
         timing_stats.total_time_us += cycle_us;
         if (cycle_us < timing_stats.min_cycle_us) timing_stats.min_cycle_us = cycle_us;
         if (cycle_us > timing_stats.max_cycle_us) timing_stats.max_cycle_us = cycle_us;
-        
-        // Print stats every 1 second
-        uint64_t now = k_uptime_get();
-        if (now - timing_stats.last_print_time >= 1000) {
+
+        uint64_t now_ms = k_uptime_get();
+        uint64_t elapsed_ms = now_ms - timing_stats.window_start_ms;
+
+        if (elapsed_ms >= 1000) {
             uint64_t avg_cycle_us = timing_stats.total_time_us / timing_stats.cycle_count;
-            float frequency = (timing_stats.cycle_count * 1000.0f) / (now - timing_stats.last_print_time);
-            
-            printk("[ADCS LOOP] Count: %lld | Freq: %.1f Hz | Cycle - Min: %llu us, Max: %llu us, Avg: %llu us\n",
-                   timing_stats.cycle_count, frequency,
+
+            // frequency with 0.1 Hz resolution WITHOUT floats:
+            // freq_x10 = count / (elapsed_s) * 10 = count * 10000 / elapsed_ms
+            uint64_t freq_x10 = (timing_stats.cycle_count * 10000ULL) / elapsed_ms;
+
+            printk("[ADCS LOOP] Count: %" PRIu64
+                   " | Freq: %" PRIu64 ".%" PRIu64 " Hz"
+                   " | Cycle - Min: %" PRIu64 " us, Max: %" PRIu64 " us, Avg: %" PRIu64 " us\n",
+                   timing_stats.cycle_count,
+                   (freq_x10 / 10), (freq_x10 % 10),
                    timing_stats.min_cycle_us, timing_stats.max_cycle_us, avg_cycle_us);
-            
-            // Reset for next window
+
+            // reset window
             timing_stats.cycle_count = 0;
             timing_stats.total_time_us = 0;
             timing_stats.min_cycle_us = UINT64_MAX;
             timing_stats.max_cycle_us = 0;
-            timing_stats.last_print_time = now;
+            timing_stats.window_start_ms = now_ms;
         }
+
+        // if you want to cap loop rate, add a sleep here
+        // k_msleep(1);
     }
 }

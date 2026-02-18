@@ -10,38 +10,28 @@
 #include <zephyr/dt-bindings/pinctrl/stm32-pinctrl.h>
 
 / {
-pins {
-compatible = "gpio-leds";
+	pins {
+		compatible = "gpio-leds";
 
-led0: led_0 {
-  gpios = <&gpioc 13 GPIO_ACTIVE_HIGH>;
-  label = "LED0_PC13";
-};
+		led0: led_0 {
+			gpios = <&gpioc 13 GPIO_ACTIVE_HIGH>;
+			label = "LED0_PC13";
+		};
 
-led1: led_1 {
-  gpios = <&gpioc 14 GPIO_ACTIVE_HIGH>;
-  label = "LED1_PC14";
-};
+		led1: led_1 {
+			gpios = <&gpioc 14 GPIO_ACTIVE_HIGH>;
+			label = "LED1_PC14";
+		};
 
-led2: led_2 {
-  gpios = <&gpioc 15 GPIO_ACTIVE_HIGH>;
-  label = "LED2_PC15";
-};
+		led2: led_2 {
+			gpios = <&gpioc 15 GPIO_ACTIVE_HIGH>;
+			label = "LED2_PC15";
+		};
 
-pb10: pb10 {
-  gpios = <&gpiob 10 GPIO_ACTIVE_HIGH>;
-  label = "pb10";
-};
-
-pb2: pb2 {
-  gpios = <&gpiob 2 GPIO_ACTIVE_HIGH>;
-  label = "pb2";
-};
-
-pd2: pd2 {
-		gpios = <&gpiod 2 GPIO_ACTIVE_HIGH>;
-	  label = "pd2";
-	};
+		pb10: pb10 {
+			gpios = <&gpiob 10 GPIO_ACTIVE_HIGH>;
+			label = "pb10";
+		};
 
 mcu_select_pin: mcu_select_pin {
     gpios = <&gpioa 6 GPIO_ACTIVE_HIGH>;
@@ -63,7 +53,7 @@ canstbgpio: canstbgpio {
 
 /* Internal 48 MHz oscillator (safe; useful later for USB) */
 &clk_hsi48 {
-status = "disabled";
+	status = "disabled";
 };
 
 &clk_hsi {
@@ -75,18 +65,18 @@ status = "disabled";
 &clk_lse { status = "disabled"; };
 
 &clk_msis {
-  status = "okay";
+	status = "okay";
 };
 
-&rcc {
-  clocks = <&clk_msis>;
-  /* Pick a conservative frequency that matches common reset MSIS value */
-  clock-frequency = <DT_FREQ_M(4)>;
-  ahb-prescaler = <1>;
-  apb1-prescaler = <1>;
-  apb2-prescaler = <1>;
-  apb3-prescaler = <1>;
-};
+// &rcc {
+// 	clocks = <&clk_msis>;
+// 	/* Pick a conservative frequency that matches common reset MSIS value */
+// 	clock-frequency = <DT_FREQ_M(4)>;
+// 	ahb-prescaler = <1>;
+// 	apb1-prescaler = <1>;
+// 	apb2-prescaler = <1>;
+// 	apb3-prescaler = <1>;
+// };
 
 
 
@@ -95,11 +85,11 @@ status = "disabled";
 };
 
 &gpiob {
-status = "okay";
+	status = "okay";
 };
 
 &gpioc {
-status = "okay";
+	status = "okay";
 };
 
 &gpiod {
