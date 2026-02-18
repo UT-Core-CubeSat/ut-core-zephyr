@@ -14,41 +14,50 @@ pins {
 compatible = "gpio-leds";
 
 led0: led_0 {
-gpios = <&gpioc 13 GPIO_ACTIVE_HIGH>;
-label = "LED0_PC13";
+  gpios = <&gpioc 13 GPIO_ACTIVE_HIGH>;
+  label = "LED0_PC13";
 };
 
 led1: led_1 {
-gpios = <&gpioc 14 GPIO_ACTIVE_HIGH>;
-label = "LED1_PC14";
+  gpios = <&gpioc 14 GPIO_ACTIVE_HIGH>;
+  label = "LED1_PC14";
 };
 
 led2: led_2 {
-gpios = <&gpioc 15 GPIO_ACTIVE_HIGH>;
-label = "LED2_PC15";
+  gpios = <&gpioc 15 GPIO_ACTIVE_HIGH>;
+  label = "LED2_PC15";
 };
 
 pb10: pb10 {
-gpios = <&gpiob 10 GPIO_ACTIVE_HIGH>;
-label = "pb10";
+  gpios = <&gpiob 10 GPIO_ACTIVE_HIGH>;
+  label = "pb10";
 };
 
+pb2: pb2 {
+  gpios = <&gpiob 2 GPIO_ACTIVE_HIGH>;
+  label = "pb2";
+};
 
+pd2: pd2 {
+		gpios = <&gpiod 2 GPIO_ACTIVE_HIGH>;
+	  label = "pd2";
+	};
 
-		pd2: pd2 {
-			gpios = <&gpiod 2 GPIO_ACTIVE_HIGH>;
-			label = "pd2";
-		};
+mcu_select_pin: mcu_select_pin {
+    gpios = <&gpioa 6 GPIO_ACTIVE_HIGH>;
+    label = "MCU_SELECT_PIN";
+  };
 
-		canengpio: canengpio {
-        	gpios = <&gpioa 10 GPIO_ACTIVE_HIGH>; /* PA10 */
-        	label = "CAN_TRANSCEIVER_EN";
-    	};
+canengpio: canengpio {
+    gpios = <&gpioa 10 GPIO_ACTIVE_HIGH>; /* PA10 */
+    label = "CAN_TRANSCEIVER_EN";
+  };
 
-		canstbgpio: canstbgpio {
-        	gpios = <&gpioa 9 GPIO_ACTIVE_HIGH>; /* PA9 */
-        	label = "CAN_STB";
-		};
+canstbgpio: canstbgpio {
+    gpios = <&gpioa 9 GPIO_ACTIVE_HIGH>; /* PA9 */
+    label = "CAN_STB";
+	};
+
 	};
 };
 
