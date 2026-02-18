@@ -1,0 +1,10 @@
+build - west build -p always -b ut_core spiTest
+openocd - openocd -f spiTest\openocd_semihost.cfg
+start gdb - arm-none-eabi-gdb build\zephyr\zephyr.elf
+    in gdb
+    target extended-remote :3333
+    monitor reset halt
+    load
+    monitor reset halt
+    continue
+    

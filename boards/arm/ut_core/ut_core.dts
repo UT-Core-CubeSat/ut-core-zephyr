@@ -40,8 +40,8 @@ compatible = "utahtech,ut-core-stm32u5a5";
 &gpiob {
 	fram_wp_hog {
 		gpio-hog;
-		gpios = <5 GPIO_ACTIVE_LOW>;   /* PB5 */
-		output-high;                   /* logical HIGH => inactive (ACTIVE_LOW) */
+		gpios = <5 GPIO_ACTIVE_HIGH>;  /* PB5 */
+		output-high;                   /* physical HIGH = WP de-asserted (WP is active-low) */
 		line-name = "FRAM_WP";
 	};
 };
@@ -106,16 +106,14 @@ compatible = "utahtech,ut-core-stm32u5a5";
 	pinctrl-0 = <&spi2_sck_pb13 &spi2_miso_pb14 &spi2_mosi_pb15>;
 	pinctrl-names = "default";
 
-	cs-gpios = <&gpiob 4 GPIO_ACTIVE_LOW>; /* CS1 = PB4 */
+	cs-gpios = <&gpiob 4 GPIO_ACTIVE_LOW>; /* CS0 = PB4 (FRAM) */
 
 	fram0: fram@0 {
 		compatible = "zephyr,spidev";
 		reg = <0>;
 		status = "okay";
 
-		spi-max-frequency = <250000>;
-		duplex = <SPI_FULL_DUPLEX>;
-		frame-format = <SPI_FRAME_FORMAT_MOTOROLA>;
+		spi-max-frequency = <40000000>;
 	};
 };
 
@@ -153,8 +151,8 @@ status = "disabled";
 	clocks = <&clk_msis>;
 
 	div-m = <1>;
-	mul-n = <10>;
-	div-q = <2>;
+	mul-n = <80>;
+	div-q = <4>;
 	div-r = <2>;
 	div-p = <2>;
 };
@@ -165,7 +163,7 @@ status = "disabled";
  */
 &rcc {
 	clocks = <&pll1>;
-	clock-frequency = <DT_FREQ_M(80)>;
+	clock-frequency = <DT_FREQ_M(160)>;
 
 	ahb-prescaler  = <1>;
 	apb1-prescaler = <1>;
@@ -206,57 +204,3 @@ status = "disabled";
 &otghs_phy {
 status = "disabled";
 };
-
-/* ============================================== */
-/* FDCAN CLOCK FIX   */
-/* ============================================== */
-
-/* 1. Enable PLL1 to generate 80 MHz from your 4 MHz MSIS */
-&pll1 {
-    status = "okay";
-    clocks = <&clk_msis>;
-    /* * PLL Math:
-     * Input (MSIS) = 4 MHz
-     * div-m = 1   -> Ref Input = 4 MHz
-     * mul-n = 40  -> VCO = 160 MHz
-     * div-q = 2   -> PLL1_Q Output = 80 MHz (Perfect for CAN)
-     * div-r = 2   -> PLL1_R Output = 80 MHz
-     */
-    div-m = <1>;
-    mul-n = <40>;
-    div-q = <2>;
-    div-r = <2>;
-    div-p = <2>;
-};
-
-/* 3. CRITICAL: Switch System CPU to use PLL1 (80 MHz) */
-&rcc {
-    clocks = <&pll1>;
-    clock-frequency = <DT_FREQ_M(80)>;
-    ahb-prescaler = <1>;
-    apb1-prescaler = <1>;
-    apb2-prescaler = <1>;
-    apb3-prescaler = <1>;
-};
-
-/* 2. Tell FDCAN1 to use that new PLL1_Q clock */
-
-&fdcan1 {
-    status = "okay";
-    /* * 
-     * Index 0: Register Bus Clock (APB1_2)
-     * Index 1: Kernel Clock Source = PLL1_Q (Value 1)
-     */
-    clocks = <&rcc STM32_CLOCK_BUS_APB1_2 0x00000200>,
-             <&rcc STM32_SRC_PLL1_Q FDCAN1_SEL(1)>;
-
-    bus-speed = <500000>;
-    sample-point = <875>;
-    bus-speed-data = <500000>;
-    sample-point-data = <875>;
-
-    /* Ensure pins are linked */
-    pinctrl-0 = <&fdcan1_rx_pa11 &fdcan1_tx_pa12>;
-    pinctrl-names = "default";
-};
-
