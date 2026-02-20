@@ -33,20 +33,31 @@
 			label = "pb10";
 		};
 
+		pb2: pb2 {
+			gpios = <&gpiob 2 GPIO_ACTIVE_HIGH>;
+			label = "pb2";
+		};
+
 		pd2: pd2 {
 			gpios = <&gpiod 2 GPIO_ACTIVE_HIGH>;
 			label = "pd2";
 		};
 
-		canengpio: canengpio {
-        	gpios = <&gpioa 10 GPIO_ACTIVE_HIGH>; /* PA10 */
-        	label = "CAN_TRANSCEIVER_EN";
-    	};
+mcu_select_pin: mcu_select_pin {
+    gpios = <&gpioa 6 GPIO_ACTIVE_HIGH>;
+    label = "MCU_SELECT_PIN";
+  };
 
-		canstbgpio: canstbgpio {
-        	gpios = <&gpioa 9 GPIO_ACTIVE_HIGH>; /* PA9 */
-        	label = "CAN_STB";
-		};
+canengpio: canengpio {
+    gpios = <&gpioa 10 GPIO_ACTIVE_HIGH>; /* PA10 */
+    label = "CAN_TRANSCEIVER_EN";
+  };
+
+canstbgpio: canstbgpio {
+    gpios = <&gpioa 9 GPIO_ACTIVE_HIGH>; /* PA9 */
+    label = "CAN_STB";
+	};
+
 	};
 };
 
