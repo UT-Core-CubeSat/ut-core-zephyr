@@ -178,13 +178,13 @@ LOG_MODULE_REGISTER(cdh, LOG_LEVEL_INF);
 #define PRIO_LOW    3
 #define CLS_CORE    0
 
-#define CAN_NODE    DT_NODELABEL(fdcan1)
-#define GPIOA_NODE  DT_NODELABEL(gpioa)
-#define GPIOB_NODE  DT_NODELABEL(gpiob)
+#define CAN_NODE     DT_NODELABEL(fdcan1)
 #define I2C_BUS_NODE DT_NODELABEL(i2c1)
-#define LED0_NODE   DT_ALIAS(led0)
-#define LED1_NODE   DT_ALIAS(led1)
-#define LED2_NODE   DT_ALIAS(led2)
+#define GPIOA_NODE   DT_NODELABEL(gpioa)
+#define GPIOB_NODE   DT_NODELABEL(gpiob)
+#define LED0_NODE    DT_ALIAS(led0)
+#define LED1_NODE    DT_ALIAS(led1)
+#define LED2_NODE    DT_ALIAS(led2)
 
 #define PIN_SILENT  9
 #define PIN_SHDN    10
@@ -199,7 +199,9 @@ LOG_MODULE_REGISTER(cdh, LOG_LEVEL_INF);
 #define UID2_WORD1 0x41425007
 #define UID2_WORD2 0x20363651
 
-#define TEMP_SENSOR_ADDR 0x48
+static const uint8_t temp_addrs[] = { 0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D };
+#define NUM_SENSORS ((uint8_t)(sizeof(temp_addrs) / sizeof(temp_addrs[0])))
+
 #define TEMP_REG 0x00
 
 /* ================= DEVICES ================= */
@@ -213,6 +215,17 @@ static const struct gpio_dt_spec led2 = GPIO_DT_SPEC_GET(LED2_NODE, gpios);
 static const struct device *i2c_bus   = DEVICE_DT_GET(I2C_BUS_NODE);
 
 CAN_MSGQ_DEFINE(rxq, 16);
+
+struct temp_sample {
+	uint8_t addr;     // I2C 7-bit address we read from (for logging/debug) 
+	int16_t temp_q4;  // Temperature in Q4 format (see below); 0 if read failed
+	int status;       // 0 = read OK, non-zero = I2C error code (e.g. -EIO)
+};
+
+struct temp_telemetry {
+	uint32_t t_ms;                 	    // Time of sample: kernel uptime in milliseconds (probably going to change to RTC time? idk yet)
+	struct temp_sample s[NUM_SENSORS];  // One entry per sensor, same order as temp_addrs[]
+};
 
 /* ================= MODE ================= */
 
@@ -281,30 +294,80 @@ static void leds_set(cdh_mode_t mode)
     }
 }
 
-static int read_temp_c(float *temp_c)
-{
-	uint8_t reg = TEMP_REG;
-	uint8_t buf[2];
-
-	/* Write register pointer, then read 2 bytes */
-	int ret = i2c_write_read(i2c_bus, TEMP_SENSOR_ADDR, &reg, 1, buf, 2);
-	if (ret != 0) {
-		return ret;
-	}
-
-	/* Combine bytes: MSB first */
-	int16_t raw16 = (int16_t)((buf[0] << 8) | buf[1]);
-
-	/*
-	 * Table indicates 0.0625°C/LSB with left alignment (lower 4 bits unused).
-	 * So shift right by 4 to get signed temperature counts.
-	 */
-	int16_t counts = raw16 >> 4;
-
-	*temp_c = (float)counts * 0.0625f;
-	return 0;
+// Print a Q4 temperature as an integer degC (rounded).
+// Q4 -> degC: divide by 16; +8 before /16 gives rounding to nearest integer.
+static void print_temp_q4(int16_t t_q4) {
+	int32_t temp_c = (t_q4 + 8) / 16;  // +8 for rounding
+	printk("%ld", (long)temp_c);
 }
 
+static int temp_telemetry_read_all(const struct device *bus, struct temp_telemetry *out) {
+	// Guard: don’t dereference null; return 0 successful reads
+	if (out == NULL || bus == NULL) {
+		return 0;
+	}
+
+	// When did we take this snapshot? (for ground station / logs)
+	out->t_ms = (uint32_t)k_uptime_get_32();
+
+	int ok = 0;  // Init count of sensors that read successfully to 0 at first
+
+	for (uint8_t i = 0; i < NUM_SENSORS; i++) {
+		uint8_t reg = TEMP_REG;   // Register 0x00 = temperature 
+		uint8_t buf[2] = {0};     // MSB, LSB from sensor 
+
+		// Remember which address we’re polling (for debugging / labels)
+		// out->s[i].addr means: pointer out -> struct member s -> element [i] -> field addr
+		out->s[i].addr = temp_addrs[i];
+
+		// Single I2C transaction: write 1 byte (reg address), then read 2 bytes.
+		// Device uses 7-bit address temp_addrs[i]; we get back the temp register.
+		int ret = i2c_write_read(bus, temp_addrs[i], &reg, 1, buf, 2);
+		out->s[i].status = ret;
+
+		if (ret == 0) {
+			// Sensor format: 12-bit signed temp, left-justified in 16 bits.
+			// Big-endian: buf[0]=MSB, buf[1]=LSB. Cast to int16_t for sign.
+			// Right-shift by 4 gives Q4 (value = degC * 16). This is the only
+			// place that’s sensor-specific; different chip => change this block.
+
+			// << 8 = shift left 8 bits (put first byte in high half). | = combine with second byte.
+			// So: raw = [buf[0]][buf[1]] as one 16-bit number (big-endian). int16_t = signed.
+			int16_t raw = (int16_t)((buf[0] << 8) | buf[1]);
+
+			// >> 4 = shift right 4 bits. Sensor puts 12-bit temp in top bits; bottom 4 are fraction we drop.
+			// Result is already Q4 (degC * 16). Example: 25.5 C -> raw 0x1980 -> 0x198 -> 408 = 25.5*16.
+			out->s[i].temp_q4 = (int16_t)(raw >> 4);
+			ok++;
+		} else {
+			// Read failed: leave temp at 0 so downstream knows we have no data
+			out->s[i].temp_q4 = 0;
+		}
+	}
+
+	return ok;
+}
+
+static void temp_telemetry_print(const struct temp_telemetry *t) {
+	printk("t=%lu ms | ", (unsigned long)t->t_ms);
+
+	for (uint8_t i = 0; i < NUM_SENSORS; i++) {
+		printk("0x%02X:", t->s[i].addr);
+
+		if (t->s[i].status == 0) {
+			print_temp_q4(t->s[i].temp_q4);
+			printk("C");
+		} else {
+			printk("ERR(%d)", t->s[i].status);
+		}
+
+		if (i + 1 < NUM_SENSORS) {
+			printk("  ");
+		}
+	}
+
+	printk("\n");
+}
 
 /* ===================================================== */
 /* ================= CAN FUNCTIONS ====================== */
@@ -491,35 +554,26 @@ void soh_thread(void *a, void *b, void *c)
 {
     LOG_INF("SOH thread started");
 
-    float temp = 0.0f;
-    int ret;
-
     while (1) {
 
         if (current_mode == MODE_STANDARD ||
             current_mode == MODE_MISSION)
         {
-            ret = read_temp_c(&temp);
 
-            if (ret == 0) {
-                LOG_INF("Temp: %.4f C", (double)temp);
+	    printk("Temp poller: reading %d sensors on i2c1 (0x48..0x4D)\n", NUM_SENSORS);
 
-                /* Visual activity pulse */
-                thread_pulse(&led1);
-                thread_pulse(&led2);
+	    struct temp_telemetry telem;
 
-                /* Example: overtemp indication */
-                if (temp > 40.0f) {
-                    LOG_WRN("Overtemp!");
-                }
-
-            } else {
-                LOG_ERR("I2C read error: %d", ret);
-            }
-        }
+	    while (1) {
+		    (void)temp_telemetry_read_all(i2c_bus, &telem);
+		    temp_telemetry_print(&telem);
+		    k_msleep(500);
+	    }
 
         /* SOH rate = 2 seconds */
         k_sleep(K_SECONDS(2));
+
+        }
     }
 }
 

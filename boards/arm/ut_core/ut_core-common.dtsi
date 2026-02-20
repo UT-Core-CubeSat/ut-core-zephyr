@@ -33,6 +33,16 @@
 			label = "pb10";
 		};
 
+		pb2: pb2 {
+			gpios = <&gpiob 2 GPIO_ACTIVE_HIGH>;
+			label = "pb2";
+		};
+
+		pd2: pd2 {
+			gpios = <&gpiod 2 GPIO_ACTIVE_HIGH>;
+			label = "pd2";
+		};
+
 mcu_select_pin: mcu_select_pin {
     gpios = <&gpioa 6 GPIO_ACTIVE_HIGH>;
     label = "MCU_SELECT_PIN";
