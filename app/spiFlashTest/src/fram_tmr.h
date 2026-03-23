@@ -499,10 +499,16 @@
                  (bad_idx == 0) ? fram_a :
                  (bad_idx == 1) ? fram_b : fram_c;
  
+             printk("TMR: %s diverged at 0x%06x, repairing...\n",
+                    bad_dev->name, (unsigned int)addr);
+
              int repair_err = fram_write_verified(bad_dev, addr, out, chunk);
              if (repair_err) {
-                 printk("TMR repair failed on %s at 0x%06x: %d\n",
+                 printk("TMR: repair FAILED on %s at 0x%06x: %d\n",
                         bad_dev->name, (unsigned int)addr, repair_err);
+             } else {
+                 printk("TMR: %s repaired OK at 0x%06x\n",
+                        bad_dev->name, (unsigned int)addr);
              }
          }
  #endif

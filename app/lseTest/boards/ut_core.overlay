@@ -1,0 +1,25 @@
+/ {
+	pins {
+		compatible = "gpio-leds";
+
+		led0: led_0 {
+			gpios = <&gpioc 13 GPIO_ACTIVE_HIGH>;
+			label = "LED0_PC13";
+		};
+
+		led1: led_1 {
+			gpios = <&gpioc 12 GPIO_ACTIVE_HIGH>;
+			label = "LED1_PC12";
+		};
+
+		led2: led_2 {
+			gpios = <&gpioa 10 GPIO_ACTIVE_HIGH>;
+			label = "LED2_PA10";
+		};
+
+		wdtpin: wdtpin {
+			gpios = <&gpiob 2 GPIO_ACTIVE_HIGH>;
+			label = "WDT_PULSE_PB2";
+		};
+	};
+};

@@ -7,6 +7,7 @@
 #include "ut_core-common.dtsi"
 #include <zephyr/dt-bindings/spi/spi.h>
 #include <zephyr/dt-bindings/dma/stm32_dma.h>
+#include <zephyr/dt-bindings/clock/stm32_clock.h>
 
 / {
 model = "UT-CORE STM32U5A5";
@@ -24,6 +25,8 @@ compatible = "utahtech,ut-core-stm32u5a5";
 		led0   = &led0;
 		led1   = &led1;
 		led2   = &led2;
+
+		//wdtpin= &wdtpin;
 
 		fram0  = &fram0;
 		fram1  = &fram1;
