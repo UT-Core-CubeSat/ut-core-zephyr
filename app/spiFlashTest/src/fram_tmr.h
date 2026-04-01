@@ -20,6 +20,9 @@
  *  - this is the reusable layer you build on top of
  */
 
+#ifndef FRAM_TMR_H_
+#define FRAM_TMR_H_
+
  #include <zephyr/kernel.h>
  #include <zephyr/device.h>
  #include <zephyr/drivers/spi.h>
@@ -550,14 +553,16 @@
              return -EIO;
          }
  
-         if ((memcmp(buf_a, buf_b, chunk) != 0) ||
-             (memcmp(buf_a, buf_c, chunk) != 0)) {
-             return -EIO;
-         }
- 
-         addr += chunk;
-         len  -= chunk;
-     }
- 
-     return 0;
- }
+        if ((memcmp(buf_a, buf_b, chunk) != 0) ||
+            (memcmp(buf_a, buf_c, chunk) != 0)) {
+            return -EIO;
+        }
+
+        addr += chunk;
+        len  -= chunk;
+    }
+
+    return 0;
+}
+
+#endif /* FRAM_TMR_H_ */

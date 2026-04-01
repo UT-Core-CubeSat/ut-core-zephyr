@@ -48,7 +48,7 @@ compatible = "utahtech,ut-core-stm32u5a5";
 		gpio-hog;
 		gpios = <12 GPIO_ACTIVE_HIGH>,
 				<9 GPIO_ACTIVE_HIGH>,
-				<5 GPIO_ACTIVE_HIGH>;  /* PB9 */
+				<5 GPIO_ACTIVE_HIGH>; 
 		output-high;                   /* physical HIGH = WP de-asserted (WP is active-low) */
 		line-name = "FRAM_WP";
 	};

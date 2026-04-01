@@ -1,5 +1,5 @@
 /*
- * flash_tmr.h — Flash-to-FRAM TMR provisioning and scrub layer
+ * flash_provision_tmr.h — Flash-to-FRAM TMR provisioning and scrub layer
  *
  * Builds on top of fram_tmr.h to provide:
  *   - One-time provisioning:  MCU internal flash  ->  FRAM x3 (TMR)
@@ -17,8 +17,8 @@
  *   The firmware image must fit within FRAM_SIZE (512 KiB).
  */
 
-#ifndef FLASH_TMR_H_
-#define FLASH_TMR_H_
+#ifndef FLASH_PROVISION_TMR_H_
+#define FLASH_PROVISION_TMR_H_
 
 #include "fram_tmr.h"
 #include <zephyr/drivers/flash.h>
@@ -34,7 +34,8 @@ extern char __rom_region_end[];
  * Tunables
  * ========================================================================= */
 
-#define FLASH_TMR_CHUNK_SZ  32u
+#define FLASH_TMR_CHUNK_SZ       32u
+#define SCRUB_YIELD_INTERVAL     16u
 
 /* =========================================================================
  * Helpers
@@ -145,6 +146,8 @@ static int flash_tmr_scrub(const struct device *flash_dev,
         memset(result, 0, sizeof(*result));
     }
 
+    uint32_t yield_ctr = 0;
+
     for (size_t off = 0; off < fw_size; off += FLASH_TMR_CHUNK_SZ) {
         size_t chunk = (fw_size - off < FLASH_TMR_CHUNK_SZ)
                      ? (fw_size - off)
@@ -177,9 +180,13 @@ static int flash_tmr_scrub(const struct device *flash_dev,
         if (result) {
             result->chunks_checked++;
         }
+
+        if (++yield_ctr % SCRUB_YIELD_INTERVAL == 0) {
+            k_yield();
+        }
     }
 
     return 0;
 }
 
-#endif /* FLASH_TMR_H_ */
+#endif /* FLASH_PROVISION_TMR_H_ */
