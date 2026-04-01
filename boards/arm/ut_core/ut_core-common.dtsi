@@ -13,20 +13,20 @@
 	pins {
 		compatible = "gpio-leds";
 
-		led0: led_0 {
-			gpios = <&gpioc 13 GPIO_ACTIVE_HIGH>;
-			label = "LED0_PC13";
-		};
+		//led0: led_0 {
+		//	gpios = <&gpioc 13 GPIO_ACTIVE_HIGH>;
+		//	label = "LED0_PC13";
+		//};
 
-		led1: led_1 {
-			gpios = <&gpioc 14 GPIO_ACTIVE_HIGH>;
-			label = "LED1_PC14";
-		};
+		//led1: led_1 {
+		//	gpios = <&gpioc 14 GPIO_ACTIVE_HIGH>;
+		//	label = "LED1_PC14";
+		//};
 
-		led2: led_2 {
-			gpios = <&gpioc 15 GPIO_ACTIVE_HIGH>;
-			label = "LED2_PC15";
-		};
+		//led2: led_2 {
+		//	gpios = <&gpioc 15 GPIO_ACTIVE_HIGH>;
+		//	label = "LED2_PC15";
+		//};
 
 		pb10: pb10 {
 			gpios = <&gpiob 10 GPIO_ACTIVE_HIGH>;
@@ -70,9 +70,25 @@ canstbgpio: canstbgpio {
     status = "okay";
 };
 
-/* No external crystals */
+/*Low speed external crystal */
 &clk_hse { status = "disabled"; };
-&clk_lse { status = "disabled"; };
+
+&clk_lse {
+	status = "okay";
+	clock-frequency = <32768>;
+	driving-capability = <1>;
+};
+
+&rtc {
+	status = "okay";
+	clocks = <&rcc STM32_CLOCK(APB3, 21)>,
+	         <&rcc STM32_SRC_LSE RTC_SEL(1)>;
+
+	/* optional, but nice to expose backup regs */
+	backup_regs {
+		status = "okay";
+	};
+};
 
 &clk_msis {
 	status = "okay";
