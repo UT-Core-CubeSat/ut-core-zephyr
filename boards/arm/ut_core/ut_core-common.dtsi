@@ -43,20 +43,25 @@
 			label = "pd2";
 		};
 
-mcu_select_pin: mcu_select_pin {
-    gpios = <&gpioa 6 GPIO_ACTIVE_HIGH>;
-    label = "MCU_SELECT_PIN";
-  };
+		pa7: pa7 {
+			gpios = <&gpioa 7 GPIO_ACTIVE_HIGH>;
+			label = "pa7";
+		};
 
-canengpio: canengpio {
-    gpios = <&gpioa 10 GPIO_ACTIVE_HIGH>; /* PA10 */
-    label = "CAN_TRANSCEIVER_EN";
-  };
+		mcu_select_pin: mcu_select_pin {
+    			gpios = <&gpioa 6 GPIO_ACTIVE_HIGH>;
+    			label = "MCU_SELECT_PIN";
+  		};
 
-canstbgpio: canstbgpio {
-    gpios = <&gpioa 9 GPIO_ACTIVE_HIGH>; /* PA9 */
-    label = "CAN_STB";
-	};
+		canengpio: canengpio {
+    			gpios = <&gpioa 10 GPIO_ACTIVE_HIGH>; /* PA10 */
+    			label = "CAN_TRANSCEIVER_EN";
+  		};
+
+		canstbgpio: canstbgpio {
+    			gpios = <&gpioa 9 GPIO_ACTIVE_HIGH>; /* PA9 */
+    			label = "CAN_STB";
+		};
 
 	};
 };
@@ -104,7 +109,9 @@ canstbgpio: canstbgpio {
 // 	apb3-prescaler = <1>;
 // };
 
-
+// &timers1 {
+// 	status = "okay";
+// };
 
 &gpioa {
 	status = "okay";

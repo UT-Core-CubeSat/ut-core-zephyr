@@ -33,8 +33,9 @@ compatible = "utahtech,ut-core-stm32u5a5";
 		fram2  = &fram2;
 
 		pb10   = &pb10;
-		pb2	   = &pb2;
+		pb2    = &pb2;
 		pd2    = &pd2;
+		pa7    = &pa7;
 
 		canen  = &canengpio;
 		canstb = &canstbgpio;
