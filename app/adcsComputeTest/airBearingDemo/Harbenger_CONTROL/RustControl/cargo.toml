@@ -1,0 +1,11 @@
+[package]
+name = "cubesat_control"
+version = "0.1.0"
+edition = "2021"
+authors = ["Ben Sherman <your.email@example.com>"]
+
+[dependencies]
+nalgebra = "0.32.3"
+rand = "0.8.5"
+kiss3d = "0.35.0"
+plotters = "0.3.5"

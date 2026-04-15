@@ -1,0 +1,183 @@
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
+/ {
+	aliases {
+		/delete-property/ led0;
+		/delete-property/ led1;
+		/delete-property/ led2;
+	};
+
+	load_switches {
+		compatible = "gpio-leds";
+
+		load1: load_1 {
+			gpios = <&gpioc 6 GPIO_ACTIVE_HIGH>;
+			label = "LOAD_1";
+		};
+		load2: load_2 {
+			gpios = <&gpioc 5 GPIO_ACTIVE_HIGH>;
+			label = "LOAD_2";
+		};
+		load3: load_3 {
+			gpios = <&gpioc 4 GPIO_ACTIVE_HIGH>;
+			label = "LOAD_3";
+		};
+		load4: load_4 {
+			gpios = <&gpiod 9 GPIO_ACTIVE_HIGH>;
+			label = "LOAD_4";
+		};
+		load5: load_5 {
+			gpios = <&gpiod 8 GPIO_ACTIVE_HIGH>;
+			label = "LOAD_5";
+		};
+		load6: load_6 {
+			gpios = <&gpiod 7 GPIO_ACTIVE_HIGH>;
+			label = "LOAD_6";
+		};
+		load7: load_7 {
+			gpios = <&gpiod 13 GPIO_ACTIVE_HIGH>;
+			label = "LOAD_7";
+		};
+		load8: load_8 {
+			gpios = <&gpiod 12 GPIO_ACTIVE_HIGH>;
+			label = "LOAD_8";
+		};
+		load9: load_9 {
+			gpios = <&gpiod 11 GPIO_ACTIVE_HIGH>;
+			label = "LOAD_9";
+		};
+		load10: load_10 {
+			gpios = <&gpiod 10 GPIO_ACTIVE_HIGH>;
+			label = "LOAD_10";
+		};
+		load11: load_11 {
+			gpios = <&gpiod 15 GPIO_ACTIVE_HIGH>;
+			label = "LOAD_11";
+		};
+		load12: load_12 {
+			gpios = <&gpiod 14 GPIO_ACTIVE_HIGH>;
+			label = "LOAD_12";
+		};
+	};
+
+	motor_switches {
+		compatible = "gpio-leds";
+
+		motor1: motor_1 {
+			gpios = <&gpioc 12 GPIO_ACTIVE_HIGH>;
+			label = "MOTOR_1_12V";
+		};
+		motor2: motor_2 {
+			gpios = <&gpioc 11 GPIO_ACTIVE_HIGH>;
+			label = "MOTOR_2_12V";
+		};
+		motor3: motor_3 {
+			gpios = <&gpioc 10 GPIO_ACTIVE_HIGH>;
+			label = "MOTOR_3_12V";
+		};
+		motor4: motor_4 {
+			gpios = <&gpioc 9 GPIO_ACTIVE_HIGH>;
+			label = "MOTOR_4_12V";
+		};
+	};
+};
+
+/* Remap LPUART1 to PA2 (TX) / PA3 (RX) — PC0/PC1 are used for I2C3 */
+&pinctrl {
+	lpuart1_tx_pa2: lpuart1_tx_pa2 {
+		pinmux = <STM32_PINMUX('A', 2, AF8)>;
+	};
+
+	lpuart1_rx_pa3: lpuart1_rx_pa3 {
+		pinmux = <STM32_PINMUX('A', 3, AF8)>;
+	};
+
+	i2c3_scl_pc0: i2c3_scl_pc0 {
+		pinmux = <STM32_PINMUX('C', 0, AF4)>;
+		drive-open-drain;
+		bias-pull-up;
+	};
+
+	i2c3_sda_pc1: i2c3_sda_pc1 {
+		pinmux = <STM32_PINMUX('C', 1, AF4)>;
+		drive-open-drain;
+		bias-pull-up;
+	};
+};
+
+&lpuart1 {
+	pinctrl-0 = <&lpuart1_tx_pa2 &lpuart1_rx_pa3>;
+};
+
+/*
+ * I2C3 on PC0/PC1 — 3x INA3221 (9 channels)
+ *
+ * INA3221 addresses (A0 pin):
+ *   GND = 0x40, VS = 0x41, SDA = 0x42, SCL = 0x43
+ *
+ * TODO: verify addresses match your A0 strapping
+ * TODO: set shunt-resistors to actual values (units: mOhm)
+ */
+&i2c3 {
+	status = "okay";
+	pinctrl-0 = <&i2c3_scl_pc0 &i2c3_sda_pc1>;
+	pinctrl-names = "default";
+	clock-frequency = <100000>;
+
+	ina_bus1_0: ina3221@40 {
+		compatible = "ti,ina3221";
+		reg = <0x40>;
+		shunt-resistors = <10 10 10>;
+		enable-channel = <1 1 1>;
+	};
+
+	ina_bus1_1: ina3221@41 {
+		compatible = "ti,ina3221";
+		reg = <0x41>;
+		shunt-resistors = <10 10 10>;
+		enable-channel = <1 1 1>;
+	};
+
+	ina_bus1_2: ina3221@42 {
+		compatible = "ti,ina3221";
+		reg = <0x42>;
+		shunt-resistors = <10 10 10>;
+		enable-channel = <1 1 1>;
+	};
+};
+
+/*
+ * I2C1 on PB6/PB7 (already enabled in board DTS) — 4x INA3221 (12 channels)
+ *
+ * TODO: verify addresses match your A0 strapping
+ * TODO: set shunt-resistors to actual values (units: mOhm)
+ */
+&i2c1 {
+	ina_bus2_0: ina3221@40 {
+		compatible = "ti,ina3221";
+		reg = <0x40>;
+		shunt-resistors = <10 10 10>;
+		enable-channel = <1 1 1>;
+	};
+
+	ina_bus2_1: ina3221@41 {
+		compatible = "ti,ina3221";
+		reg = <0x41>;
+		shunt-resistors = <10 10 10>;
+		enable-channel = <1 1 1>;
+	};
+
+	ina_bus2_2: ina3221@42 {
+		compatible = "ti,ina3221";
+		reg = <0x42>;
+		shunt-resistors = <10 10 10>;
+		enable-channel = <1 1 1>;
+	};
+
+	ina_bus2_3: ina3221@43 {
+		compatible = "ti,ina3221";
+		reg = <0x43>;
+		shunt-resistors = <10 10 10>;
+		enable-channel = <1 1 1>;
+	};
+};

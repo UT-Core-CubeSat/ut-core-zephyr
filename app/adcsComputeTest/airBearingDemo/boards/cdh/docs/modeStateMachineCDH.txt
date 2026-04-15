@@ -1,0 +1,11 @@
+States: BOOT → SAFE ↔ IDLE ↔ NOMINAL ↔ SCIENCE ↔ LOW_POWER
+Events:
+  E1: self-check pass
+  E2: ground SET_MODE(...)
+  E3: safing_trigger (low V / high T / fault budget)
+  E4: comms_lost (no beacons ack / no EPS ping)
+  E5: battery_recovered & thermal_ok
+Guards:
+  Gp: power margin ok (EPS SOH)
+  Gt: thermal ok
+  Gc: comms ok

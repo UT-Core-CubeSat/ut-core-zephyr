@@ -1,0 +1,53 @@
+# Kconfig for Orion B16 GNSS module
+
+config ORION_B16
+	bool "Orion B16 GNSS Driver"
+	default y
+	depends on SERIAL && UART_INTERRUPT_DRIVEN
+	help
+	  Enable the Orion B16 (SkyTraq) GNSS driver.
+	  Provides binary protocol parsing, command building,
+	  and a high-level API for position/velocity/time data.
+
+if ORION_B16
+
+config ORION_B16_SIMULATOR
+	bool "Orion B16 GNSS Simulator"
+	default n
+	help
+	  Include the Orion B16 GNSS simulator module.
+	  This simulates a GNSS receiver on a second UART,
+	  useful for testing without hardware.
+
+config ORION_B16_LOG_LEVEL
+	int "Orion B16 log level"
+	default 3
+	range 0 4
+	help
+	  Log level for the Orion B16 driver modules.
+	  0=OFF, 1=ERR, 2=WRN, 3=INF, 4=DBG
+
+config ORION_B16_UPDATE_RATE
+	int "Default position update rate (Hz)"
+	default 1
+	range 1 50
+	help
+	  Default position update rate in Hz.
+	  Valid values: 1, 2, 4, 5, 8, 10, 20, 25, 40, 50.
+	  Higher rates require higher baud rates.
+
+config ORION_B16_BAUD_RATE
+	int "UART baud rate"
+	default 115200
+	help
+	  Baud rate for the UART connection to the Orion B16.
+	  Common values: 9600, 38400, 57600, 115200, 230400.
+
+config ORION_B16_UART_DEV_NAME
+	string "UART device name"
+	default "UART_1"
+	help
+	  Zephyr UART device name for the Orion B16 connection.
+	  Must match your board's devicetree configuration.
+
+endif # ORION_B16
