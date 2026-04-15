@@ -1,0 +1,83 @@
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/pinctrl/stm32-pinctrl.h>
+#include <zephyr/dt-bindings/pwm/pwm.h>
+
+/ {
+	pins {
+		compatible = "gpio-leds";
+
+		led0: led_0 {
+			gpios = <&gpioc 13 GPIO_ACTIVE_HIGH>;
+			label = "LED0_PC13";
+		};
+
+		led1: led_1 {
+			gpios = <&gpiod 15 GPIO_ACTIVE_HIGH>;
+			label = "LED1_PD15";
+		};
+	};
+
+	aliases {
+		/delete-property/ led2;
+	};
+
+	chosen {
+		zephyr,console = &usart3;
+	};
+
+	zephyr,user {
+		/* Hall sensors */
+		hall-a-gpios = <&gpiod 0 GPIO_ACTIVE_HIGH>;
+		hall-b-gpios = <&gpiod 1 GPIO_ACTIVE_HIGH>;
+		hall-c-gpios = <&gpiod 3 GPIO_ACTIVE_HIGH>;
+
+		/* Driver safety/control */
+		fault-gpios = <&gpioe 0 GPIO_ACTIVE_LOW>;
+		kill-gpios  = <&gpioe 4 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+
+		/* Separate phase enables */
+		en-c-gpios = <&gpiob 10 GPIO_ACTIVE_HIGH>;
+		en-a-gpios = <&gpiob 12  GPIO_ACTIVE_HIGH>;
+		en-b-gpios = <&gpioa 10 GPIO_ACTIVE_HIGH>;
+	};
+};
+
+&pinctrl {
+	tim4_ch1_pd12: tim4_ch1_pd12 {
+		pinmux = <STM32_PINMUX('D', 12, AF2)>;
+	};
+
+	tim4_ch2_pd13: tim4_ch2_pd13 {
+		pinmux = <STM32_PINMUX('D', 13, AF2)>;
+	};
+
+	tim4_ch3_pd14: tim4_ch3_pd14 {
+		pinmux = <STM32_PINMUX('D', 14, AF2)>;
+	};
+
+	usart3_tx_pc10: usart3_tx_pc10 {
+		pinmux = <STM32_PINMUX('C', 10, AF7)>;
+	};
+
+	usart3_rx_pc11: usart3_rx_pc11 {
+		pinmux = <STM32_PINMUX('C', 11, AF7)>;
+	};
+};
+
+&usart3 {
+	status = "okay";
+	current-speed = <115200>;
+	pinctrl-0 = <&usart3_tx_pc10 &usart3_rx_pc11>;
+	pinctrl-names = "default";
+};
+
+&timers4 {
+	status = "okay";
+	st,prescaler = <0>;
+
+	pwm4: pwm {
+		status = "okay";
+		pinctrl-0 = <&tim4_ch1_pd12 &tim4_ch2_pd13 &tim4_ch3_pd14>;
+		pinctrl-names = "default";
+	};
+};

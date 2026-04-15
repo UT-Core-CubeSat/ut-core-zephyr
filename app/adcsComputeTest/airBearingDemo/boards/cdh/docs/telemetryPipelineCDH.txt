@@ -1,0 +1,10 @@
+[Producers] → [TLM Ring (NVM)] → [Downlink Service]
+  Producers:
+    • periodic SOH (CDH)
+    • pass-through SOH (EPS/ADCS/COMM via CAN)
+    • event logs (faults, mode transitions)
+  Ring:
+    • [len|crc|record] variable-length append (wrap-aware)
+  Downlink:
+    • on radio idle or on REQ_TLM_DUMP
+    • packetize chunks ≤ RADIO_MAX_FRAME with record boundaries
