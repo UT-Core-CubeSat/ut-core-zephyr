@@ -1,124 +1,53 @@
+#include <zephyr/dt-bindings/pwm/pwm.h>
+#include <zephyr/dt-bindings/pinctrl/stm32-pinctrl.h>
+
 /*
- * solar_conglomerate.overlay
+ * Solarconglomerator PWM overlay — STM32U5A5
  *
- * Overlay for the UT-CORE Solar Conglomerate (magnetorquer controller).
- *
- * Adds:
- *   - TIM3 PWM outputs on PC2 (CH3) and PC3 (CH4) for magnetorquer
- *     channels 0 and 1 (true duty-cycle control).
- *   - GPIO definitions for PC4 and PC5 (magnetorquer channels 2 and 3)
- *     which lack timer AFs on the STM32U5A5 and are driven on/off only.
- *   - LED aliases removed (this board has no user LEDs).
- *
- * Apply with:  west build … -- -DDTC_OVERLAY_FILE=solar_conglomerate.overlay
+ * PC5 = TIM1_CH4N (AF1) — complementary, needs MOE+CC4NE in code
+ * PC6 = TIM3_CH1  (AF2)
+ * PA7 = TIM3_CH2  (AF2)
+ * PC9 = TIM3_CH4  (AF2)
  */
 
-/* ========================= PIN CONTROL ========================= */
-
 &pinctrl {
-	/*
-	 * TIM3 channel 3 → PC2 (AF2)
-	 * TIM3 channel 4 → PC3 (AF2)
-	 */
-	tim3_ch3_pc2: tim3_ch3_pc2 {
-		pinmux = <STM32_PINMUX('C', 2, AF2)>;
+	/* TIM1 complementary output */
+	tim1_ch4n_pc5: tim1_ch4n_pc5 {
+		pinmux = <STM32_PINMUX('C', 5, AF1)>;
 	};
 
-	tim3_ch4_pc3: tim3_ch4_pc3 {
-		pinmux = <STM32_PINMUX('C', 3, AF2)>;
+	/* TIM3 channels */
+	tim3_ch1_pc6: tim3_ch1_pc6 {
+		pinmux = <STM32_PINMUX('C', 6, AF2)>;
+	};
+
+	tim3_ch2_pa7: tim3_ch2_pa7 {
+		pinmux = <STM32_PINMUX('A', 7, AF2)>;
+	};
+
+	tim3_ch4_pc9: tim3_ch4_pc9 {
+		pinmux = <STM32_PINMUX('C', 9, AF2)>;
 	};
 };
 
-/* ========================= TIMER 3 — PWM ========================= */
-
-&timers3 {
+&timers1 {
 	status = "okay";
-	st,prescaler = <0>;   /* No pre-scale; let PWM period set frequency */
+	st,prescaler = <0>;
 
-	mtq_pwm_tim3: pwm {
+	pwm1: pwm {
 		status = "okay";
-		pinctrl-0 = <&tim3_ch3_pc2 &tim3_ch4_pc3>;
+		pinctrl-0 = <&tim1_ch4n_pc5>;
 		pinctrl-names = "default";
 	};
 };
 
-/* ========================= PWM CONSUMER NODES ========================= */
-/*
- * These "pwm-leds" nodes give each magnetorquer channel a DT label so
- * main.c can use PWM_DT_SPEC_GET() for clean, zero-cost lookup.
- *
- * The `pwms` property format is: <&pwm_provider  channel  period_ns  flags>
- *
- * Channels 0 and 1 use real PWM (TIM3 CH3/CH4 — Zephyr zero-indexes,
- * so TIM3_CH3 = channel 2 in the pwms property, TIM3_CH4 = channel 3).
- *
- * Channels 2 and 3 (PC4/PC5) have no timer AF on STM32U5A5.
- * main.c detects the missing nodes and falls back to GPIO control.
- */
+&timers3 {
+	status = "okay";
+	st,prescaler = <0>;
 
-/ {
-	mtq_pwm_outputs {
-		compatible = "pwm-leds";
-
-		mtq_pwm0: mtq_pwm_0 {
-			/* PC2 — TIM3 channel 3 (zero-indexed = 2), 20 kHz period */
-			pwms = <&mtq_pwm_tim3 3 50000 0>;
-			label = "MTQ0_PC2";
-		};
-
-		mtq_pwm1: mtq_pwm_1 {
-			/* PC3 — TIM3 channel 4 (zero-indexed = 3), 20 kHz period */
-			pwms = <&mtq_pwm_tim3 4 50000 0>;
-			label = "MTQ1_PC3";
-		};
-
-		/*
-		 * MTQ channels 2 and 3 (PC4, PC5) — no timer AF available.
-		 * They are driven as plain GPIO by main.c.  We define them
-		 * here as gpio-leds for documentation but main.c does NOT
-		 * attempt PWM_DT_SPEC_GET on these.
-		 */
-	};
-
-	/*
-	 * GPIO-only magnetorquer pins (PC4, PC5).
-	 * main.c uses DEVICE_DT_GET(DT_NODELABEL(gpioc)) + pin number
-	 * to drive these when PWM is unavailable.
-	 */
-	mtq_gpio_outputs {
-		compatible = "gpio-leds";
-
-		mtq_gpio2: mtq_gpio_2 {
-			gpios = <&gpioc 4 GPIO_ACTIVE_HIGH>;
-			label = "MTQ2_PC4";
-		};
-
-		mtq_gpio3: mtq_gpio_3 {
-			gpios = <&gpioc 5 GPIO_ACTIVE_HIGH>;
-			label = "MTQ3_PC5";
-		};
+	pwm3: pwm {
+		status = "okay";
+		pinctrl-0 = <&tim3_ch1_pc6 &tim3_ch2_pa7 &tim3_ch4_pc9>;
+		pinctrl-names = "default";
 	};
 };
-
-/* ========================= REMOVE CDH-SPECIFIC NODES ========================= */
-/*
- * The base DTS defines LEDs on PC13-PC15 for CDH.  This board doesn't
- * populate those LEDs, so disable them to avoid GPIO conflicts.
- *
- * If LED aliases are needed later, re-define them in this overlay.
- */
-
-/* ========================= FDCAN1 ========================= */
-/*
- * FDCAN1 configuration is inherited from the base board DTS.
- * No changes needed — PA11/PA12, 500 kbit/s, PLL1_Q kernel clock.
- */
-
-/* ========================= I2C1 ========================= */
-/*
- * I2C1 is inherited and kept enabled — the solar conglomerate board
- * may have temperature sensors or other I2C peripherals on the bus.
- * Disable here if the board has no I2C devices to save power:
- *
- *   &i2c1 { status = "disabled"; };
- */
