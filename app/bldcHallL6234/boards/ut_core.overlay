@@ -26,23 +26,76 @@
 	};
 
 	zephyr,user {
-		/* Hall sensors */
+		/* Motor 1 — Hall + enables */
 		hall-a-gpios = <&gpiod 0 GPIO_ACTIVE_HIGH>;
 		hall-b-gpios = <&gpiod 1 GPIO_ACTIVE_HIGH>;
 		hall-c-gpios = <&gpiod 3 GPIO_ACTIVE_HIGH>;
 
 		/* Driver safety/control */
 		fault-gpios = <&gpioe 0 GPIO_ACTIVE_LOW>;
-		kill-gpios  = <&gpioe 4 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+		/*
+		 * KILL (PE4), active-high: GPIO_PULL_DOWN weakly idles the pin at GND
+		 * when nothing external is driving it (de-asserted / open).
+		 */
+		kill-gpios = <&gpioe 4 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
 
-		/* Separate phase enables */
+		en-a-gpios = <&gpiob 12 GPIO_ACTIVE_HIGH>;
 		en-c-gpios = <&gpiob 10 GPIO_ACTIVE_HIGH>;
-		en-a-gpios = <&gpiob 12  GPIO_ACTIVE_HIGH>;
 		en-b-gpios = <&gpioa 10 GPIO_ACTIVE_HIGH>;
+
+		/*
+		 * Motor 2 — TIM3: PWMA PB4 (CH1), PWMB PB1 (CH4), PWMC PB0 (CH3), AF2.
+		 * Conflicts with board SPI2 (PB13/15) and SPI CS on PB4 — SPI2 disabled below.
+		 */
+		m2-hall-a-gpios = <&gpiod 4 GPIO_ACTIVE_HIGH>;
+		m2-hall-b-gpios = <&gpiod 5 GPIO_ACTIVE_HIGH>;
+		m2-hall-c-gpios = <&gpiod 6 GPIO_ACTIVE_HIGH>;
+		m2-en-a-gpios = <&gpiob 8 GPIO_ACTIVE_HIGH>;
+		m2-en-b-gpios = <&gpiob 15 GPIO_ACTIVE_HIGH>;
+		m2-en-c-gpios = <&gpiob 13 GPIO_ACTIVE_HIGH>;
+
+		/*
+		 * Motor 3 — TIM8: PWMA PC8 (CH3), PWMB PC7 (CH2), PWMC PC6 (CH1), AF3.
+		 */
+		m3-hall-a-gpios = <&gpiod 7 GPIO_ACTIVE_HIGH>;
+		m3-hall-b-gpios = <&gpiod 8 GPIO_ACTIVE_HIGH>;
+		m3-hall-c-gpios = <&gpiod 9 GPIO_ACTIVE_HIGH>;
+		m3-en-a-gpios = <&gpiod 11 GPIO_ACTIVE_HIGH>;
+		m3-en-b-gpios = <&gpioc 12 GPIO_ACTIVE_HIGH>;
+		m3-en-c-gpios = <&gpioc 9 GPIO_ACTIVE_HIGH>;
+
+		/*
+		 * Motor 4 — TIM1: PWMA PE13 (CH3), PWMB PE14 (CH4), PWMC PE11 (CH2), AF1.
+		 * Halls on GPIOE (separate callback from PD halls).
+		 *
+		 * NOTE: STM32 EXTI line N connects to pin N on ONE port only.
+		 * M3 uses PD8/PD9 (lines 8–9); M4 uses PE8/PE9 (same line numbers).
+		 * With both enabled, EXTI8/EXTI9 routing conflicts — irq config may
+		 * fail (see boot WARN). Rewire halls or disable M3 or M4 in this overlay.
+		 */
+		m4-hall-a-gpios = <&gpioe 8 GPIO_ACTIVE_HIGH>;
+		m4-hall-b-gpios = <&gpioe 9 GPIO_ACTIVE_HIGH>;
+		m4-hall-c-gpios = <&gpioe 10 GPIO_ACTIVE_HIGH>;
+		m4-en-a-gpios = <&gpiob 9 GPIO_ACTIVE_HIGH>;
+		m4-en-b-gpios = <&gpiob 5 GPIO_ACTIVE_HIGH>;
+		m4-en-c-gpios = <&gpiob 14 GPIO_ACTIVE_HIGH>;
 	};
 };
 
 &pinctrl {
+	/* TIM3 motor 2 PWM */
+	tim3_ch1_pb4: tim3_ch1_pb4 {
+		pinmux = <STM32_PINMUX('B', 4, AF2)>;
+	};
+
+	tim3_ch4_pb1: tim3_ch4_pb1 {
+		pinmux = <STM32_PINMUX('B', 1, AF2)>;
+	};
+
+	tim3_ch3_pb0: tim3_ch3_pb0 {
+		pinmux = <STM32_PINMUX('B', 0, AF2)>;
+	};
+
 	tim4_ch1_pd12: tim4_ch1_pd12 {
 		pinmux = <STM32_PINMUX('D', 12, AF2)>;
 	};
@@ -62,6 +115,40 @@
 	usart3_rx_pc11: usart3_rx_pc11 {
 		pinmux = <STM32_PINMUX('C', 11, AF7)>;
 	};
+
+	adc1_in1_pc0: adc1_in1_pc0 {
+		pinmux = <STM32_PINMUX('C', 0, ANALOG)>;
+	};
+
+	adc1_in2_pc1: adc1_in2_pc1 {
+		pinmux = <STM32_PINMUX('C', 1, ANALOG)>;
+	};
+
+	/* TIM8 motor 3 PWM — CH1 PC6, CH2 PC7, CH3 PC8 */
+	tim8_ch1_pc6: tim8_ch1_pc6 {
+		pinmux = <STM32_PINMUX('C', 6, AF3)>;
+	};
+
+	tim8_ch2_pc7: tim8_ch2_pc7 {
+		pinmux = <STM32_PINMUX('C', 7, AF3)>;
+	};
+
+	tim8_ch3_pc8: tim8_ch3_pc8 {
+		pinmux = <STM32_PINMUX('C', 8, AF3)>;
+	};
+
+	/* TIM1 motor 4 PWM — CH2 PE11, CH3 PE13, CH4 PE14 */
+	tim1_ch2_pe11: tim1_ch2_pe11 {
+		pinmux = <STM32_PINMUX('E', 11, AF1)>;
+	};
+
+	tim1_ch3_pe13: tim1_ch3_pe13 {
+		pinmux = <STM32_PINMUX('E', 13, AF1)>;
+	};
+
+	tim1_ch4_pe14: tim1_ch4_pe14 {
+		pinmux = <STM32_PINMUX('E', 14, AF1)>;
+	};
 };
 
 &usart3 {
@@ -71,6 +158,74 @@
 	pinctrl-names = "default";
 };
 
+&clk_msis {
+	status = "okay";
+	msi-range = <4>;  /* 4 MHz (default) */
+	msi-pll-mode;
+};
+
+&pll1 {
+	div-m = <1>;
+	mul-n = <24>;
+	div-q = <2>;
+	div-r = <2>;
+	clocks = <&clk_msis>;
+	status = "okay";
+};
+
+&rcc {
+	clocks = <&pll1>;
+	clock-frequency = <DT_FREQ_M(48)>;
+	ahb-prescaler = <1>;
+	apb1-prescaler = <1>;
+	apb2-prescaler = <1>;
+	apb3-prescaler = <1>;
+};
+
+&gpioe {
+	status = "okay";
+	/*
+	 * PE4 = KILL (see zephyr,user kill-gpios): internal pull-down is requested
+	 * there so the line reads inactive (low) when un-driven.
+	 */
+};
+
+&adc1 {
+	status = "okay";
+	pinctrl-0 = <&adc1_in1_pc0 &adc1_in2_pc1>;
+	pinctrl-names = "default";
+	st,adc-prescaler = <4>;
+};
+
+/*
+ * Motor 2 pins share SPI2 (PB13 SCK, PB15 MOSI, PB4 CS). This sample disables SPI2.
+ */
+&spi2 {
+	status = "disabled";
+};
+
+&timers1 {
+	status = "okay";
+	st,prescaler = <0>;
+
+	pwm1: pwm {
+		status = "okay";
+		pinctrl-0 = <&tim1_ch3_pe13 &tim1_ch4_pe14 &tim1_ch2_pe11>;
+		pinctrl-names = "default";
+	};
+};
+
+&timers3 {
+	status = "okay";
+	st,prescaler = <0>;
+
+	pwm3: pwm {
+		status = "okay";
+		pinctrl-0 = <&tim3_ch1_pb4 &tim3_ch4_pb1 &tim3_ch3_pb0>;
+		pinctrl-names = "default";
+	};
+};
+
 &timers4 {
 	status = "okay";
 	st,prescaler = <0>;
@@ -78,6 +233,17 @@
 	pwm4: pwm {
 		status = "okay";
 		pinctrl-0 = <&tim4_ch1_pd12 &tim4_ch2_pd13 &tim4_ch3_pd14>;
+		pinctrl-names = "default";
+	};
+};
+
+&timers8 {
+	status = "okay";
+	st,prescaler = <0>;
+
+	pwm8: pwm {
+		status = "okay";
+		pinctrl-0 = <&tim8_ch3_pc8 &tim8_ch2_pc7 &tim8_ch1_pc6>;
 		pinctrl-names = "default";
 	};
 };

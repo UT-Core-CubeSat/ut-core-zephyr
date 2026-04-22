@@ -1,8 +1,0 @@
-# MSVC build artifacts
-*.ilk
-*.pdb
-
-# Other common C++ build files you likely want to exclude
-*.obj
-*.exe
-*.csv
