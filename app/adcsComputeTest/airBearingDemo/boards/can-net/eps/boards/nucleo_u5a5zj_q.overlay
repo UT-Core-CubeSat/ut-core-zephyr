@@ -1,2 +1,0 @@
-/ { chosen { zephyr,canbus = &fdcan1; }; };
-&fdcan1 { status = "okay"; };
