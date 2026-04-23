@@ -211,27 +211,31 @@ namespace Param {
             inline const Vector3 B_ref = Vector3{static_cast<Real>(1.0), static_cast<Real>(1.0), static_cast<Real>(1.0)}.normalized();
 
             // Measurement validity gates
-            constexpr Real accel_min_norm = static_cast<Real>(0.1);
-            constexpr Real mag_min_norm = static_cast<Real>(1e-9);
+            // accel: expect ~9.8 m/s^2 at rest; reject obviously bad reads.
+            // mag:   driver outputs Tesla; Earth field is ~25-65 uT; reject < 15 uT.
+            constexpr Real accel_min_norm = static_cast<Real>(5.0);
+            constexpr Real mag_min_norm = static_cast<Real>(1.5e-5);
 
-            // Initial gyro bias estimate [deg/s]
+            // Fallback gyro bias [deg/s] used only during the observer's pre-init window;
+            // the TRIAD self-init in ObserverClass overrides this with the current
+            // session's measured static mean (~2 s average).
             inline const Vector3 beta_gyro_deg_s = Vector3{
-                static_cast<Real>(0.02), static_cast<Real>(0.02), static_cast<Real>(0.02)};
+                static_cast<Real>(-0.050), static_cast<Real>(-0.216), static_cast<Real>(-0.242)};
 
-            // Gyro white noise sigma [deg/s]
+            // Gyro white noise sigma [deg/s]  (measured static std, sensor_capture_20260422)
             inline const Vector3 sigma_gyro_deg_s = Vector3{
-                static_cast<Real>(0.1), static_cast<Real>(0.1), static_cast<Real>(0.1)};
+                static_cast<Real>(0.202), static_cast<Real>(0.161), static_cast<Real>(0.068)};
 
             // Gyro bias random walk sigma [deg/s]
             inline const Vector3 sigma_bias_walk_deg_s = Vector3{
                 static_cast<Real>(0.001), static_cast<Real>(0.001), static_cast<Real>(0.001)};
 
             // Gyro bias correlation time [s]
-            constexpr Real tau_bias = static_cast<Real>(3600.0);
+            constexpr Real tau_bias = static_cast<Real>(1800.0);
 
-            // Initial covariance sigmas
-            constexpr Real p0_angle_sigma_deg = static_cast<Real>(8.0); // 5
-            constexpr Real p0_bias_sigma_deg_s = static_cast<Real>(0.3); // 0.1
+            // Initial covariance sigmas (post-TRIAD: attitude ~2deg, bias ~0.05 deg/s)
+            constexpr Real p0_angle_sigma_deg = static_cast<Real>(2.0); // was 8.0
+            constexpr Real p0_bias_sigma_deg_s = static_cast<Real>(0.05); // was 0.3
 
             // Star tracker/QUEST settings
             constexpr Real sigma_star_arcsec = static_cast<Real>(100.0); // 100
@@ -239,9 +243,12 @@ namespace Param {
             constexpr Real T_star = static_cast<Real>(0.5); // 0.5
             constexpr Real T_quest = static_cast<Real>(0.5); // 0.5
 
-            // MEKF vector measurement covariance (unit-vector residual variance)
-            constexpr Real R_accel_var = static_cast<Real>(5e-6); // 1e-4
-            constexpr Real R_mag_var = static_cast<Real>(2e-4); // 1e-3
+            // MEKF vector measurement covariance (unit-vector residual variance).
+            // Indoor reality: accel sees vibration + small modeling error,
+            // mag sees 5-15% distortion from wiring/metal. Tight values caused
+            // the filter to over-trust mismatched references and oscillate.
+            constexpr Real R_accel_var = static_cast<Real>(5e-4); // was 5e-6
+            constexpr Real R_mag_var = static_cast<Real>(1e-2);   // was 2e-4
 
             // CSS parameter for sun vector synthesis
             constexpr Real I_max = static_cast<Real>(10e-3); // 10e-3

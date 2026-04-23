@@ -256,7 +256,7 @@ static void mag_apply_calibration(size_t sensor_idx, const int16_t raw[3], float
  *  I3G4250D      @ +/-245 dps: 8.75 mdps/LSB -> rad/s
  *  MLX90393      @ default gain: ~0.150 uT/LSB (XY), ~0.242 uT/LSB (Z)
  * =================================================================== */
-static constexpr float ACCEL_SCALE = 0.122e-3f * 9.80665f;  /* LSB -> m/s^2 */
+static constexpr float ACCEL_SCALE = 0.061e-3f * 9.80665f;  /* LSB -> m/s^2  (+/-2g mode, 0.061 mg/LSB) */
 static constexpr float GYRO_SCALE  = 8.75e-3f * (Math::PI / 180.0f);
 static constexpr float MAG_SCALE_XY = 0.150e-6f;
 static constexpr float MAG_SCALE_Z  = 0.242e-6f;
@@ -409,7 +409,7 @@ static void adcs_loop(void *, void *, void *)
 
 		ADCS::Command adcs_cmd;
 #if ADCS_AIR_BEARING_FORCE_DETUMBLE
-		adcs_cmd.mode = ADCS::MissionMode::SAFE;
+		adcs_cmd.mode = ADCS::MissionMode::OFF;
 #endif
 		ADCS::AdcsOutput out = adcs_core.update(sd, adcs_cmd);
 
@@ -440,6 +440,11 @@ static void adcs_loop(void *, void *, void *)
 			printk("[ADCS] B [T]: %.4e %.4e %.4e\n",
 			       (double)sd.magnetometer(0), (double)sd.magnetometer(1),
 			       (double)sd.magnetometer(2));
+			printk("[ADCS] a [m/s^2]: %.4e %.4e %.4e\n",
+			       (double)sd.accelerometer(0), (double)sd.accelerometer(1),
+			       (double)sd.accelerometer(2));
+			printk("[ADCS] gy_raw [rad/s]: %.4f %.4f %.4f\n",
+			       (double)sd.gyro(0), (double)sd.gyro(1), (double)sd.gyro(2));
 			/* %.6f hides sub-micro torques; dipole is [A·m²] not N·m */
 			printk("[ADCS] tau_w [N*m]: %.4e %.4e %.4e %.4e\n",
 			       (double)out.wheel_torque(0), (double)out.wheel_torque(1),
