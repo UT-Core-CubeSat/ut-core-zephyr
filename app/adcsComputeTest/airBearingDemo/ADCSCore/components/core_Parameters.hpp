@@ -214,21 +214,23 @@ namespace Param {
             // accel: expect ~9.8 m/s^2 at rest; reject obviously bad reads.
             // mag:   driver outputs Tesla; Earth field is ~25-65 uT; reject < 15 uT.
             constexpr Real accel_min_norm = static_cast<Real>(5.0);
-            constexpr Real mag_min_norm = static_cast<Real>(1.5e-5);
+            constexpr Real mag_min_norm = static_cast<Real>(3.0e-5);
 
             // Fallback gyro bias [deg/s] used only during the observer's pre-init window;
             // the TRIAD self-init in ObserverClass overrides this with the current
             // session's measured static mean (~2 s average).
             inline const Vector3 beta_gyro_deg_s = Vector3{
-                static_cast<Real>(-0.050), static_cast<Real>(-0.216), static_cast<Real>(-0.242)};
+                static_cast<Real>(-0.02744), static_cast<Real>(-0.21728), static_cast<Real>(-0.24858)};
 
             // Gyro white noise sigma [deg/s]  (measured static std, sensor_capture_20260422)
             inline const Vector3 sigma_gyro_deg_s = Vector3{
-                static_cast<Real>(0.202), static_cast<Real>(0.161), static_cast<Real>(0.068)};
+                static_cast<Real>(0.0672), static_cast<Real>(0.079139), static_cast<Real>(0.068928)};
 
             // Gyro bias random walk sigma [deg/s]
+            // Must be >0 — otherwise P_bias decays to zero (via F's Gauss-Markov term)
+            // and the filter stops tracking bias drift, causing slow attitude drift.
             inline const Vector3 sigma_bias_walk_deg_s = Vector3{
-                static_cast<Real>(0.001), static_cast<Real>(0.001), static_cast<Real>(0.001)};
+                static_cast<Real>(0.0005), static_cast<Real>(0.0005), static_cast<Real>(0.0005)};
 
             // Gyro bias correlation time [s]
             constexpr Real tau_bias = static_cast<Real>(1800.0);
@@ -247,8 +249,11 @@ namespace Param {
             // Indoor reality: accel sees vibration + small modeling error,
             // mag sees 5-15% distortion from wiring/metal. Tight values caused
             // the filter to over-trust mismatched references and oscillate.
-            constexpr Real R_accel_var = static_cast<Real>(5e-4); // was 5e-6
-            constexpr Real R_mag_var = static_cast<Real>(1e-2);   // was 2e-4
+            // Tilt anchor: tighter R_accel = filter snaps harder to true gravity
+            // (and re-estimates bias more aggressively via the cross-covariance).
+            // Safe to be tight now that TRIAD makes B_ref consistent at boot.
+            constexpr Real R_accel_var = static_cast<Real>(2e-6);
+            constexpr Real R_mag_var = static_cast<Real>(1e-3);
 
             // CSS parameter for sun vector synthesis
             constexpr Real I_max = static_cast<Real>(10e-3); // 10e-3
