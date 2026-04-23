@@ -214,7 +214,7 @@ namespace Param {
             // accel: expect ~9.8 m/s^2 at rest; reject obviously bad reads.
             // mag:   driver outputs Tesla; Earth field is ~25-65 uT; reject < 15 uT.
             constexpr Real accel_min_norm = static_cast<Real>(5.0);
-            constexpr Real mag_min_norm = static_cast<Real>(3.0e-5);
+            constexpr Real mag_min_norm = static_cast<Real>(1.0e-5);  // bench: mag fusion gives ~18 uT
 
             // Fallback gyro bias [deg/s] used only during the observer's pre-init window;
             // the TRIAD self-init in ObserverClass overrides this with the current

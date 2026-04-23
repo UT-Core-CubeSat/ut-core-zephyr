@@ -21,6 +21,11 @@ public:
     Scalar getLastMagInnovationNorm() const { return last_mag_innovation_norm; }
     Vector3 getLastAccelInnovation() const { return last_accel_innovation; }
     Vector3 getLastMagInnovation() const { return last_mag_innovation; }
+
+    // Warmup diagnostics (TRIAD self-init)
+    bool isRunning() const { return init_phase_ == InitPhase::Running; }
+    int  getInitSamplesCollected() const { return init_samples_collected_; }
+    static constexpr int getInitSampleTarget() { return kInitSampleTarget; }
     
 private:
     HelperFunctions helpers;
@@ -36,7 +41,7 @@ private:
     InitPhase init_phase_ = InitPhase::Collecting;
     static constexpr int kInitSampleTarget = 120;        // ~2 s @ 60 Hz
     static constexpr Scalar kInitMotionGateRad =
-            static_cast<Scalar>(0.03);                   // ~1.7 deg/s — reset accumulator if exceeded
+            static_cast<Scalar>(0.08);                   // ~4.6 deg/s — tolerates I3G4250D single-sample noise
     int init_samples_collected_ = 0;
     Vector3 init_accel_sum_ = Vector3::Zero();
     Vector3 init_gyro_sum_  = Vector3::Zero();
