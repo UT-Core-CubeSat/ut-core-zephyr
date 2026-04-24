@@ -257,7 +257,53 @@ static void mag_apply_calibration(size_t sensor_idx, const int16_t raw[3], float
  *  MLX90393      @ default gain: ~0.150 uT/LSB (XY), ~0.242 uT/LSB (Z)
  * =================================================================== */
 static constexpr float ACCEL_SCALE = 0.061e-3f * 9.80665f;  /* LSB -> m/s^2  (+/-2g mode, 0.061 mg/LSB) */
-static constexpr float GYRO_SCALE  = 8.75e-3f * (Math::PI / 180.0f);
+
+/* Per-sensor gyro scales (LSB -> rad/s). Nominal is 8.75 mdps/LSB for both
+ * (LSM6DSV @ +/-250 dps, I3G4250D @ +/-245 dps) but real-world scale factor
+ * error on these parts (and/or undocumented register-encoding quirks on the
+ * LSM6DSV variant) is far larger than the datasheet "1-3%" — calibration
+ * against a known -180 deg Z rotation showed each sensor over-reporting by
+ * 1.4x-2.3x, and with per-device spread. We correct each chip on each axis
+ * independently. Calibrate by rotating the board a precisely known angle
+ * about each body axis, integrating each sensor's output (MATLAB cumtrapz),
+ * and setting the correction = true_angle / measured_angle. */
+static constexpr float GYRO_LSB_RADPS = 8.75e-3f * (Math::PI / 180.0f);
+
+/* Per-device, per-axis correction factors (dimensionless), calibrated against
+ * +/-180 deg rotations about each body axis (short-window integrations, noise
+ * bleed minimized).  I3G pair reads near true; LSM pair reads ~2x high -- a
+ * strong indicator the LSM6DSV CTRL2_G actually selects a different full-scale
+ * range than the datasheet variant we assumed (likely +/-125 dps, which would
+ * halve real LSBs vs. the 8.75 mdps/LSB we apply).  Until the register write
+ * at lsm6dsv_init() is fixed, these runtime corrections compensate.
+ *
+ * Calibration integrations (absolute-value measured / 180 deg):
+ *            X            Y            Z
+ *   LSM0:  349.9 -> 0.5144 | 371.3 -> 0.4848 | 353.9 -> 0.5086
+ *   LSM1:  311.5 -> 0.5778 | 398.0 -> 0.4523 | 405.8 -> 0.4436
+ *   I3G0:  177.1 -> 1.0163 | 179.2 -> 1.0045 | 171.4 -> 1.0502
+ *   I3G1:  164.9 -> 1.0915 | 174.7 -> 1.0303 | 182.5 -> 0.9863
+ */
+static constexpr float GYRO_CORR_LSM0[3] = { 0.5144f, 0.4848f, 0.5086f };
+static constexpr float GYRO_CORR_LSM1[3] = { 0.5778f, 0.4523f, 0.4436f };
+static constexpr float GYRO_CORR_I3G0[3] = { 1.0163f, 1.0045f, 1.0502f };
+static constexpr float GYRO_CORR_I3G1[3] = { 1.0915f, 1.0303f, 0.9863f };
+
+/* Per-set enable flags for A/B testing — flip one off, rotate the board,
+ * and watch whether the observer's integrated attitude matches truth. */
+#ifndef GYRO_FUSE_LSM
+#define GYRO_FUSE_LSM 1
+#endif
+#ifndef GYRO_FUSE_I3G
+#define GYRO_FUSE_I3G 1
+#endif
+
+/* Print each sensor's converted gyro vector once every N cycles so you can
+ * see live disagreement between the two sets on rotation. Set to 0 to disable. */
+#ifndef GYRO_DIAG_EVERY
+#define GYRO_DIAG_EVERY 30
+#endif
+
 static constexpr float MAG_SCALE_XY = 0.150e-6f;
 static constexpr float MAG_SCALE_Z  = 0.242e-6f;
 
@@ -363,34 +409,71 @@ static void adcs_loop(void *, void *, void *)
 		 * (near-int16-max LSBs -> multi-rad/s spikes). Reject per-sensor outliers
 		 * before averaging so one bad frame can't poison the fused gyro. */
 		constexpr float GYRO_SANE_MAX = 5.0f;  /* rad/s; ~286 deg/s — far beyond bench use */
-		auto gyro_sane = [](const int16_t g[3]) -> bool {
+		auto gyro_sane_perdev = [](const int16_t raw[3], const float corr[3]) -> bool {
 			for (int ax = 0; ax < 3; ax++) {
-				float v = (float)g[ax] * GYRO_SCALE;
+				float v = (float)raw[ax] * GYRO_LSB_RADPS * corr[ax];
 				if (!(v >= -GYRO_SANE_MAX && v <= GYRO_SANE_MAX)) return false;
 			}
 			return true;
 		};
+		auto apply_perdev = [](float out[3], const int16_t raw[3], const float corr[3]) {
+			for (int ax = 0; ax < 3; ax++) {
+				out[ax] = (float)raw[ax] * GYRO_LSB_RADPS * corr[ax];
+			}
+		};
+
+		/* Per-sensor converted vectors [rad/s], useful for A/B disagreement diagnosis. */
+		float lsm_gyro_rps[2][3] = {{0,0,0},{0,0,0}};
+		float i3g_gyro_rps[2][3] = {{0,0,0},{0,0,0}};
 
 		float gyro_avg[3] = {0.0f, 0.0f, 0.0f};
 		int gyro_count = 0;
-		for (int i = 0; i < 2; i++) {
-			if (imu_ok[i] && gyro_sane(imu_gyro[i])) {
-				for (int ax = 0; ax < 3; ax++)
-					gyro_avg[ax] += (float)imu_gyro[i][ax] * GYRO_SCALE;
-				gyro_count++;
-			}
+#if GYRO_FUSE_LSM
+		if (imu_ok[0] && gyro_sane_perdev(imu_gyro[0], GYRO_CORR_LSM0)) {
+			apply_perdev(lsm_gyro_rps[0], imu_gyro[0], GYRO_CORR_LSM0);
+			for (int ax = 0; ax < 3; ax++) gyro_avg[ax] += lsm_gyro_rps[0][ax];
+			gyro_count++;
 		}
-		for (int i = 0; i < 2; i++) {
-			if (gyr_ok[i] && gyro_sane(gyr_raw[i])) {
-				for (int ax = 0; ax < 3; ax++)
-					gyro_avg[ax] += (float)gyr_raw[i][ax] * GYRO_SCALE;
-				gyro_count++;
-			}
+		if (imu_ok[1] && gyro_sane_perdev(imu_gyro[1], GYRO_CORR_LSM1)) {
+			apply_perdev(lsm_gyro_rps[1], imu_gyro[1], GYRO_CORR_LSM1);
+			for (int ax = 0; ax < 3; ax++) gyro_avg[ax] += lsm_gyro_rps[1][ax];
+			gyro_count++;
 		}
+#else
+		if (imu_ok[0] && gyro_sane_perdev(imu_gyro[0], GYRO_CORR_LSM0)) apply_perdev(lsm_gyro_rps[0], imu_gyro[0], GYRO_CORR_LSM0);
+		if (imu_ok[1] && gyro_sane_perdev(imu_gyro[1], GYRO_CORR_LSM1)) apply_perdev(lsm_gyro_rps[1], imu_gyro[1], GYRO_CORR_LSM1);
+#endif
+#if GYRO_FUSE_I3G
+		if (gyr_ok[0] && gyro_sane_perdev(gyr_raw[0], GYRO_CORR_I3G0)) {
+			apply_perdev(i3g_gyro_rps[0], gyr_raw[0], GYRO_CORR_I3G0);
+			for (int ax = 0; ax < 3; ax++) gyro_avg[ax] += i3g_gyro_rps[0][ax];
+			gyro_count++;
+		}
+		if (gyr_ok[1] && gyro_sane_perdev(gyr_raw[1], GYRO_CORR_I3G1)) {
+			apply_perdev(i3g_gyro_rps[1], gyr_raw[1], GYRO_CORR_I3G1);
+			for (int ax = 0; ax < 3; ax++) gyro_avg[ax] += i3g_gyro_rps[1][ax];
+			gyro_count++;
+		}
+#else
+		if (gyr_ok[0] && gyro_sane_perdev(gyr_raw[0], GYRO_CORR_I3G0)) apply_perdev(i3g_gyro_rps[0], gyr_raw[0], GYRO_CORR_I3G0);
+		if (gyr_ok[1] && gyro_sane_perdev(gyr_raw[1], GYRO_CORR_I3G1)) apply_perdev(i3g_gyro_rps[1], gyr_raw[1], GYRO_CORR_I3G1);
+#endif
 		if (gyro_count > 0) {
 			for (int ax = 0; ax < 3; ax++)
 				gyro_avg[ax] /= (float)gyro_count;
 		}
+
+#if GYRO_DIAG_EVERY > 0
+		if ((cycle % GYRO_DIAG_EVERY) == 0) {
+			printk("GYRO [rad/s] LSM0:%+6.3f %+6.3f %+6.3f | LSM1:%+6.3f %+6.3f %+6.3f | "
+			       "I3G0:%+6.3f %+6.3f %+6.3f | I3G1:%+6.3f %+6.3f %+6.3f | FUSED:%+6.3f %+6.3f %+6.3f\n",
+			       (double)lsm_gyro_rps[0][0], (double)lsm_gyro_rps[0][1], (double)lsm_gyro_rps[0][2],
+			       (double)lsm_gyro_rps[1][0], (double)lsm_gyro_rps[1][1], (double)lsm_gyro_rps[1][2],
+			       (double)i3g_gyro_rps[0][0], (double)i3g_gyro_rps[0][1], (double)i3g_gyro_rps[0][2],
+			       (double)i3g_gyro_rps[1][0], (double)i3g_gyro_rps[1][1], (double)i3g_gyro_rps[1][2],
+			       (double)gyro_avg[0], (double)gyro_avg[1], (double)gyro_avg[2]);
+		}
+#endif
 
 		float mag_avg[3] = {0.0f, 0.0f, 0.0f};
 		int mag_count = 0;

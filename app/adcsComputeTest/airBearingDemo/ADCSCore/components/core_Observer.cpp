@@ -82,15 +82,24 @@ void ObserverClass::updateWithGravity(const Vector3& accel_meas, Scalar dt) {
     // =====================================================================
     // MEKF correction using gravity vector (standard formulation)
     // =====================================================================
-    
+
     // Normalize measured acceleration (gravity direction in body)
     Scalar accel_norm = accel_meas.norm();
     if (accel_norm < accel_min_norm) {
         return;  // Skip update if acceleration too small
     }
-    
+
     // Measured "up" direction in body frame (normalized)
     Vector3 g_meas_body = accel_meas / accel_norm;
+
+    // Adaptive R: |accel| deviating from g means kinematic acceleration is
+    // present (rotating / moving the board). Lean on gyro during motion by
+    // inflating R_accel; keep it tight when truly at rest.
+    constexpr Scalar kG = static_cast<Scalar>(9.80665);
+    Scalar accel_err = std::abs(accel_norm - kG) / kG;       // fractional deviation
+    constexpr Scalar kMotionInflate = static_cast<Scalar>(400.0); // R scales up to R*(1+400*err^2)
+    Scalar R_scale = static_cast<Scalar>(1.0) + kMotionInflate * accel_err * accel_err;
+    Param::Matrix3 R_accel_effective = R_accel * R_scale;
     
     // Predicted "up" direction in body frame from current estimate
     Quat q_conj;
@@ -115,7 +124,7 @@ void ObserverClass::updateWithGravity(const Vector3& accel_meas, Scalar dt) {
     H(2,3) = 0; H(2,4) = 0; H(2,5) = 0;
     
     // Kalman gain: K = P * H' * (H * P * H' + R)^-1
-    Param::Matrix3 S_innov = H * P * H.transpose() + R_accel;
+    Param::Matrix3 S_innov = H * P * H.transpose() + R_accel_effective;
     Param::Matrix3 S_inv = Math::inverse3x3(S_innov);
 
     // Chi-square outlier rejection (~3σ, 3 dof). Catches table bumps / vibration spikes.
@@ -150,7 +159,7 @@ void ObserverClass::updateWithGravity(const Vector3& accel_meas, Scalar dt) {
     // Update covariance: Joseph form P = (I - K*H)*P*(I - K*H)^T + K*R*K^T
     Param::Matrix6 I6 = Param::Matrix6::Identity();
     Param::Matrix6 IKH = I6 - K * H;
-    P = IKH * P * IKH.transpose() + K * R_accel * K.transpose();
+    P = IKH * P * IKH.transpose() + K * R_accel_effective * K.transpose();
     P = static_cast<Scalar>(0.5) * (P + P.transpose());
 }
 
@@ -253,8 +262,12 @@ ObserverClass::StateVector ObserverClass::update(const Param::Vector13& measurem
     // 2. Correct with accelerometer (gravity vector)
     updateWithGravity(accel, dt);
 
-    // 3. Correct with magnetometer (magnetic field vector)
-    updateWithMagnetometer(mag_meas, dt);
+    // 3. Correct with magnetometer (magnetic field vector).
+    //    Disabled outside the Helmholtz cage: indoor field distortion drags
+    //    yaw to different equilibria after any large motion.
+    if (Param::Observer::use_magnetometer) {
+        updateWithMagnetometer(mag_meas, dt);
+    }
 
     // 4. Bias-corrected rate
     Param::Vector3 omega_b_hat = omega_gyro - beta_hat;
@@ -280,7 +293,7 @@ void ObserverClass::accumulateInitSample(const Vector3& accel,
         return;
     }
     if (accel.norm() < accel_min_norm) return;
-    if (mag.norm()   < mag_min_norm)   return;
+    if (Param::Observer::use_magnetometer && mag.norm() < mag_min_norm) return;
 
     init_accel_sum_ = init_accel_sum_ + accel;
     init_gyro_sum_  = init_gyro_sum_  + gyro;
@@ -297,15 +310,24 @@ void ObserverClass::initializeFromStatic() {
     // Static gyro mean → bias estimate (replaces hardcoded fallback).
     beta_hat = g_body_avg;
 
-    // TRIAD: build q_hat consistent with measured gravity + (arbitrary) heading axis.
     Vector3 a_body_unit = a_body_avg.normalized();
     Vector3 m_body_unit = m_body_avg.normalized();
-    q_hat = triadAccelMag(a_body_unit, m_body_unit, g_ref);
-    q_hat.normalize();
 
-    // Make B_ref consistent with the just-computed attitude so the very first
-    // mag update has zero innovation. quatRotate(q_hat, body) → inertial.
-    B_ref = helpers.quatRotate(q_hat, m_body_unit);
+    if (Param::Observer::use_magnetometer) {
+        // TRIAD: build q_hat consistent with measured gravity + measured heading.
+        q_hat = triadAccelMag(a_body_unit, m_body_unit, g_ref);
+        q_hat.normalize();
+        // B_ref consistent with the just-computed attitude so the first mag
+        // update has zero innovation. quatRotate(q_hat, body) → inertial.
+        B_ref = helpers.quatRotate(q_hat, m_body_unit);
+    } else {
+        // Mag fusion disabled (bench / no Helmholtz cage). Yaw is unobservable
+        // from accel alone, so pin yaw=0 and use a pure tilt quaternion derived
+        // from the measured gravity direction. This makes the boot pose the
+        // yaw reference; yaw will simply hold (no drift, no snap-back error).
+        q_hat = tiltQuatFromGravity(a_body_unit, g_ref);
+        q_hat.normalize();
+    }
 
     init_phase_ = InitPhase::Running;
 }
@@ -347,6 +369,43 @@ ObserverClass::Quat ObserverClass::triadAccelMag(const Vector3& a_body_unit,
         }
     }
     return dcmToQuat(R);
+}
+
+ObserverClass::Quat ObserverClass::tiltQuatFromGravity(const Vector3& a_body_unit,
+                                                        const Vector3& g_ref_inertial) {
+    // Shortest-arc quaternion q such that quatRotate(q_conj, g_ref) == a_body_unit
+    // (matches observer convention: q is inertial-from-body).
+    // Derivation: q rotates a_body into g_ref → axis = a × g, angle = acos(a·g).
+    Quat q;
+    Vector3 a = a_body_unit;
+    Vector3 g = g_ref_inertial.normalized();
+    Scalar d = a.dot(g);
+
+    if (d > static_cast<Scalar>(0.999999)) {
+        // Already aligned → identity
+        q(0) = static_cast<Scalar>(1.0);
+        q(1) = static_cast<Scalar>(0.0);
+        q(2) = static_cast<Scalar>(0.0);
+        q(3) = static_cast<Scalar>(0.0);
+        return q;
+    }
+    if (d < static_cast<Scalar>(-0.999999)) {
+        // Opposite → 180° about any axis orthogonal to g
+        Vector3 tmp = (std::abs(g(0)) < static_cast<Scalar>(0.9))
+                    ? Vector3{static_cast<Scalar>(1.0), static_cast<Scalar>(0.0), static_cast<Scalar>(0.0)}
+                    : Vector3{static_cast<Scalar>(0.0), static_cast<Scalar>(1.0), static_cast<Scalar>(0.0)};
+        Vector3 axis = g.cross(tmp).normalized();
+        q(0) = static_cast<Scalar>(0.0);
+        q(1) = axis(0); q(2) = axis(1); q(3) = axis(2);
+        return q;
+    }
+
+    Vector3 axis = a.cross(g);            // body a rotated to inertial g
+    Scalar w = static_cast<Scalar>(1.0) + d;
+    q(0) = w;
+    q(1) = axis(0); q(2) = axis(1); q(3) = axis(2);
+    q.normalize();
+    return q;
 }
 
 ObserverClass::Quat ObserverClass::dcmToQuat(const Param::Matrix3& R) {

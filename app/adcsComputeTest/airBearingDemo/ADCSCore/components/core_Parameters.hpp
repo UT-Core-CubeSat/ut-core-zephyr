@@ -210,6 +210,12 @@ namespace Param {
             inline const Vector3 g_ref = Vector3{static_cast<Real>(0.0), static_cast<Real>(0.0), static_cast<Real>(1.0)};
             inline const Vector3 B_ref = Vector3{static_cast<Real>(1.0), static_cast<Real>(1.0), static_cast<Real>(1.0)}.normalized();
 
+            // Magnetometer fusion master switch. Disable while bench-testing
+            // outside a Helmholtz cage — indoor field distortion causes yaw to
+            // drift to a different "rest" after any large board motion.
+            // Re-enable in the cage (or once a trusted B_ref is available).
+            constexpr bool use_magnetometer = false;
+
             // Measurement validity gates
             // accel: expect ~9.8 m/s^2 at rest; reject obviously bad reads.
             // mag:   driver outputs Tesla; Earth field is ~25-65 uT; reject < 15 uT.
@@ -230,10 +236,11 @@ namespace Param {
             // Must be >0 — otherwise P_bias decays to zero (via F's Gauss-Markov term)
             // and the filter stops tracking bias drift, causing slow attitude drift.
             inline const Vector3 sigma_bias_walk_deg_s = Vector3{
-                static_cast<Real>(0.0005), static_cast<Real>(0.0005), static_cast<Real>(0.0005)};
+                static_cast<Real>(0.003), static_cast<Real>(0.003), static_cast<Real>(0.003)};
 
             // Gyro bias correlation time [s]
-            constexpr Real tau_bias = static_cast<Real>(1800.0);
+            // Shorter = filter adapts bias faster to observed attitude residuals.
+            constexpr Real tau_bias = static_cast<Real>(600.0);
 
             // Initial covariance sigmas (post-TRIAD: attitude ~2deg, bias ~0.05 deg/s)
             constexpr Real p0_angle_sigma_deg = static_cast<Real>(2.0); // was 8.0
@@ -269,6 +276,7 @@ namespace Param {
 
         constexpr Real accel_min_norm = Knobs::accel_min_norm;
         constexpr Real mag_min_norm = Knobs::mag_min_norm;
+        constexpr bool use_magnetometer = Knobs::use_magnetometer;
 
         inline const Vector3 beta_gyro = Knobs::beta_gyro_deg_s * deg2rad;
         inline const Vector3 sigma_gyro = Knobs::sigma_gyro_deg_s * deg2rad;

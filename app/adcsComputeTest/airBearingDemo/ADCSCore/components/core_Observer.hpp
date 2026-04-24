@@ -54,6 +54,8 @@ private:
     static Quat triadAccelMag(const Vector3& a_body_unit,
                               const Vector3& m_body_unit,
                               const Vector3& g_ref_inertial);
+    static Quat tiltQuatFromGravity(const Vector3& a_body_unit,
+                                    const Vector3& g_ref_inertial);
     static Quat dcmToQuat(const Param::Matrix3& R);
 
     Quat last_q_star;
