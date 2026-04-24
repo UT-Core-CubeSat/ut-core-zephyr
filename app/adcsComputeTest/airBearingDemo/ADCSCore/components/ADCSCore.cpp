@@ -4,7 +4,7 @@
 namespace ADCS {
 
 Core::Core()
-    : observer_(), controller_(), first_update(true), last_time(static_cast<Param::TimeReal>(0.0)),
+    : observer_(), controller_(), last_time(static_cast<Param::TimeReal>(0.0)), first_update(true),
     workspace_meas_(Param::Vector13::Zero()), workspace_ref_(Param::Vector10::Zero()),
     bearing_mode_armed(false)
 {

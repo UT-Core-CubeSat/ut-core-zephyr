@@ -3,24 +3,24 @@
 
 // Constructor 
 ControllerNDI::ControllerNDI()
-    : // Initialize Members
+    : // Initialize Members — order matches declaration in core_ControllerNDI.hpp
     I(Param::Spacecraft::I),
-    I_wheel(Param::Actuators::I_wheel),
     S(Param::Actuators::S),
     S_pseudo(Param::Actuators::S_pseudo),
     N(Param::Actuators::N),
+    I_wheel(Param::Actuators::I_wheel),
     omega_w_max(Param::Actuators::omega_w_max),
     omega_w_min(Param::Actuators::omega_w_min),
     tau_w_max(Param::Actuators::tau_w_max),
     tau_w_min(Param::Actuators::tau_w_min),
     lambda_min_model(Param::Controller::lambda_min_model),
-    k_null(Param::Actuators::k_null),
+    x_m(StateVector::Zero()),
     k_desat(Param::Actuators::k_desat),
+    k_null(Param::Actuators::k_null),
     m_max(Param::Actuators::m_max),
     m_min(Param::Actuators::m_min),
     h_cg(Param::Apparatus::h_cg),
     m(Param::Spacecraft::mass),
-    x_m(StateVector::Zero()),
     is_saturated(false),
     accumulated_time(static_cast<Param::Real>(0.0)),
     desat_active(false),
@@ -472,8 +472,8 @@ ControllerNDI::RegOutput ControllerNDI::regularize_reference(const Param::Vector
         Scalar sin_half_th = sin(half_theta);
         Scalar half_theta_new = half_theta * sigma; 
 
-        Scalar w0 = sin(half_theta - half_theta_new) / (sin_half_th + static_cast<Scalar>(1e-12));
-        Scalar w1 = sin(half_theta_new) / (sin_half_th + static_cast<Scalar>(1e-12));
+        Scalar w0 = std::sin(half_theta - half_theta_new) / (sin_half_th + static_cast<Scalar>(1e-12));
+        Scalar w1 = std::sin(half_theta_new) / (sin_half_th + static_cast<Scalar>(1e-12));
         
         q_ref_eff = w0 * q_m + w1 * q_ref;
         q_ref_eff = q_ref_eff / q_ref_eff.norm();

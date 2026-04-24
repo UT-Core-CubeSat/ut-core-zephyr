@@ -256,7 +256,7 @@ static void mag_apply_calibration(size_t sensor_idx, const int16_t raw[3], float
  *  I3G4250D      @ +/-245 dps: 8.75 mdps/LSB -> rad/s
  *  MLX90393      @ default gain: ~0.150 uT/LSB (XY), ~0.242 uT/LSB (Z)
  * =================================================================== */
-static constexpr float ACCEL_SCALE = 0.122e-3f * 9.80665f;  /* LSB -> m/s^2 */
+static constexpr float ACCEL_SCALE = 0.061e-3f * 9.80665f;  /* LSB -> m/s^2  (+/-2g mode, 0.061 mg/LSB) */
 static constexpr float GYRO_SCALE  = 8.75e-3f * (Math::PI / 180.0f);
 static constexpr float MAG_SCALE_XY = 0.150e-6f;
 static constexpr float MAG_SCALE_Z  = 0.242e-6f;
@@ -275,6 +275,7 @@ static void adcs_loop(void *, void *, void *)
 {
 	int cycle = 0;
 	int64_t prev_time = k_uptime_get();
+	float gyro_norm_max_window = 0.0f;
 
 	while (1) {
 		int64_t now = k_uptime_get();
@@ -358,17 +359,29 @@ static void adcs_loop(void *, void *, void *)
 				accel_avg[ax] /= (float)accel_count;
 		}
 
+		/* I2C frame glitches occasionally pass a successful read but with corrupt bytes
+		 * (near-int16-max LSBs -> multi-rad/s spikes). Reject per-sensor outliers
+		 * before averaging so one bad frame can't poison the fused gyro. */
+		constexpr float GYRO_SANE_MAX = 5.0f;  /* rad/s; ~286 deg/s — far beyond bench use */
+		auto gyro_sane = [](const int16_t g[3]) -> bool {
+			for (int ax = 0; ax < 3; ax++) {
+				float v = (float)g[ax] * GYRO_SCALE;
+				if (!(v >= -GYRO_SANE_MAX && v <= GYRO_SANE_MAX)) return false;
+			}
+			return true;
+		};
+
 		float gyro_avg[3] = {0.0f, 0.0f, 0.0f};
 		int gyro_count = 0;
 		for (int i = 0; i < 2; i++) {
-			if (imu_ok[i]) {
+			if (imu_ok[i] && gyro_sane(imu_gyro[i])) {
 				for (int ax = 0; ax < 3; ax++)
 					gyro_avg[ax] += (float)imu_gyro[i][ax] * GYRO_SCALE;
 				gyro_count++;
 			}
 		}
 		for (int i = 0; i < 2; i++) {
-			if (gyr_ok[i]) {
+			if (gyr_ok[i] && gyro_sane(gyr_raw[i])) {
 				for (int ax = 0; ax < 3; ax++)
 					gyro_avg[ax] += (float)gyr_raw[i][ax] * GYRO_SCALE;
 				gyro_count++;
@@ -404,6 +417,12 @@ static void adcs_loop(void *, void *, void *)
 		sd.accelerometer = Math::Vec<3>{accel_avg[0], accel_avg[1], accel_avg[2]};
 #endif
 		sd.gyro = Math::Vec<3>{gyro_avg[0], gyro_avg[1], gyro_avg[2]};
+
+		/* Track worst-case gyro norm since last telemetry print, for motion-gate diagnosis. */
+		float gn = sqrtf(gyro_avg[0]*gyro_avg[0] +
+		                 gyro_avg[1]*gyro_avg[1] +
+		                 gyro_avg[2]*gyro_avg[2]);
+		if (gn > gyro_norm_max_window) gyro_norm_max_window = gn;
 		sd.magnetometer  = Math::Vec<3>{mag_avg[0], mag_avg[1], mag_avg[2]};
 		sd.wheel_speeds  = Math::Vec<4>::Zero();
 
@@ -426,20 +445,33 @@ static void adcs_loop(void *, void *, void *)
 				mode = "BEARING(point)"; /* NDI wheels; mtq only when desat active */
 				break;
 			}
-			printk("[ADCS] mode=%s  meas|gy|=%.4f rad/s  valid:%d\n", mode,
+			printk("[ADCS] mode=%s  meas|gy|=%.4f rad/s  valid:%d  init:%s (%d/%d)\n", mode,
 			       (double)(std::fabs((double)sd.gyro(0)) +
 					std::fabs((double)sd.gyro(1)) +
 					std::fabs((double)sd.gyro(2))),
-			       out.estimator_valid ? 1 : 0);
+			       out.estimator_valid ? 1 : 0,
+			       adcs_core.observerRunning() ? "RUN" : "COLLECT",
+			       adcs_core.observerInitSamples(),
+			       adcs_core.observerInitTarget());
 			printk("[ADCS] q: %.4f %.4f %.4f %.4f\n",
 			       (double)out.attitude_est(0), (double)out.attitude_est(1),
 			       (double)out.attitude_est(2), (double)out.attitude_est(3));
 			printk("[ADCS] w: %.4f %.4f %.4f rad/s\n",
 			       (double)out.rate_est(0), (double)out.rate_est(1),
 			       (double)out.rate_est(2));
-			printk("[ADCS] B [T]: %.4e %.4e %.4e\n",
+			double bn = std::sqrt((double)sd.magnetometer(0) * (double)sd.magnetometer(0) +
+			                      (double)sd.magnetometer(1) * (double)sd.magnetometer(1) +
+			                      (double)sd.magnetometer(2) * (double)sd.magnetometer(2));
+			printk("[ADCS] B [T]: %.4e %.4e %.4e  |B|=%.4e (%.1f uT)\n",
 			       (double)sd.magnetometer(0), (double)sd.magnetometer(1),
-			       (double)sd.magnetometer(2));
+			       (double)sd.magnetometer(2), bn, bn * 1e6);
+			printk("[ADCS] a [m/s^2]: %.4e %.4e %.4e\n",
+			       (double)sd.accelerometer(0), (double)sd.accelerometer(1),
+			       (double)sd.accelerometer(2));
+			printk("[ADCS] gy_raw [rad/s]: %.4f %.4f %.4f  |max_win|=%.4f\n",
+			       (double)sd.gyro(0), (double)sd.gyro(1), (double)sd.gyro(2),
+			       (double)gyro_norm_max_window);
+			gyro_norm_max_window = 0.0f;
 			/* %.6f hides sub-micro torques; dipole is [A·m²] not N·m */
 			printk("[ADCS] tau_w [N*m]: %.4e %.4e %.4e %.4e\n",
 			       (double)out.wheel_torque(0), (double)out.wheel_torque(1),

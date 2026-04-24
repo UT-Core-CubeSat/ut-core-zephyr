@@ -61,8 +61,12 @@ public:
     
     AdcsOutput update(const SensorData& sensors, const Command& command);
     AdcsOutput update(const SensorData& sensors);
-    
+
     void reset();
+
+    bool observerRunning() const { return observer_.isRunning(); }
+    int  observerInitSamples() const { return observer_.getInitSamplesCollected(); }
+    int  observerInitTarget() const { return ObserverClass::getInitSampleTarget(); }
 
 private:
     ObserverClass observer_;

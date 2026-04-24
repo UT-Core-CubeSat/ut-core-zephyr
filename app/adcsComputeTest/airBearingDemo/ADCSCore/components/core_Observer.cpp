@@ -2,23 +2,23 @@
 #include <iostream>  // DEBUG
 
 ObserverClass::ObserverClass()
-    : q_hat(Param::Vector4::Zero()),
+    : last_q_star(Param::Vector4::Zero()),
+      q_hat(Param::Vector4::Zero()),
       beta_hat(Param::Observer::beta_gyro),
       tau_bias(Param::Observer::tau_bias),
+      g_ref(Param::Observer::g_ref),
+      B_ref(Param::Observer::B_ref),
+      R_accel(Param::Observer::R_accel),
+      R_mag(Param::Observer::R_mag),
+      accel_min_norm(Param::Observer::accel_min_norm),
+      mag_min_norm(Param::Observer::mag_min_norm),
       P(Param::Observer::P_0),
       G(Param::Observer::G),
       Q(Param::Observer::Q),
       sigma_v(Param::Observer::sigma_gyro),
       sigma_u(Param::Observer::sigma_bias_walk),
-      epoch_time(static_cast<Param::TimeReal>(0.0)), 
-      current_time(static_cast<Param::TimeReal>(0.0)),
-      last_q_star(Param::Vector4::Zero()),
-    g_ref(Param::Observer::g_ref),
-    B_ref(Param::Observer::B_ref),
-    R_accel(Param::Observer::R_accel),
-    R_mag(Param::Observer::R_mag),
-    accel_min_norm(Param::Observer::accel_min_norm),
-    mag_min_norm(Param::Observer::mag_min_norm)
+      epoch_time(static_cast<Param::TimeReal>(0.0)),
+      current_time(static_cast<Param::TimeReal>(0.0))
 {
     q_hat(0) = 1; q_hat(1) = 0; q_hat(2) = 0; q_hat(3) = 0;
     last_accel_innovation = Vector3::Zero();
@@ -67,7 +67,7 @@ void ObserverClass::propagate(const Vector3& omega_meas, Scalar dt) {
     Qd(2,2) = sigma_v(2) * sigma_v(2) * dt;
     
     // Bias part (bottom-right 3x3): Gauss-Markov as before
-    Scalar exp_term = static_cast<Scalar>(std::exp(-2.0 * dt / tau_bias));
+    Scalar exp_term = static_cast<Scalar>(std::exp(-2.0f * dt / tau_bias));
     Scalar bias_qd = (sigma_u(0) * sigma_u(0)) * (static_cast<Scalar>(1.0) - exp_term);
     Qd(3,3) = bias_qd;
     Qd(4,4) = bias_qd;
@@ -117,25 +117,36 @@ void ObserverClass::updateWithGravity(const Vector3& accel_meas, Scalar dt) {
     // Kalman gain: K = P * H' * (H * P * H' + R)^-1
     Param::Matrix3 S_innov = H * P * H.transpose() + R_accel;
     Param::Matrix3 S_inv = Math::inverse3x3(S_innov);
+
+    // Chi-square outlier rejection (~3σ, 3 dof). Catches table bumps / vibration spikes.
+    {
+        Vector3 Sinv_z = S_inv * z;
+        Scalar mahal2 = z.dot(Sinv_z);
+        constexpr Scalar kChi2 = static_cast<Scalar>(14.16);
+        if (mahal2 > kChi2) {
+            return;  // diagnostic already stored above
+        }
+    }
+
     Param::Matrix63 K = P * H.transpose() * S_inv;
-    
+
     // State correction
     Param::Vector6 dx = K * z;
     Vector3 dtheta = dx.segment<3>(0);
     Vector3 dbeta = dx.segment<3>(3);
-    
+
     // Apply quaternion correction (small angle)
     Quat dq;
     dq(0) = static_cast<Scalar>(1.0);
     dq.setSegment(1, static_cast<Scalar>(0.5) * dtheta);
     dq.normalize();
-    
+
     q_hat = quatMultiply(dq, q_hat);
     q_hat.normalize();
-    
+
     // Update bias estimate
     beta_hat += dbeta;
-    
+
     // Update covariance: Joseph form P = (I - K*H)*P*(I - K*H)^T + K*R*K^T
     Param::Matrix6 I6 = Param::Matrix6::Identity();
     Param::Matrix6 IKH = I6 - K * H;
@@ -176,6 +187,17 @@ void ObserverClass::updateWithMagnetometer(const Vector3& mag_meas, Scalar dt) {
     // Kalman gain
     Param::Matrix3 S_innov = H * P * H.transpose() + R_mag;
     Param::Matrix3 S_inv = Math::inverse3x3(S_innov);
+
+    // Chi-square outlier rejection. Catches mag spikes (phone walk-by, ferrous nearby).
+    {
+        Vector3 Sinv_z = S_inv * z;
+        Scalar mahal2 = z.dot(Sinv_z);
+        constexpr Scalar kChi2 = static_cast<Scalar>(14.16);
+        if (mahal2 > kChi2) {
+            return;
+        }
+    }
+
     Param::Matrix63 K = P * H.transpose() * S_inv;
     
     // State correction
@@ -201,35 +223,162 @@ void ObserverClass::updateWithMagnetometer(const Vector3& mag_meas, Scalar dt) {
     P = static_cast<Scalar>(0.5) * (P + P.transpose());
 }
 
-ObserverClass::StateVector ObserverClass::update(const Param::Vector13& measurements, 
-                                                  const TimeReal& t, 
+ObserverClass::StateVector ObserverClass::update(const Param::Vector13& measurements,
+                                                  const TimeReal& t,
                                                   const Scalar& dt) {
     current_time = t;
 
     Param::Vector3 accel = measurements.segment<3>(0);
     Param::Vector3 omega_gyro = measurements.segment<3>(3);
+    Vector3 mag_meas = measurements.segment<3>(6);
     Param::Vector4 omega_w = measurements.segment<4>(9);
+
+    // 0. Self-init from static samples (TRIAD).  While collecting, return identity
+    //    attitude and zero rate so the controller's entry guard knows we are warming up.
+    if (init_phase_ == InitPhase::Collecting) {
+        accumulateInitSample(accel, omega_gyro, mag_meas);
+        if (init_samples_collected_ >= kInitSampleTarget) {
+            initializeFromStatic();
+        }
+        StateVector s;
+        s.setSegment(0, q_hat);
+        s.setSegment(4, Vector3::Zero());
+        s.setSegment(7, omega_w);
+        return s;
+    }
 
     // 1. Propagate with gyro
     propagate(omega_gyro, dt);
-    
+
     // 2. Correct with accelerometer (gravity vector)
     updateWithGravity(accel, dt);
-    
+
     // 3. Correct with magnetometer (magnetic field vector)
-    Vector3 mag_meas = measurements.segment<3>(6);
     updateWithMagnetometer(mag_meas, dt);
 
-    // 3. Bias-corrected rate
+    // 4. Bias-corrected rate
     Param::Vector3 omega_b_hat = omega_gyro - beta_hat;
-    
-    // 3. Correct with magnetometer (magnetic field vector)
+
     StateVector states_hat;
     states_hat.setSegment(0, q_hat);
     states_hat.setSegment(4, omega_b_hat);
     states_hat.setSegment(7, omega_w);
 
     return states_hat;
+}
+
+void ObserverClass::accumulateInitSample(const Vector3& accel,
+                                         const Vector3& gyro,
+                                         const Vector3& mag) {
+    // Reject samples with obvious motion or bad sensor data; restart on motion
+    // so a bumped board cleanly re-bootstraps.
+    if (gyro.norm() > kInitMotionGateRad) {
+        init_samples_collected_ = 0;
+        init_accel_sum_ = Vector3::Zero();
+        init_gyro_sum_  = Vector3::Zero();
+        init_mag_sum_   = Vector3::Zero();
+        return;
+    }
+    if (accel.norm() < accel_min_norm) return;
+    if (mag.norm()   < mag_min_norm)   return;
+
+    init_accel_sum_ = init_accel_sum_ + accel;
+    init_gyro_sum_  = init_gyro_sum_  + gyro;
+    init_mag_sum_   = init_mag_sum_   + mag;
+    init_samples_collected_ += 1;
+}
+
+void ObserverClass::initializeFromStatic() {
+    Scalar n = static_cast<Scalar>(init_samples_collected_);
+    Vector3 a_body_avg = init_accel_sum_ / n;
+    Vector3 g_body_avg = init_gyro_sum_  / n;
+    Vector3 m_body_avg = init_mag_sum_   / n;
+
+    // Static gyro mean → bias estimate (replaces hardcoded fallback).
+    beta_hat = g_body_avg;
+
+    // TRIAD: build q_hat consistent with measured gravity + (arbitrary) heading axis.
+    Vector3 a_body_unit = a_body_avg.normalized();
+    Vector3 m_body_unit = m_body_avg.normalized();
+    q_hat = triadAccelMag(a_body_unit, m_body_unit, g_ref);
+    q_hat.normalize();
+
+    // Make B_ref consistent with the just-computed attitude so the very first
+    // mag update has zero innovation. quatRotate(q_hat, body) → inertial.
+    B_ref = helpers.quatRotate(q_hat, m_body_unit);
+
+    init_phase_ = InitPhase::Running;
+}
+
+ObserverClass::Quat ObserverClass::triadAccelMag(const Vector3& a_body_unit,
+                                                  const Vector3& m_body_unit,
+                                                  const Vector3& g_ref_inertial) {
+    Quat q_id;
+    q_id(0) = static_cast<Scalar>(1.0);
+    q_id(1) = static_cast<Scalar>(0.0);
+    q_id(2) = static_cast<Scalar>(0.0);
+    q_id(3) = static_cast<Scalar>(0.0);
+
+    // Body triad: b1 along measured gravity, b2 ⟂ to gravity in the (g, m) plane.
+    Vector3 b1 = a_body_unit;
+    Vector3 b2_raw = b1.cross(m_body_unit);
+    if (b2_raw.norm() < static_cast<Scalar>(1e-6)) {
+        return q_id;  // mag parallel to gravity — heading ambiguous
+    }
+    Vector3 b2 = b2_raw.normalized();
+    Vector3 b3 = b1.cross(b2);
+
+    // Inertial triad: i1 = g_ref; i2 chosen orthogonal to i1 (the resulting
+    // heading axis is arbitrary, but B_ref will be redefined consistently
+    // afterward so subsequent updates work correctly).
+    Vector3 i1 = g_ref_inertial.normalized();
+    Vector3 tmp = (std::abs(i1(0)) < static_cast<Scalar>(0.9))
+                ? Vector3{static_cast<Scalar>(1.0), static_cast<Scalar>(0.0), static_cast<Scalar>(0.0)}
+                : Vector3{static_cast<Scalar>(0.0), static_cast<Scalar>(1.0), static_cast<Scalar>(0.0)};
+    Vector3 i2 = i1.cross(tmp).normalized();
+    Vector3 i3 = i1.cross(i2);
+
+    // R_bi rotates body→inertial: R_bi * b_k = i_k for k=1,2,3.
+    // Equivalently R_bi(r,c) = Σ_k i_k(r) * b_k(c).
+    Param::Matrix3 R;
+    for (int r = 0; r < 3; ++r) {
+        for (int c = 0; c < 3; ++c) {
+            R(r, c) = i1(r) * b1(c) + i2(r) * b2(c) + i3(r) * b3(c);
+        }
+    }
+    return dcmToQuat(R);
+}
+
+ObserverClass::Quat ObserverClass::dcmToQuat(const Param::Matrix3& R) {
+    // Shepperd's method: pick the largest of {1+tr, 1+R00-R11-R22, ...} for numerical stability.
+    Quat q;
+    Scalar tr = R(0,0) + R(1,1) + R(2,2);
+    if (tr > static_cast<Scalar>(0.0)) {
+        Scalar s = std::sqrt(tr + static_cast<Scalar>(1.0)) * static_cast<Scalar>(2.0);
+        q(0) = static_cast<Scalar>(0.25) * s;
+        q(1) = (R(2,1) - R(1,2)) / s;
+        q(2) = (R(0,2) - R(2,0)) / s;
+        q(3) = (R(1,0) - R(0,1)) / s;
+    } else if ((R(0,0) > R(1,1)) && (R(0,0) > R(2,2))) {
+        Scalar s = std::sqrt(static_cast<Scalar>(1.0) + R(0,0) - R(1,1) - R(2,2)) * static_cast<Scalar>(2.0);
+        q(0) = (R(2,1) - R(1,2)) / s;
+        q(1) = static_cast<Scalar>(0.25) * s;
+        q(2) = (R(0,1) + R(1,0)) / s;
+        q(3) = (R(0,2) + R(2,0)) / s;
+    } else if (R(1,1) > R(2,2)) {
+        Scalar s = std::sqrt(static_cast<Scalar>(1.0) + R(1,1) - R(0,0) - R(2,2)) * static_cast<Scalar>(2.0);
+        q(0) = (R(0,2) - R(2,0)) / s;
+        q(1) = (R(0,1) + R(1,0)) / s;
+        q(2) = static_cast<Scalar>(0.25) * s;
+        q(3) = (R(1,2) + R(2,1)) / s;
+    } else {
+        Scalar s = std::sqrt(static_cast<Scalar>(1.0) + R(2,2) - R(0,0) - R(1,1)) * static_cast<Scalar>(2.0);
+        q(0) = (R(1,0) - R(0,1)) / s;
+        q(1) = (R(0,2) + R(2,0)) / s;
+        q(2) = (R(1,2) + R(2,1)) / s;
+        q(3) = static_cast<Scalar>(0.25) * s;
+    }
+    return q;
 }
 
 
