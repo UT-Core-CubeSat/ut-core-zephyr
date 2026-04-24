@@ -660,76 +660,458 @@
 // }
 
 #include <zephyr/kernel.h>
+#include <zephyr/device.h>
+#include <zephyr/drivers/can.h>
 #include <zephyr/drivers/pwm.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/logging/log.h>
-LOG_MODULE_REGISTER(mtq_test);
 
-static const struct pwm_dt_spec mtq0 = PWM_DT_SPEC_GET(DT_NODELABEL(mtq_pwm0));
-const struct device *gpioa = DEVICE_DT_GET(DT_NODELABEL(gpioa));
-const struct device *gpioc = DEVICE_DT_GET(DT_NODELABEL(gpioc));
+#include <stdbool.h>
+#include <stdint.h>
+#include <string.h>
+#include <math.h>
 
-int main(void)
+#if __has_include("can_proto.h")
+#include "can_proto.h"
+#else
+#define CAN_PRIO(p)    (((uint32_t)(p)  & 0x07U) << 26)
+#define CAN_SRC(s)     (((uint32_t)(s)  & 0xFFU) << 14)
+#define CAN_DST(d)     (((uint32_t)(d)  & 0xFFU) <<  6)
+#define CAN_CLASS(c)   (((uint32_t)(c)  & 0x3FU)      )
+#define CAN_ID_FULL(prio, src, dst, cls) \
+    (CAN_PRIO(prio) | CAN_SRC(src) | CAN_DST(dst) | CAN_CLASS(cls))
+#define CAN_DST_SHIFT       6
+#define CAN_DST_MASK_29     (0xFFU << CAN_DST_SHIFT)
+#define CAN_BROADCAST       0xFF
+#define ADCS_ID             0x04
+#define CLS_HEARTBEAT       0
+#define CLS_COMMAND         2
+#define CLS_CMD_RESP        3
+#define OP_HEARTBEAT        0x30
+#define OP_SET_MODE         0x40
+static inline void can_fill_payload(struct can_frame *f,
+                                    uint8_t src, uint8_t op,
+                                    uint8_t p2, uint8_t p3, uint8_t p4,
+                                    uint8_t p5, uint8_t p6, uint8_t p7)
 {
-    /* MUX select high */
-    gpio_pin_configure(gpioa, 5, GPIO_OUTPUT_ACTIVE);
+    f->dlc = 8;
+    f->flags = CAN_FRAME_IDE;
+    f->data[0] = src;
+    f->data[1] = op;
+    f->data[2] = p2;
+    f->data[3] = p3;
+    f->data[4] = p4;
+    f->data[5] = p5;
+    f->data[6] = p6;
+    f->data[7] = p7;
+}
+#endif
 
-    /*
-     * STEP 1: Toggle PC2 as raw GPIO first.
-     * If you don't see this on the scope, the problem is electrical.
-     * Comment this block out once confirmed.
-     */
-    gpio_pin_configure(gpioc, 2, GPIO_OUTPUT_ACTIVE);
-    for (int i = 0; i < 20; i++) {
-        gpio_pin_toggle(gpioc, 2);
-        k_sleep(K_MSEC(500));
+#ifndef SOLAR_ID
+#define SOLAR_ID 0x08
+#endif
+
+LOG_MODULE_REGISTER(solar_mtq, LOG_LEVEL_INF);
+
+#define NODE_ID                  SOLAR_ID
+#define CAN_NODE                 DT_NODELABEL(fdcan1)
+#define GPIOA_NODE               DT_NODELABEL(gpioa)
+#define GPIOC_NODE               DT_NODELABEL(gpioc)
+
+#define PRIO_LOW                 3
+#define OP_MTQ_SET               0x20
+#define OP_MTQ_STOP              0x21
+#define OP_MTQ_SET_DIPOLE        0x22
+
+#define MTQ_CHANNELS             4
+#define MTQ_DIPOLE_TIMEOUT_MS    300
+
+/* Coil model (same for all four faces for now).
+ * 0.3734 is per-face effective turn-area sum (N*A) [m^2], with turns already included. */
+static const float MTQ_FACE_NA_M2 = 0.3734f;
+static const float MTQ_COIL_K_AM2_PER_A = MTQ_FACE_NA_M2;
+static const float MTQ_COIL_MAX_CURRENT_A = 0.15f;
+
+/* Polynomial current-fit model (x=duty percent, y=current [A]):
+ * y = a*x^2 + b*x + c
+ * where:
+ *   a = 0.00007817
+ *   b = 0.00461685
+ *   c = 0.00227818
+ */
+static const float DUTY_POLY_A = 0.00007817f;
+static const float DUTY_POLY_B = 0.00461685f;
+static const float DUTY_POLY_C = 0.00227818f;
+
+static const uint8_t mtq_gpio_pins[MTQ_CHANNELS] = {2, 3, 4, 5};
+
+CAN_MSGQ_DEFINE(rxq, 16);
+
+static const struct device *can_dev = DEVICE_DT_GET(CAN_NODE);
+static const struct device *gpioa = DEVICE_DT_GET(GPIOA_NODE);
+static const struct device *gpioc = DEVICE_DT_GET(GPIOC_NODE);
+
+#if DT_NODE_HAS_STATUS(DT_NODELABEL(mtq_pwm0), okay)
+static const struct pwm_dt_spec mtq_pwm0 = PWM_DT_SPEC_GET(DT_NODELABEL(mtq_pwm0));
+#define HAS_MTQ_PWM0 1
+#else
+#define HAS_MTQ_PWM0 0
+#endif
+
+#if DT_NODE_HAS_STATUS(DT_NODELABEL(mtq_pwm1), okay)
+static const struct pwm_dt_spec mtq_pwm1 = PWM_DT_SPEC_GET(DT_NODELABEL(mtq_pwm1));
+#define HAS_MTQ_PWM1 1
+#else
+#define HAS_MTQ_PWM1 0
+#endif
+
+typedef struct {
+    uint8_t src;
+    uint8_t dst;
+    uint8_t msg_class;
+    uint8_t op;
+    uint8_t data[8];
+    uint8_t dlc;
+} can_packet_t;
+
+typedef struct {
+    uint8_t duty_pct[MTQ_CHANNELS];
+    float current_a[MTQ_CHANNELS];
+    float achieved_mx;
+    float achieved_my;
+    float rejected_mz;
+} mtq_alloc_t;
+
+static float clampf_local(float v, float lo, float hi)
+{
+    if (v < lo) {
+        return lo;
     }
-    LOG_INF("GPIO toggle done — switching to PWM");
+    if (v > hi) {
+        return hi;
+    }
+    return v;
+}
 
-    /*
-     * STEP 2: Now try PWM on the same pin.
-     * The pinmux switches from GPIO to TIM3_CH3 AF2 when PWM inits.
+static uint8_t current_to_duty_pct(float current_a)
+{
+    float i = clampf_local(current_a, 0.0f, MTQ_COIL_MAX_CURRENT_A);
+    if (i <= 1.0e-6f) {
+        return 0;
+    }
+
+    /* Invert y = a*x^2 + b*x + c for x in [0, 100], taking the physical root.
+     * x = (-b + sqrt(b^2 - 4*a*(c-y))) / (2*a)
      */
-    if (!device_is_ready(mtq0.dev)) {
-        LOG_ERR("PWM device not ready");
+    if (i <= DUTY_POLY_C) {
+        return 0;
+    }
+
+    float x_pct;
+    if (fabsf(DUTY_POLY_A) > 1.0e-12f) {
+        float disc = DUTY_POLY_B * DUTY_POLY_B -
+                     4.0f * DUTY_POLY_A * (DUTY_POLY_C - i);
+        if (disc < 0.0f) {
+            disc = 0.0f;
+        }
+        x_pct = (-DUTY_POLY_B + sqrtf(disc)) / (2.0f * DUTY_POLY_A);
+    } else if (fabsf(DUTY_POLY_B) > 1.0e-12f) {
+        x_pct = (i - DUTY_POLY_C) / DUTY_POLY_B;
+    } else {
+        x_pct = 100.0f * (i / MTQ_COIL_MAX_CURRENT_A);
+    }
+
+    x_pct = clampf_local(x_pct, 0.0f, 100.0f);
+    return (uint8_t)(x_pct + 0.5f);
+}
+
+static mtq_alloc_t allocate_dipole_to_faces(float mx_am2, float my_am2, float mz_am2)
+{
+    mtq_alloc_t out = {0};
+
+    /* Four-long-face allocation, no body-Z authority.
+     * +X face produces +X dipole, -X face produces -X dipole, etc. */
+    float i_x = mx_am2 / MTQ_COIL_K_AM2_PER_A;
+    float i_y = my_am2 / MTQ_COIL_K_AM2_PER_A;
+
+    out.current_a[0] = clampf_local(i_x, 0.0f, MTQ_COIL_MAX_CURRENT_A);
+    out.current_a[1] = clampf_local(-i_x, 0.0f, MTQ_COIL_MAX_CURRENT_A);
+    out.current_a[2] = clampf_local(i_y, 0.0f, MTQ_COIL_MAX_CURRENT_A);
+    out.current_a[3] = clampf_local(-i_y, 0.0f, MTQ_COIL_MAX_CURRENT_A);
+
+    for (int i = 0; i < MTQ_CHANNELS; i++) {
+        out.duty_pct[i] = current_to_duty_pct(out.current_a[i]);
+    }
+
+    out.achieved_mx = MTQ_COIL_K_AM2_PER_A * (out.current_a[0] - out.current_a[1]);
+    out.achieved_my = MTQ_COIL_K_AM2_PER_A * (out.current_a[2] - out.current_a[3]);
+    out.rejected_mz = mz_am2;
+    return out;
+}
+
+static int mtq_set_channel_duty(uint8_t ch, uint8_t duty_pct)
+{
+    if (ch >= MTQ_CHANNELS) {
         return -1;
     }
-
-    LOG_INF("period = %u ns", mtq0.period);
-
-    /* Try channel as-is from overlay (2) */
-    int ret = pwm_set_pulse_dt(&mtq0, mtq0.period / 2);
-    LOG_INF("pwm_set_pulse_dt returned %d", ret);
-
-    if (ret != 0) {
-        /*
-         * If it failed, the channel index is probably wrong.
-         * Try setting it manually with channel 3 (1-based).
-         */
-        LOG_WRN("Retrying with channel 3 (1-based)...");
-        ret = pwm_set(mtq0.dev, 3, mtq0.period, mtq0.period / 2, 0);
-        LOG_INF("pwm_set ch3 returned %d", ret);
+    if (duty_pct > 100U) {
+        duty_pct = 100U;
     }
 
-    while (1) {
-        k_sleep(K_FOREVER);
+    if (ch == 0 && HAS_MTQ_PWM0) {
+        uint32_t pulse = (uint32_t)((uint64_t)mtq_pwm0.period * duty_pct / 100U);
+        return pwm_set_pulse_dt(&mtq_pwm0, pulse);
+    }
+    if (ch == 1 && HAS_MTQ_PWM1) {
+        uint32_t pulse = (uint32_t)((uint64_t)mtq_pwm1.period * duty_pct / 100U);
+        return pwm_set_pulse_dt(&mtq_pwm1, pulse);
+    }
+
+    /* GPIO fallback for channels without timer AF (PC4/PC5 on U5A5). */
+    return gpio_pin_set(gpioc, mtq_gpio_pins[ch], duty_pct > 50U ? 1 : 0);
+}
+
+static void mtq_all_off(void)
+{
+    for (uint8_t ch = 0; ch < MTQ_CHANNELS; ch++) {
+        (void)mtq_set_channel_duty(ch, 0);
     }
 }
 
-// #include <zephyr/drivers/gpio.h>
+static int mtq_outputs_init(void)
+{
+    if (!device_is_ready(gpioc)) {
+        LOG_ERR("GPIOC not ready");
+        return -1;
+    }
 
-// const struct device *gpioc = DEVICE_DT_GET(DT_NODELABEL(gpioc));
-// const struct device *gpioa = DEVICE_DT_GET(DT_NODELABEL(gpioa));
+    for (uint8_t i = 0; i < MTQ_CHANNELS; i++) {
+        int ret = gpio_pin_configure(gpioc, mtq_gpio_pins[i], GPIO_OUTPUT_INACTIVE);
+        if (ret) {
+            LOG_ERR("GPIO init failed on PC%d (%d)", mtq_gpio_pins[i], ret);
+            return ret;
+        }
+    }
 
-// int main(void)
-// {
-//     gpio_pin_configure(gpioc, 5, GPIO_OUTPUT_ACTIVE);
-//     gpio_pin_configure(gpioa, 5, GPIO_OUTPUT_ACTIVE);
-//     gpio_pin_set(gpioa, 5, 1);
-//     while (1) {
-//         gpio_pin_set(gpioc, 5, 1);
-//         k_sleep(K_MSEC(500));
-//         gpio_pin_set(gpioc, 5, 0);
-//         k_sleep(K_MSEC(500));
-//     }
-// }
+    if (HAS_MTQ_PWM0 && !device_is_ready(mtq_pwm0.dev)) {
+        LOG_ERR("mtq_pwm0 not ready");
+        return -1;
+    }
+    if (HAS_MTQ_PWM1 && !device_is_ready(mtq_pwm1.dev)) {
+        LOG_ERR("mtq_pwm1 not ready");
+        return -1;
+    }
+
+    mtq_all_off();
+    LOG_INF("MTQ init done (PWM0=%d PWM1=%d)", HAS_MTQ_PWM0, HAS_MTQ_PWM1);
+    return 0;
+}
+
+static void tcan3403_wakeup(void)
+{
+    if (!device_is_ready(gpioa)) {
+        LOG_WRN("GPIOA not ready; skipping TCAN wake pins");
+        return;
+    }
+
+    (void)gpio_pin_configure(gpioa, 10, GPIO_OUTPUT_INACTIVE);
+    (void)gpio_pin_configure(gpioa, 9, GPIO_OUTPUT_INACTIVE);
+    k_msleep(1);
+}
+
+static int can_setup(void)
+{
+    if (!device_is_ready(can_dev)) {
+        LOG_ERR("FDCAN1 not ready");
+        return -1;
+    }
+
+    int ret = can_set_bitrate(can_dev, 500000);
+    if (ret) {
+        LOG_ERR("can_set_bitrate failed (%d)", ret);
+        return ret;
+    }
+
+    ret = can_set_mode(can_dev, CAN_MODE_NORMAL);
+    if (ret) {
+        LOG_ERR("can_set_mode failed (%d)", ret);
+        return ret;
+    }
+
+    ret = can_start(can_dev);
+    if (ret) {
+        LOG_ERR("can_start failed (%d)", ret);
+        return ret;
+    }
+
+    const struct can_filter to_me = {
+        .id = CAN_DST(NODE_ID),
+        .mask = CAN_DST_MASK_29,
+        .flags = CAN_FILTER_IDE,
+    };
+    const struct can_filter bcast = {
+        .id = CAN_DST(CAN_BROADCAST),
+        .mask = CAN_DST_MASK_29,
+        .flags = CAN_FILTER_IDE,
+    };
+
+    if (can_add_rx_filter_msgq(can_dev, &rxq, &to_me) < 0) {
+        LOG_ERR("Failed to add dst filter");
+        return -1;
+    }
+    if (can_add_rx_filter_msgq(can_dev, &rxq, &bcast) < 0) {
+        LOG_ERR("Failed to add broadcast filter");
+        return -1;
+    }
+
+    LOG_INF("CAN ready @500k, filters installed");
+    return 0;
+}
+
+static void decode_can_packet(const struct can_frame *f, can_packet_t *pkt)
+{
+    uint32_t id = f->id;
+    pkt->src = (id >> 14) & 0xFFU;
+    pkt->dst = (id >> 6) & 0xFFU;
+    pkt->msg_class = id & 0x3FU;
+    pkt->dlc = f->dlc;
+    memcpy(pkt->data, f->data, f->dlc);
+    pkt->op = (f->dlc >= 2U) ? f->data[1] : 0U;
+}
+
+static int16_t parse_i16_be(uint8_t hi, uint8_t lo)
+{
+    uint16_t u = ((uint16_t)hi << 8) | (uint16_t)lo;
+    return (int16_t)u;
+}
+
+static void send_cmd_resp(uint8_t dst, uint8_t op, uint8_t status)
+{
+    struct can_frame f = {0};
+    f.id = CAN_ID_FULL(PRIO_LOW, NODE_ID, dst, CLS_CMD_RESP);
+    can_fill_payload(&f, NODE_ID, op, status, 0, 0, 0, 0, 0);
+    (void)can_send(can_dev, &f, K_MSEC(10), NULL, NULL);
+}
+
+static void send_heartbeat(void)
+{
+    struct can_frame f = {0};
+    f.id = CAN_ID_FULL(PRIO_LOW, NODE_ID, CAN_BROADCAST, CLS_HEARTBEAT);
+    can_fill_payload(&f, NODE_ID, OP_HEARTBEAT, 0, 0, 0, 0, 0, 0);
+    (void)can_send(can_dev, &f, K_MSEC(10), NULL, NULL);
+}
+
+int main(void)
+{
+    LOG_INF("Solar MTQ node booting");
+
+    tcan3403_wakeup();
+
+    if (mtq_outputs_init() != 0) {
+        return -1;
+    }
+    if (can_setup() != 0) {
+        return -1;
+    }
+
+    bool dipole_active = false;
+    int64_t last_dipole_ms = 0;
+    int64_t last_hb_ms = 0;
+
+    while (1) {
+        struct can_frame rx;
+        if (k_msgq_get(&rxq, &rx, K_MSEC(20)) == 0) {
+            can_packet_t pkt = {0};
+            decode_can_packet(&rx, &pkt);
+
+            if (pkt.dst != NODE_ID && pkt.dst != CAN_BROADCAST) {
+                continue;
+            }
+            if (pkt.msg_class != CLS_COMMAND) {
+                continue;
+            }
+
+            switch (pkt.op) {
+            case OP_MTQ_SET_DIPOLE: {
+                if (pkt.dlc < 8U) {
+                    LOG_WRN("MTQ dipole cmd too short (dlc=%u)", pkt.dlc);
+                    send_cmd_resp(pkt.src, OP_MTQ_SET_DIPOLE, 1);
+                    break;
+                }
+
+                int16_t mx_mam2 = parse_i16_be(pkt.data[2], pkt.data[3]);
+                int16_t my_mam2 = parse_i16_be(pkt.data[4], pkt.data[5]);
+                int16_t mz_mam2 = parse_i16_be(pkt.data[6], pkt.data[7]);
+
+                float mx = 1.0e-3f * (float)mx_mam2;
+                float my = 1.0e-3f * (float)my_mam2;
+                float mz = 1.0e-3f * (float)mz_mam2;
+
+                mtq_alloc_t alloc = allocate_dipole_to_faces(mx, my, mz);
+                for (uint8_t ch = 0; ch < MTQ_CHANNELS; ch++) {
+                    (void)mtq_set_channel_duty(ch, alloc.duty_pct[ch]);
+                }
+
+                dipole_active = true;
+                last_dipole_ms = k_uptime_get();
+
+                LOG_INF("m_des[mA*m2]=(%d,%d,%d) duty=(%u,%u,%u,%u) rej_z=%.3e",
+                        mx_mam2, my_mam2, mz_mam2,
+                        alloc.duty_pct[0], alloc.duty_pct[1],
+                        alloc.duty_pct[2], alloc.duty_pct[3],
+                        (double)alloc.rejected_mz);
+                send_cmd_resp(pkt.src, OP_MTQ_SET_DIPOLE, 0);
+                break;
+            }
+
+            case OP_MTQ_SET: {
+                /* Legacy manual command: data[2]=mask, data[3]=duty */
+                if (pkt.dlc < 4U) {
+                    send_cmd_resp(pkt.src, OP_MTQ_SET, 1);
+                    break;
+                }
+                uint8_t mask = pkt.data[2] & 0x0FU;
+                uint8_t duty = pkt.data[3] > 100U ? 100U : pkt.data[3];
+
+                for (uint8_t ch = 0; ch < MTQ_CHANNELS; ch++) {
+                    uint8_t ch_duty = (mask & (1U << ch)) ? duty : 0U;
+                    (void)mtq_set_channel_duty(ch, ch_duty);
+                }
+
+                dipole_active = false;
+                LOG_INF("Legacy MTQ set mask=0x%X duty=%u", mask, duty);
+                send_cmd_resp(pkt.src, OP_MTQ_SET, 0);
+                break;
+            }
+
+            case OP_MTQ_STOP:
+                mtq_all_off();
+                dipole_active = false;
+                LOG_INF("MTQ stop");
+                send_cmd_resp(pkt.src, OP_MTQ_STOP, 0);
+                break;
+
+            case OP_SET_MODE:
+                /* Reserved for future mode gating; ignore for now. */
+                send_cmd_resp(pkt.src, OP_SET_MODE, 0);
+                break;
+
+            default:
+                LOG_WRN("Unknown command opcode 0x%02X", pkt.op);
+                break;
+            }
+        }
+
+        int64_t now = k_uptime_get();
+        if (dipole_active && (now - last_dipole_ms) > MTQ_DIPOLE_TIMEOUT_MS) {
+            mtq_all_off();
+            dipole_active = false;
+            LOG_WRN("MTQ dipole command timeout -> outputs OFF");
+        }
+
+        if ((now - last_hb_ms) >= 1000) {
+            last_hb_ms = now;
+            send_heartbeat();
+        }
+    }
+}

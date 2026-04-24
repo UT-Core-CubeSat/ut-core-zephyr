@@ -85,12 +85,6 @@ AdcsOutput Core::update(const SensorData& sensors, const Command& command)
         out.current_mode = MissionMode::BEARING;
     }
 
-    // 6. Allocate body dipole to per-face currents and reference fields (black-box derivation)
-    // Software engineer receives these ready-to-use without understanding control law
-    auto alloc_out = mtq_allocator_.allocate(out.mtq_dipole, sensors.magnetometer);
-    out.mtq_face_current = alloc_out.face_current;
-    out.mtq_face_b_ref = alloc_out.face_b_ref;
-
     // Adding equivalence variables, this is just for plotting and wouldn't be needed in orbit
     out.reference = workspace_ref_; 
     out.states_m = ctrl_out.states_m;
