@@ -8,7 +8,13 @@
 #include <zephyr/sys/printk.h>
 #include <zephyr/sys/atomic.h>
 
+#include "motor_can.h"
+#include "can_wheel.h"
+
 #define USER_NODE DT_PATH(zephyr_user)
+
+/* Setpoint is zeroed if no ADCS frame arrives within this many ms. */
+#define CAN_RX_WATCHDOG_MS 200
 
 /*
  * Board overlay (e.g. ut_core.overlay) defines M1..M4 on zephyr,user.
@@ -137,11 +143,9 @@ BUILD_ASSERT((M1_MAGNETIC_POLES % 2U) == 0U && M1_MAGNETIC_POLES >= 2U,
 static const uint8_t hall_ring_fwd[6] = {1, 5, 4, 6, 2, 3};
 
 #define TELEMETRY_MS 500U
-#define FAKE_CAN_REF_MS 10U
 #define MOTOR_CTRL_BASE_MS 1U
 
 #define MOTOR_CTRL_THREAD_PRIO 1
-#define FAKE_CAN_THREAD_PRIO 3
 #define TELEMETRY_THREAD_PRIO 5
 #define APP_THREAD_STACK_SIZE 2048
 
@@ -312,10 +316,8 @@ static atomic_t app_run = ATOMIC_INIT(1);
 static struct gpio_callback hall_cb_gpiod;
 static struct gpio_callback hall_cb_gpioe;
 static struct k_thread motor_ctrl_thread_data;
-static struct k_thread fake_can_thread_data;
 static struct k_thread telemetry_thread_data;
 K_THREAD_STACK_DEFINE(motor_ctrl_stack, APP_THREAD_STACK_SIZE);
-K_THREAD_STACK_DEFINE(fake_can_stack, APP_THREAD_STACK_SIZE);
 K_THREAD_STACK_DEFINE(telemetry_stack, APP_THREAD_STACK_SIZE);
 
 static bool motor_has_speed_ctrl(unsigned mi)
@@ -943,7 +945,13 @@ static void motor_speed_ctrl_reset(unsigned mi)
 	speed_trans_prev_ctrl[mi] = m_trans[mi];
 }
 
-/* Triangle profile (MIN↔MAX over profile period, repeating). */
+/*
+ * Waveform reference generators — retained for bench bring-up when CAN is
+ * unavailable. No longer wired into the runtime (ADCS CAN drives rpm_ref_cmd
+ * now); the __attribute__((unused)) silences warnings. Safe to delete once
+ * the CAN link is validated on hardware.
+ */
+__attribute__((unused))
 static float motor_speed_ref_triangle(unsigned mi, int64_t t_ms)
 {
 	const float lo = fminf(motor_ref_rpm_min(mi), motor_ref_rpm_max(mi));
@@ -979,7 +987,7 @@ static float motor_speed_ref_triangle(unsigned mi, int64_t t_ms)
 	return lo + (hi - lo) * u;
 }
 
-/* Square-wave profile: MIN then MAX, repeating. */
+__attribute__((unused))
 static float motor_speed_ref_step(unsigned mi, int64_t t_ms)
 {
 	const float lo = fminf(motor_ref_rpm_min(mi), motor_ref_rpm_max(mi));
@@ -1005,7 +1013,7 @@ static float motor_speed_ref_step(unsigned mi, int64_t t_ms)
 	return hi;
 }
 
-/* Sinusoid profile over period, with optional phase offset (degrees). */
+__attribute__((unused))
 static float motor_speed_ref_sine(unsigned mi, int64_t t_ms)
 {
 	const float lo = fminf(motor_ref_rpm_min(mi), motor_ref_rpm_max(mi));
@@ -1032,7 +1040,7 @@ static float motor_speed_ref_sine(unsigned mi, int64_t t_ms)
 	return clampf(y, lo, hi);
 }
 
-/* Positive mechanical RPM command vs board uptime (ms). */
+__attribute__((unused))
 static float motor_speed_ref_at_uptime(unsigned mi, int64_t t_ms)
 {
 	if (motor_ref_mode(mi) == M1_REF_MODE_STEP) {
@@ -1126,24 +1134,41 @@ static void all_motors_off(void)
 	}
 }
 
-static void fake_can_ref_thread(void *arg1, void *arg2, void *arg3)
+/*
+ * Called from motor_can_rx thread once per received wheel-cmd frame, per wheel.
+ * Writes straight into the existing volatile setpoint array the PI loop
+ * already reads — no extra synchronization needed for scalar per-wheel floats.
+ */
+static void can_apply_setpoint_cb(unsigned mi, float rpm_signed)
 {
-	ARG_UNUSED(arg1);
-	ARG_UNUSED(arg2);
-	ARG_UNUSED(arg3);
-
-	while (atomic_get(&app_run) != 0) {
-		const int64_t now = k_uptime_get();
-
-		for (unsigned mi = 0; mi < NMOTORS; mi++) {
-			if (!motor_is_active(mi) || !motor_has_speed_ctrl(mi)) {
-				continue;
-			}
-			rpm_ref_cmd[mi] = motor_speed_ref_at_uptime(mi, now);
-		}
-
-		k_msleep(FAKE_CAN_REF_MS);
+	if (mi >= NMOTORS) {
+		return;
 	}
+	if (!motor_is_active(mi) || !motor_has_speed_ctrl(mi)) {
+		return;
+	}
+
+	float r = rpm_signed;
+	if (r >  (float)WHEEL_RPM_LIMIT) r =  (float)WHEEL_RPM_LIMIT;
+	if (r < -(float)WHEEL_RPM_LIMIT) r = -(float)WHEEL_RPM_LIMIT;
+	rpm_ref_cmd[mi] = r;
+}
+
+/*
+ * Called from motor_can_tx thread to assemble the outgoing telemetry frame.
+ * Returns measured RPM with sign applied from the six-step direction table,
+ * using the control-loop-filtered value for stability.
+ */
+static float can_measure_rpm_cb(unsigned mi)
+{
+	if (mi >= NMOTORS || !motor_is_active(mi) || !motor_has_speed_ctrl(mi)) {
+		return 0.f;
+	}
+	if (!speed_rpm_ctrl_filt_valid[mi]) {
+		return 0.f;
+	}
+	const float mag = speed_rpm_ctrl_filt[mi];
+	return m_use_rev[mi] ? -mag : mag;
 }
 
 static void motor_ctrl_thread(void *arg1, void *arg2, void *arg3)
@@ -1161,6 +1186,19 @@ static void motor_ctrl_thread(void *arg1, void *arg2, void *arg3)
 
 	while (atomic_get(&app_run) != 0) {
 		const int64_t now = k_uptime_get();
+
+		/*
+		 * CAN failsafe: if ADCS has gone silent, zero all setpoints so
+		 * the PI loop winds duty down to zero and the wheels coast to
+		 * rest. Applied every iteration (not just on the edge) so that
+		 * any concurrent RX that arrives here will re-arm naturally on
+		 * the next frame via the RX thread.
+		 */
+		if (motor_can_rx_age_ms() > CAN_RX_WATCHDOG_MS) {
+			for (unsigned mi = 0; mi < NMOTORS; mi++) {
+				rpm_ref_cmd[mi] = 0.f;
+			}
+		}
 
 		for (unsigned mi = 0; mi < NMOTORS; mi++) {
 			if (!motor_is_active(mi) || !motor_has_speed_ctrl(mi)) {
@@ -1252,6 +1290,25 @@ static void telemetry_thread(void *arg1, void *arg2, void *arg3)
 							   : "(disabled)");
 			}
 
+			{
+				const int64_t age = motor_can_rx_age_ms();
+				const char *state =
+					(age == INT64_MAX)          ? "no-rx" :
+					(age > CAN_RX_WATCHDOG_MS)  ? "stale-WATCHDOG" :
+								      "fresh";
+				if (age == INT64_MAX) {
+					printk("CANLOG rx=%u tx=%u age=never state=%s\n",
+					       (unsigned)motor_can_rx_count(),
+					       (unsigned)motor_can_tx_count(),
+					       state);
+				} else {
+					printk("CANLOG rx=%u tx=%u age=%lld ms state=%s\n",
+					       (unsigned)motor_can_rx_count(),
+					       (unsigned)motor_can_tx_count(),
+					       (long long)age, state);
+				}
+			}
+
 			if (gpio_pin_get_dt(&kill_in) != 0) {
 				printk("KILL asserted\n");
 				atomic_set(&app_run, 0);
@@ -1337,12 +1394,15 @@ int main(void)
 		rpm_ref_cmd[mi] = 0.f;
 	}
 
+	/*
+	 * Start with zero setpoint on every wheel. The CAN RX watchdog in
+	 * motor_ctrl_thread keeps it there until the first ADCS frame arrives;
+	 * the PI loop therefore holds duty at zero during bring-up, which is
+	 * the safe rotor state.
+	 */
 	for (unsigned mi = 0; mi < NMOTORS; mi++) {
-		if (motor_is_active(mi) && motor_has_speed_ctrl(mi)) {
-			const float ref0 = motor_speed_ref_at_uptime(mi, 0);
-			rpm_ref_cmd[mi] = ref0;
-			duty_pct[mi] = motor_speed_duty_ff_pct(mi, ref0);
-		}
+		rpm_ref_cmd[mi] = 0.f;
+		duty_pct[mi] = 0.f;
 	}
 
 	printk("\n============================================\n");
@@ -1361,56 +1421,21 @@ int main(void)
 		if (!motor_has_speed_ctrl(mi)) {
 			continue;
 		}
-		const uint32_t ref_lo =
-			(uint32_t)lrintf(fminf(motor_ref_rpm_min(mi), motor_ref_rpm_max(mi)));
-		const uint32_t ref_hi =
-			(uint32_t)lrintf(fmaxf(motor_ref_rpm_min(mi), motor_ref_rpm_max(mi)));
 		const uint32_t kp_ppm =
 			(uint32_t)lrintf(motor_speed_kp(mi) * 1000000.f);
 		const uint32_t ki_ppm =
 			(uint32_t)lrintf(motor_speed_ki(mi) * 1000000.f);
 		const uint32_t ff_rpm_per_pct =
 			(uint32_t)lrintf(motor_speed_rpm_per_duty_pct(mi) * 1000.f);
-		const float ref0 = motor_speed_ref_at_uptime(mi, 0);
-		const uint32_t ff_duty_milli_pct =
-			(uint32_t)lrintf(motor_speed_duty_ff_pct(mi, ref0) * 1000.f);
 
-		if (motor_ref_mode(mi) == M1_REF_MODE_STEP) {
-			printk("M%u ref STEP(square) %u..%u rpm  low %u ms  high %u ms  period %u ms  FF@t0=%u.%03u pct (%u.%03u rpm/pct)  PI kp=%u ppm ki=%u ppm  reverse=%u  duty cap %u%%\n",
-			       mi + 1U, (unsigned)ref_lo, (unsigned)ref_hi,
-			       (unsigned)motor_step_low_hold_ms(mi),
-			       (unsigned)motor_step_high_hold_ms(mi),
-			       (unsigned)(motor_step_low_hold_ms(mi) +
-					  motor_step_high_hold_ms(mi)),
-			       (unsigned)(ff_duty_milli_pct / 1000U),
-			       (unsigned)(ff_duty_milli_pct % 1000U),
-			       (unsigned)(ff_rpm_per_pct / 1000U),
-			       (unsigned)(ff_rpm_per_pct % 1000U),
-			       (unsigned)kp_ppm, (unsigned)ki_ppm,
-			       (unsigned)m_use_rev[mi], (unsigned)motor_duty_max_pct(mi));
-		} else if (motor_ref_mode(mi) == M1_REF_MODE_SINE) {
-			printk("M%u ref SINE %d..%d rpm  period %u ms  phase %d deg  FF@t0=%u.%03u pct (%u.%03u rpm/pct)  PI kp=%u ppm ki=%u ppm  reverse=%u  duty cap %u%%\n",
-			       mi + 1U, (int)lrintf(motor_ref_rpm_min(mi)),
-			       (int)lrintf(motor_ref_rpm_max(mi)),
-			       (unsigned)motor_ref_profile_period_ms(mi),
-			       (int)lrintf(motor_ref_phase_deg(mi)),
-			       (unsigned)(ff_duty_milli_pct / 1000U),
-			       (unsigned)(ff_duty_milli_pct % 1000U),
-			       (unsigned)(ff_rpm_per_pct / 1000U),
-			       (unsigned)(ff_rpm_per_pct % 1000U),
-			       (unsigned)kp_ppm, (unsigned)ki_ppm,
-			       (unsigned)m_use_rev[mi], (unsigned)motor_duty_max_pct(mi));
-		} else {
-			printk("M%u ref TRIANGLE %u..%u rpm  period %u ms  FF@t0=%u.%03u pct (%u.%03u rpm/pct)  PI kp=%u ppm ki=%u ppm  reverse=%u  duty cap %u%%\n",
-			       mi + 1U, (unsigned)ref_lo, (unsigned)ref_hi,
-			       (unsigned)motor_ref_profile_period_ms(mi),
-			       (unsigned)(ff_duty_milli_pct / 1000U),
-			       (unsigned)(ff_duty_milli_pct % 1000U),
-			       (unsigned)(ff_rpm_per_pct / 1000U),
-			       (unsigned)(ff_rpm_per_pct % 1000U),
-			       (unsigned)kp_ppm, (unsigned)ki_ppm,
-			       (unsigned)m_use_rev[mi], (unsigned)motor_duty_max_pct(mi));
-		}
+		printk("M%u  CAN-driven  PI kp=%u ppm ki=%u ppm  FF %u.%03u rpm/pct  reverse=%u  duty cap %u%%  |omega| cap %u rpm\n",
+		       mi + 1U,
+		       (unsigned)kp_ppm, (unsigned)ki_ppm,
+		       (unsigned)(ff_rpm_per_pct / 1000U),
+		       (unsigned)(ff_rpm_per_pct % 1000U),
+		       (unsigned)m_use_rev[mi],
+		       (unsigned)motor_duty_max_pct(mi),
+		       (unsigned)WHEEL_RPM_LIMIT);
 	}
 	printk("M1 hall dt_min: %u cycles (reject sub-step GPIO IRQ bunching)\n\n",
 	       m1_hall_dt_min_cyc);
@@ -1532,10 +1557,16 @@ int main(void)
 			      K_THREAD_STACK_SIZEOF(motor_ctrl_stack),
 			      motor_ctrl_thread, NULL, NULL, NULL,
 			      MOTOR_CTRL_THREAD_PRIO, 0, K_NO_WAIT);
-	(void)k_thread_create(&fake_can_thread_data, fake_can_stack,
-			      K_THREAD_STACK_SIZEOF(fake_can_stack),
-			      fake_can_ref_thread, NULL, NULL, NULL,
-			      FAKE_CAN_THREAD_PRIO, 0, K_NO_WAIT);
+
+	const struct motor_can_cfg can_cfg = {
+		.apply_setpoint = can_apply_setpoint_cb,
+		.measure_rpm    = can_measure_rpm_cb,
+	};
+	if (motor_can_init(&can_cfg) != 0) {
+		printk("WARN: motor_can_init failed — wheels will stay idle "
+		       "(watchdog will hold rpm_ref_cmd=0)\n");
+	}
+
 	(void)k_thread_create(&telemetry_thread_data, telemetry_stack,
 			      K_THREAD_STACK_SIZEOF(telemetry_stack),
 			      telemetry_thread, NULL, NULL, NULL,
@@ -1550,7 +1581,6 @@ int main(void)
 		k_msleep(1);
 	}
 
-	k_thread_join(&fake_can_thread_data, K_MSEC(200));
 	k_thread_join(&motor_ctrl_thread_data, K_MSEC(200));
 	k_thread_join(&telemetry_thread_data, K_MSEC(200));
 

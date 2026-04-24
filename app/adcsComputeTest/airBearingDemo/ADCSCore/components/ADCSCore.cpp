@@ -5,7 +5,7 @@ namespace ADCS {
 
 Core::Core()
     : observer_(), controller_(), last_time(static_cast<Param::TimeReal>(0.0)), first_update(true),
-    workspace_meas_(Param::Vector13::Zero()), workspace_ref_(Param::Vector10::Zero()),
+    workspace_meas_(Param::Vector13::Zero()),
     bearing_mode_armed(false)
 {
 }
@@ -37,9 +37,9 @@ AdcsOutput Core::update(const SensorData& sensors, const Command& command)
     Param::Real dt_scalar = static_cast<Param::Real>(dt);  // Safe: dt is small (0.025s), no precision loss
     Param::Vector11 states_hat = observer_.update(workspace_meas_, sensors.unix_time, dt_scalar);
 
-    // 3. Build reference (reuse workspace buffer; initialize for identity pointing)
-    workspace_ref_ = Param::Vector10::Zero();
-    workspace_ref_(0) = 1; // unit quaternion, no rotation
+    // 3. Build reference (identity pointing: unit quaternion, zero rates/accel)
+    Param::Vector10 reference = Param::Vector10::Zero();
+    reference(0) = 1; // unit quaternion, no rotation
 
     if (command.mode != MissionMode::BEARING) {
         bearing_mode_armed = false;
@@ -64,7 +64,7 @@ AdcsOutput Core::update(const SensorData& sensors, const Command& command)
     }
 
     // 4. Run controller
-    auto ctrl_out = controller_.update(states_hat, workspace_ref_, workspace_meas_, mode, dt_scalar);
+    auto ctrl_out = controller_.update(states_hat, reference, workspace_meas_, mode, dt_scalar);
 
     // 5. Pack output
     // states_hat layout (ObserverClass::StateVector = Vector11):
@@ -84,17 +84,6 @@ AdcsOutput Core::update(const SensorData& sensors, const Command& command)
     } else {
         out.current_mode = MissionMode::BEARING;
     }
-
-    // Adding equivalence variables, this is just for plotting and wouldn't be needed in orbit
-    out.reference = workspace_ref_; 
-    out.states_m = ctrl_out.states_m;
-    out.states_hat = states_hat;
-    
-    // Innovation diagnostics for tuning
-    out.accel_innovation = observer_.getLastAccelInnovation();
-    out.accel_innovation_norm = observer_.getLastAccelInnovationNorm();
-    out.mag_innovation = observer_.getLastMagInnovation();
-    out.mag_innovation_norm = observer_.getLastMagInnovationNorm();
 
     return out;
 }

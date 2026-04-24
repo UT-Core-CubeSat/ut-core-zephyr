@@ -6,9 +6,24 @@
 #include <zephyr/drivers/i2c.h>
 
 #include "ADCSCore.hpp"
+#include "wheel_bridge.hpp"
+#include "adcs_can.hpp"
 
 #define VERBOSE_EVERY    100  /* full sensor dump every Nth cycle */
 #define TELEMETRY_EVERY  10   /* ADCS estimator/controller telemetry cadence */
+
+/*
+ * Outer control loop cadence. 40 Hz = 25 ms period. Sensor I/O and CAN TX
+ * happen once per tick; a k_sleep after the tick pads to the period.
+ */
+#define ADCS_TICK_PERIOD_MS   25
+
+/*
+ * Wheel-speed feedback age tolerance: older than this and we treat CAN as
+ * stale and fall back to the last valid sample (zeros pre-boot). Motor
+ * board TX runs at 20 Hz (50 ms), so 200 ms accommodates ~4 missed frames.
+ */
+#define WHEEL_TLM_MAX_AGE_MS  200
 
 /* 1: command MissionMode::SAFE -> B-dot detumble (wheels zeroed, mtq active).
  * 0: default BEARING -> detumble until rates calm, then NDI point. */
@@ -258,61 +273,21 @@ static void mag_apply_calibration(size_t sensor_idx, const int16_t raw[3], float
  * =================================================================== */
 static constexpr float ACCEL_SCALE = 0.061e-3f * 9.80665f;  /* LSB -> m/s^2  (+/-2g mode, 0.061 mg/LSB) */
 
-/* Per-sensor gyro scales (LSB -> rad/s). Nominal is 8.75 mdps/LSB for both
- * (LSM6DSV @ +/-250 dps, I3G4250D @ +/-245 dps) but real-world scale factor
- * error on these parts (and/or undocumented register-encoding quirks on the
- * LSM6DSV variant) is far larger than the datasheet "1-3%" — calibration
- * against a known -180 deg Z rotation showed each sensor over-reporting by
- * 1.4x-2.3x, and with per-device spread. We correct each chip on each axis
- * independently. Calibrate by rotating the board a precisely known angle
- * about each body axis, integrating each sensor's output (MATLAB cumtrapz),
- * and setting the correction = true_angle / measured_angle. */
 static constexpr float GYRO_LSB_RADPS = 8.75e-3f * (Math::PI / 180.0f);
 
-/* Per-device, per-axis correction factors (dimensionless), calibrated against
- * +/-180 deg rotations about each body axis (short-window integrations, noise
- * bleed minimized).  I3G pair reads near true; LSM pair reads ~2x high -- a
- * strong indicator the LSM6DSV CTRL2_G actually selects a different full-scale
- * range than the datasheet variant we assumed (likely +/-125 dps, which would
- * halve real LSBs vs. the 8.75 mdps/LSB we apply).  Until the register write
- * at lsm6dsv_init() is fixed, these runtime corrections compensate.
- *
- * Calibration integrations (absolute-value measured / 180 deg):
- *            X            Y            Z
- *   LSM0:  349.9 -> 0.5144 | 371.3 -> 0.4848 | 353.9 -> 0.5086
- *   LSM1:  311.5 -> 0.5778 | 398.0 -> 0.4523 | 405.8 -> 0.4436
- *   I3G0:  177.1 -> 1.0163 | 179.2 -> 1.0045 | 171.4 -> 1.0502
- *   I3G1:  164.9 -> 1.0915 | 174.7 -> 1.0303 | 182.5 -> 0.9863
- */
+/* Per-device, per-axis correction factors, calibrated from +/-180 deg rotations
+ * (measured-integration / 180 deg):
+ *   LSM0  X 349.9 -> 0.5144  Y 371.3 -> 0.4848  Z 353.9 -> 0.5086
+ *   LSM1  X 311.5 -> 0.5778  Y 398.0 -> 0.4523  Z 405.8 -> 0.4436
+ *   I3G0  X 177.1 -> 1.0163  Y 179.2 -> 1.0045  Z 171.4 -> 1.0502
+ *   I3G1  X 164.9 -> 1.0915  Y 174.7 -> 1.0303  Z 182.5 -> 0.9863  */
 static constexpr float GYRO_CORR_LSM0[3] = { 0.5144f, 0.4848f, 0.5086f };
 static constexpr float GYRO_CORR_LSM1[3] = { 0.5778f, 0.4523f, 0.4436f };
 static constexpr float GYRO_CORR_I3G0[3] = { 1.0163f, 1.0045f, 1.0502f };
 static constexpr float GYRO_CORR_I3G1[3] = { 1.0915f, 1.0303f, 0.9863f };
 
-/* Per-set enable flags for A/B testing — flip one off, rotate the board,
- * and watch whether the observer's integrated attitude matches truth. */
-#ifndef GYRO_FUSE_LSM
-#define GYRO_FUSE_LSM 1
-#endif
-#ifndef GYRO_FUSE_I3G
-#define GYRO_FUSE_I3G 1
-#endif
-
-/* Print each sensor's converted gyro vector once every N cycles so you can
- * see live disagreement between the two sets on rotation. Set to 0 to disable. */
-#ifndef GYRO_DIAG_EVERY
-#define GYRO_DIAG_EVERY 30
-#endif
-
 static constexpr float MAG_SCALE_XY = 0.150e-6f;
 static constexpr float MAG_SCALE_Z  = 0.242e-6f;
-
-/* LSM6DSV reports specific force (reaction to gravity). The air-bearing observer
- * compares a *gravity-direction* unit vector to g_ref=(0,0,1); negate so rest
- * reading matches identity attitude (avoids huge accel innovation -> bogus β̂). */
-#ifndef AIR_BEARING_ACCEL_AS_GRAVITY_NEGATE
-#define AIR_BEARING_ACCEL_AS_GRAVITY_NEGATE 0
-#endif
 
 /* ===================================================================
  *  ADCS compute thread  —  sensors, Core::update, heartbeat LEDs
@@ -321,7 +296,7 @@ static void adcs_loop(void *, void *, void *)
 {
 	int cycle = 0;
 	int64_t prev_time = k_uptime_get();
-	float gyro_norm_max_window = 0.0f;
+	int64_t next_tick = prev_time;
 
 	while (1) {
 		int64_t now = k_uptime_get();
@@ -416,64 +391,22 @@ static void adcs_loop(void *, void *, void *)
 			}
 			return true;
 		};
-		auto apply_perdev = [](float out[3], const int16_t raw[3], const float corr[3]) {
-			for (int ax = 0; ax < 3; ax++) {
-				out[ax] = (float)raw[ax] * GYRO_LSB_RADPS * corr[ax];
-			}
-		};
-
-		/* Per-sensor converted vectors [rad/s], useful for A/B disagreement diagnosis. */
-		float lsm_gyro_rps[2][3] = {{0,0,0},{0,0,0}};
-		float i3g_gyro_rps[2][3] = {{0,0,0},{0,0,0}};
 
 		float gyro_avg[3] = {0.0f, 0.0f, 0.0f};
 		int gyro_count = 0;
-#if GYRO_FUSE_LSM
-		if (imu_ok[0] && gyro_sane_perdev(imu_gyro[0], GYRO_CORR_LSM0)) {
-			apply_perdev(lsm_gyro_rps[0], imu_gyro[0], GYRO_CORR_LSM0);
-			for (int ax = 0; ax < 3; ax++) gyro_avg[ax] += lsm_gyro_rps[0][ax];
+		auto accumulate_gyro = [&](const int16_t raw[3], const float corr[3]) {
+			for (int ax = 0; ax < 3; ax++)
+				gyro_avg[ax] += (float)raw[ax] * GYRO_LSB_RADPS * corr[ax];
 			gyro_count++;
-		}
-		if (imu_ok[1] && gyro_sane_perdev(imu_gyro[1], GYRO_CORR_LSM1)) {
-			apply_perdev(lsm_gyro_rps[1], imu_gyro[1], GYRO_CORR_LSM1);
-			for (int ax = 0; ax < 3; ax++) gyro_avg[ax] += lsm_gyro_rps[1][ax];
-			gyro_count++;
-		}
-#else
-		if (imu_ok[0] && gyro_sane_perdev(imu_gyro[0], GYRO_CORR_LSM0)) apply_perdev(lsm_gyro_rps[0], imu_gyro[0], GYRO_CORR_LSM0);
-		if (imu_ok[1] && gyro_sane_perdev(imu_gyro[1], GYRO_CORR_LSM1)) apply_perdev(lsm_gyro_rps[1], imu_gyro[1], GYRO_CORR_LSM1);
-#endif
-#if GYRO_FUSE_I3G
-		if (gyr_ok[0] && gyro_sane_perdev(gyr_raw[0], GYRO_CORR_I3G0)) {
-			apply_perdev(i3g_gyro_rps[0], gyr_raw[0], GYRO_CORR_I3G0);
-			for (int ax = 0; ax < 3; ax++) gyro_avg[ax] += i3g_gyro_rps[0][ax];
-			gyro_count++;
-		}
-		if (gyr_ok[1] && gyro_sane_perdev(gyr_raw[1], GYRO_CORR_I3G1)) {
-			apply_perdev(i3g_gyro_rps[1], gyr_raw[1], GYRO_CORR_I3G1);
-			for (int ax = 0; ax < 3; ax++) gyro_avg[ax] += i3g_gyro_rps[1][ax];
-			gyro_count++;
-		}
-#else
-		if (gyr_ok[0] && gyro_sane_perdev(gyr_raw[0], GYRO_CORR_I3G0)) apply_perdev(i3g_gyro_rps[0], gyr_raw[0], GYRO_CORR_I3G0);
-		if (gyr_ok[1] && gyro_sane_perdev(gyr_raw[1], GYRO_CORR_I3G1)) apply_perdev(i3g_gyro_rps[1], gyr_raw[1], GYRO_CORR_I3G1);
-#endif
+		};
+		if (imu_ok[0] && gyro_sane_perdev(imu_gyro[0], GYRO_CORR_LSM0)) accumulate_gyro(imu_gyro[0], GYRO_CORR_LSM0);
+		if (imu_ok[1] && gyro_sane_perdev(imu_gyro[1], GYRO_CORR_LSM1)) accumulate_gyro(imu_gyro[1], GYRO_CORR_LSM1);
+		if (gyr_ok[0] && gyro_sane_perdev(gyr_raw[0],  GYRO_CORR_I3G0)) accumulate_gyro(gyr_raw[0],  GYRO_CORR_I3G0);
+		if (gyr_ok[1] && gyro_sane_perdev(gyr_raw[1],  GYRO_CORR_I3G1)) accumulate_gyro(gyr_raw[1],  GYRO_CORR_I3G1);
 		if (gyro_count > 0) {
 			for (int ax = 0; ax < 3; ax++)
 				gyro_avg[ax] /= (float)gyro_count;
 		}
-
-#if GYRO_DIAG_EVERY > 0
-		if ((cycle % GYRO_DIAG_EVERY) == 0) {
-			printk("GYRO [rad/s] LSM0:%+6.3f %+6.3f %+6.3f | LSM1:%+6.3f %+6.3f %+6.3f | "
-			       "I3G0:%+6.3f %+6.3f %+6.3f | I3G1:%+6.3f %+6.3f %+6.3f | FUSED:%+6.3f %+6.3f %+6.3f\n",
-			       (double)lsm_gyro_rps[0][0], (double)lsm_gyro_rps[0][1], (double)lsm_gyro_rps[0][2],
-			       (double)lsm_gyro_rps[1][0], (double)lsm_gyro_rps[1][1], (double)lsm_gyro_rps[1][2],
-			       (double)i3g_gyro_rps[0][0], (double)i3g_gyro_rps[0][1], (double)i3g_gyro_rps[0][2],
-			       (double)i3g_gyro_rps[1][0], (double)i3g_gyro_rps[1][1], (double)i3g_gyro_rps[1][2],
-			       (double)gyro_avg[0], (double)gyro_avg[1], (double)gyro_avg[2]);
-		}
-#endif
 
 		float mag_avg[3] = {0.0f, 0.0f, 0.0f};
 		int mag_count = 0;
@@ -495,27 +428,38 @@ static void adcs_loop(void *, void *, void *)
 		ADCS::SensorData sd;
 		sd.unix_time = (double)k_uptime_get() / 1000.0;
 		/* Frame rotation R = [0,1,0; -1,0,0; 0,0,1]: x'=y, y'=-x, z'=z */
-#if AIR_BEARING_ACCEL_AS_GRAVITY_NEGATE
-		sd.accelerometer = Math::Vec<3>{-accel_avg[1], accel_avg[0], -accel_avg[2]};
-#else
 		sd.accelerometer = Math::Vec<3>{accel_avg[1], -accel_avg[0], accel_avg[2]};
-#endif
 		sd.gyro = Math::Vec<3>{gyro_avg[1], -gyro_avg[0], gyro_avg[2]};
 
-		/* Track worst-case gyro norm since last telemetry print, for motion-gate diagnosis. */
-		float gn = sqrtf(gyro_avg[0]*gyro_avg[0] +
-		                 gyro_avg[1]*gyro_avg[1] +
-		                 gyro_avg[2]*gyro_avg[2]);
-		if (gn > gyro_norm_max_window) gyro_norm_max_window = gn;
 		/* Frame rotation R = [0,-1,0; -1,0,0; 0,0,-1]: x'=-y, y'=-x, z'=-z */
 		sd.magnetometer  = Math::Vec<3>{-mag_avg[1], -mag_avg[0], -mag_avg[2]};
-		sd.wheel_speeds  = Math::Vec<4>::Zero();
+
+		/*
+		 * Pull the latest wheel-speed telemetry from the motor board. If
+		 * CAN is down or pre-first-frame, wheel_fresh=false and the call
+		 * populates zeros — observer then sees zero wheel momentum rather
+		 * than silently trusting the previous cycle's sample.
+		 */
+		bool wheel_fresh = adcs_can_get_wheel_speeds(sd.wheel_speeds,
+							     WHEEL_TLM_MAX_AGE_MS);
 
 		ADCS::Command adcs_cmd;
 #if ADCS_AIR_BEARING_FORCE_DETUMBLE
 		adcs_cmd.mode = ADCS::MissionMode::OFF;
 #endif
 		ADCS::AdcsOutput out = adcs_core.update(sd, adcs_cmd);
+
+		/*
+		 * Torque -> reference-RPM bridge. Uses the measured loop dt
+		 * (not the nominal 25 ms) so integrator accuracy tracks
+		 * scheduler jitter. Units: rpm_ref[] is mechanical RPM.
+		 */
+		float rpm_ref[4];
+		const float dt_s = static_cast<float>(loop_dt_ms) / 1000.0f;
+		ADCS::wheel_bridge_step(out.wheel_torque, sd.wheel_speeds, dt_s,
+					rpm_ref);
+
+		int tx_err = adcs_can_send_wheel_rpm(rpm_ref);
 
 		if (telemetry) {
 			const char *mode = "?";
@@ -553,10 +497,8 @@ static void adcs_loop(void *, void *, void *)
 			printk("[ADCS] a [m/s^2]: %.4e %.4e %.4e\n",
 			       (double)sd.accelerometer(0), (double)sd.accelerometer(1),
 			       (double)sd.accelerometer(2));
-			printk("[ADCS] gy_raw [rad/s]: %.4f %.4f %.4f  |max_win|=%.4f\n",
-			       (double)sd.gyro(0), (double)sd.gyro(1), (double)sd.gyro(2),
-			       (double)gyro_norm_max_window);
-			gyro_norm_max_window = 0.0f;
+			printk("[ADCS] gy_raw [rad/s]: %.4f %.4f %.4f\n",
+			       (double)sd.gyro(0), (double)sd.gyro(1), (double)sd.gyro(2));
 			/* %.6f hides sub-micro torques; dipole is [A·m²] not N·m */
 			printk("[ADCS] tau_w [N*m]: %.4e %.4e %.4e %.4e\n",
 			       (double)out.wheel_torque(0), (double)out.wheel_torque(1),
@@ -564,6 +506,17 @@ static void adcs_loop(void *, void *, void *)
 			printk("[ADCS] mtq [A*m^2]: %.4e %.4e %.4e\n",
 			       (double)out.mtq_dipole(0), (double)out.mtq_dipole(1),
 			       (double)out.mtq_dipole(2));
+			printk("[ADCS] rpm_ref: %.0f %.0f %.0f %.0f  tx_err=%d tx=%u rx=%u fresh=%d age=%lldms\n",
+			       (double)rpm_ref[0], (double)rpm_ref[1],
+			       (double)rpm_ref[2], (double)rpm_ref[3],
+			       tx_err,
+			       (unsigned)adcs_can_tx_count(),
+			       (unsigned)adcs_can_rx_count(),
+			       wheel_fresh ? 1 : 0,
+			       (long long)adcs_can_last_rx_age_ms());
+			printk("[ADCS] omega_meas [rad/s]: %.3f %.3f %.3f %.3f\n",
+			       (double)sd.wheel_speeds(0), (double)sd.wheel_speeds(1),
+			       (double)sd.wheel_speeds(2), (double)sd.wheel_speeds(3));
 		}
 
 		gpio_pin_toggle_dt(&led0);
@@ -571,6 +524,19 @@ static void adcs_loop(void *, void *, void *)
 		if (cycle % 3 == 0) gpio_pin_toggle_dt(&led2);
 
 		cycle++;
+
+		/*
+		 * Pace to ADCS_TICK_PERIOD_MS. If a tick overruns (sensors slow
+		 * or printk burst), skip the sleep and catch up next iteration
+		 * rather than compounding phase error.
+		 */
+		next_tick += ADCS_TICK_PERIOD_MS;
+		int64_t sleep_ms = next_tick - k_uptime_get();
+		if (sleep_ms > 0) {
+			k_sleep(K_MSEC(sleep_ms));
+		} else {
+			next_tick = k_uptime_get();
+		}
 	}
 }
 
@@ -648,6 +614,12 @@ int main(void)
 	}
 
 	k_msleep(50);
+
+	/* --- CAN (FDCAN1): wheel setpoint TX + wheel telemetry RX --- */
+	if (adcs_can_init() != 0) {
+		printk("[ADCS] CAN init FAILED — wheel bridge will still run but "
+		       "TX/RX will be no-ops\n");
+	}
 
 	printk("\n[ADCS] ADCSCore (Air Bearing) — compute thread starting\n");
 #if ADCS_AIR_BEARING_FORCE_DETUMBLE

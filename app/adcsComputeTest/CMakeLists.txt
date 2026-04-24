@@ -17,12 +17,13 @@ if(AIR_BEARING)
 
     target_sources(app PRIVATE
         src/mainAirBearing.cpp
+        src/wheel_bridge.cpp
+        src/adcs_can.cpp
         ${ADCS_DIR}/ADCSCore.cpp
         ${ADCS_DIR}/core_Observer.cpp
         ${ADCS_DIR}/core_ControllerManager.cpp
         ${ADCS_DIR}/core_ControllerNDI.cpp
         ${ADCS_DIR}/core_ControllerBDot.cpp
-        ${ADCS_DIR}/core_HelperFunctions.cpp
     )
 else()
     message(STATUS ">>> Building: Orbit Flight SW <<<")
@@ -40,4 +41,7 @@ else()
     )
 endif()
 
-target_include_directories(app PRIVATE ${ADCS_DIR})
+target_include_directories(app PRIVATE
+    ${ADCS_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../common
+)

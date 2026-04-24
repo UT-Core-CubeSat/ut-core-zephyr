@@ -160,25 +160,6 @@ namespace Param {
         constexpr Real alpha_BDot = static_cast<Real>(0.95);
         constexpr Real beta_fuse = static_cast<Real>(0.1);
 
-        // Feed-forward compensation for wheel internal dynamics
-        namespace FeedForward {
-            constexpr bool enable_friction_comp = false;           // Compensate friction
-            constexpr bool enable_ripple_comp = false;            // Compensate ripple (experimental)
-            
-            // Friction model parameters (match plant: Kt*I0/omega_nl)
-            // Kt=8.3e-3, I0=0.1A, omega_nl=13600*2*pi/60=1424 rad/s
-            constexpr Real b_viscous = static_cast<Real>(5.83e-7); // [N*m/(rad/s)] corrected
-            constexpr Real tau_coulomb = static_cast<Real>(2.0e-5); // [N*m] Coulomb friction
-            constexpr Real omega_eps = static_cast<Real>(0.1);    // [rad/s] Smoothing for sign
-            
-            // Ripple model parameters (match plant)
-            constexpr Real ripple_amp = static_cast<Real>(2.0e-5); // [N*m] Ripple amplitude
-            constexpr Real ripple_harmonic = static_cast<Real>(1.0); // Harmonic multiple
-            
-            // Feed-forward gain (tune for model mismatch robustness)
-            constexpr Real ff_gain = static_cast<Real>(1.0);      // Scale factor [0, 1]
-        }
-
         // Priority MTQ desaturation scheduler for BEARING mode
         namespace Desat {
             constexpr Real entry_rate_norm = static_cast<Real>(5.0) * deg2rad;        // [rad/s]
@@ -203,9 +184,6 @@ namespace Param {
         // TUNABLE KNOBS (edit this block first)
         // ================================================================
         namespace Knobs {
-            // Earth rotation (for frame transformations)
-            constexpr Real omega_earth_z = static_cast<Real>(7.2921159e-5);
-
             // Reference directions for vector-based updates
             inline const Vector3 g_ref = Vector3{static_cast<Real>(0.0), static_cast<Real>(0.0), static_cast<Real>(1.0)};
             inline const Vector3 B_ref = Vector3{static_cast<Real>(1.0), static_cast<Real>(1.0), static_cast<Real>(1.0)}.normalized();
@@ -246,12 +224,6 @@ namespace Param {
             constexpr Real p0_angle_sigma_deg = static_cast<Real>(2.0); // was 8.0
             constexpr Real p0_bias_sigma_deg_s = static_cast<Real>(0.05); // was 0.3
 
-            // Star tracker/QUEST settings
-            constexpr Real sigma_star_arcsec = static_cast<Real>(100.0); // 100
-            constexpr Real quest_accuracy_deg = static_cast<Real>(15.0); // 15
-            constexpr Real T_star = static_cast<Real>(0.5); // 0.5
-            constexpr Real T_quest = static_cast<Real>(0.5); // 0.5
-
             // MEKF vector measurement covariance (unit-vector residual variance).
             // Indoor reality: accel sees vibration + small modeling error,
             // mag sees 5-15% distortion from wiring/metal. Tight values caused
@@ -261,16 +233,11 @@ namespace Param {
             // Safe to be tight now that TRIAD makes B_ref consistent at boot.
             constexpr Real R_accel_var = static_cast<Real>(2e-6);
             constexpr Real R_mag_var = static_cast<Real>(1e-3);
-
-            // CSS parameter for sun vector synthesis
-            constexpr Real I_max = static_cast<Real>(10e-3); // 10e-3
         }
 
         // ================================================================
         // DERIVED EXPORTS (consumed by observer/controller code)
         // ================================================================
-        inline const Vector3 omega_earth = Vector3{static_cast<Real>(0.0), static_cast<Real>(0.0), Knobs::omega_earth_z};
-
         inline const Vector3 g_ref = Knobs::g_ref;
         inline const Vector3 B_ref = Knobs::B_ref;
 
@@ -282,12 +249,6 @@ namespace Param {
         inline const Vector3 sigma_gyro = Knobs::sigma_gyro_deg_s * deg2rad;
         inline const Vector3 sigma_bias_walk = Knobs::sigma_bias_walk_deg_s * deg2rad;
         constexpr Real tau_bias = Knobs::tau_bias;
-
-        constexpr Real sigma_star_rad = (Knobs::sigma_star_arcsec / static_cast<Real>(3600.0)) * deg2rad;
-        constexpr Real quest_accuracy = Knobs::quest_accuracy_deg * deg2rad;
-        constexpr Real T_star = Knobs::T_star;
-        constexpr Real T_quest = Knobs::T_quest;
-        constexpr Real I_max = Knobs::I_max;
 
         inline const Matrix6 P_0 = [] {
             Matrix6 m = Matrix6::Zero();
@@ -315,20 +276,6 @@ namespace Param {
             q_mat(4,4) = sigma_bias_walk(1) * sigma_bias_walk(1);
             q_mat(5,5) = sigma_bias_walk(2) * sigma_bias_walk(2);
             return q_mat;
-        }();
-
-        inline const Matrix3 R_star = [] {
-            Matrix3 m = Matrix3::Zero();
-            Real var = static_cast<Real>(4.0) * sigma_star_rad * sigma_star_rad;
-            m(0,0) = var; m(1,1) = var; m(2,2) = var;
-            return m;
-        }();
-
-        inline const Matrix3 R_quest = [] {
-            Matrix3 m = Matrix3::Zero();
-            Real var = quest_accuracy * quest_accuracy;
-            m(0,0) = var; m(1,1) = var; m(2,2) = var;
-            return m;
         }();
 
         inline const Matrix3 R_accel = [] {

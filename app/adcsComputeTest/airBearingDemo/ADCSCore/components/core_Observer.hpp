@@ -2,7 +2,6 @@
 #define CORE_OBSERVER_HPP
 
 #include "core_Parameters.hpp"
-#include "core_HelperFunctions.hpp"
 
 class ObserverClass {
 public: 
@@ -15,12 +14,6 @@ public:
 
     ObserverClass();
     StateVector update(const Param::Vector13& measurements, const TimeReal& t, const Scalar& dt);
-    
-    // Getters for innovation diagnostics
-    Scalar getLastAccelInnovationNorm() const { return last_accel_innovation_norm; }
-    Scalar getLastMagInnovationNorm() const { return last_mag_innovation_norm; }
-    Vector3 getLastAccelInnovation() const { return last_accel_innovation; }
-    Vector3 getLastMagInnovation() const { return last_mag_innovation; }
 
     // Warmup diagnostics (TRIAD self-init)
     bool isRunning() const { return init_phase_ == InitPhase::Running; }
@@ -28,8 +21,6 @@ public:
     static constexpr int getInitSampleTarget() { return kInitSampleTarget; }
     
 private:
-    HelperFunctions helpers;
-
     void propagate(const Vector3& omega_meas, Scalar dt);
     void updateWithGravity(const Vector3& accel_meas, Scalar dt);  // NEW
     void updateWithMagnetometer(const Vector3& mag_meas, Scalar dt);  // NEW
@@ -74,12 +65,6 @@ private:
     Vector3 sigma_v, sigma_u;
     Param::TimeReal epoch_time;
     Param::TimeReal current_time;
-    
-    // Innovation diagnostics (for debugging/tuning)
-    Vector3 last_accel_innovation;
-    Scalar last_accel_innovation_norm;
-    Vector3 last_mag_innovation;
-    Scalar last_mag_innovation_norm;
 };
 
 #endif

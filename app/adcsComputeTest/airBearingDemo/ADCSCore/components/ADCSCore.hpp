@@ -35,17 +35,6 @@ struct AdcsOutput {
     Math::Vec<3> rate_est;
     bool estimator_valid;
     MissionMode current_mode;
-    
-    // These are for logging equivalence. Won't be here in orbit, but they make it easier to plot and debug in simulation.
-    Param::Vector10 reference;   // Reference trajectory
-    Param::Vector7 states_m;     // Model states from controller
-    Param::Vector11 states_hat;  // Full estimated state
-    
-    // Innovation diagnostics (for tuning)
-    Math::Vec<3> accel_innovation;
-    Math::Real accel_innovation_norm;
-    Math::Vec<3> mag_innovation;
-    Math::Real mag_innovation_norm;
 };
 
 // UT-CORE-ADCS CLASS (The "Black Box")
@@ -72,7 +61,6 @@ private:
     // RTOS Optimization: Pre-allocated workspace to avoid per-call allocations
     // Reused across update() calls to minimize heap fragmentation and latency jitter
     mutable Param::Vector13 workspace_meas_;   // Measurement vector workspace
-    mutable Param::Vector10 workspace_ref_;    // Reference workspace
 
     // BEARING mode only arms after rates are sufficiently low.
     bool bearing_mode_armed;

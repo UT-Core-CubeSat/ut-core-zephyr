@@ -8,10 +8,9 @@
 class ControllerManager {
 public: 
 
-    // Input / Output Structs 
+    // Input / Output Structs
     struct ControlOutput {
         Param::Vector7 tau;
-        Param::Vector7 states_m;
     };
 
 

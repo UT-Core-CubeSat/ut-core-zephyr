@@ -1,5 +1,21 @@
 #include "core_Observer.hpp"
-#include <iostream>  // DEBUG
+
+namespace {
+
+ObserverClass::Vector3 quatRotateLocal(const ObserverClass::Quat& q,
+                                       const ObserverClass::Vector3& v) {
+    // Direct rotation formula: v' = v + 2*q_w*(q_v x v) + 2*(q_v x (q_v x v))
+    ObserverClass::Scalar qw = q(0);
+    ObserverClass::Vector3 qv = q.segment<3>(1);
+
+    ObserverClass::Vector3 qv_cross_v = qv.cross(v);
+    ObserverClass::Vector3 qv_cross_qv_cross_v = qv.cross(qv_cross_v);
+
+    return v + static_cast<ObserverClass::Scalar>(2.0) * qw * qv_cross_v
+             + static_cast<ObserverClass::Scalar>(2.0) * qv_cross_qv_cross_v;
+}
+
+} // namespace
 
 ObserverClass::ObserverClass()
     : last_q_star(Param::Vector4::Zero()),
@@ -21,10 +37,6 @@ ObserverClass::ObserverClass()
       current_time(static_cast<Param::TimeReal>(0.0))
 {
     q_hat(0) = 1; q_hat(1) = 0; q_hat(2) = 0; q_hat(3) = 0;
-    last_accel_innovation = Vector3::Zero();
-    last_accel_innovation_norm = static_cast<Scalar>(0.0);
-    last_mag_innovation = Vector3::Zero();
-    last_mag_innovation_norm = static_cast<Scalar>(0.0);
 }
 
 void ObserverClass::propagate(const Vector3& omega_meas, Scalar dt) {
@@ -105,15 +117,11 @@ void ObserverClass::updateWithGravity(const Vector3& accel_meas, Scalar dt) {
     Quat q_conj;
     q_conj(0) = q_hat(0);
     q_conj.setSegment(1, -q_hat.segment<3>(1));
-    Vector3 g_pred_body = helpers.quatRotate(q_conj, g_ref);
+    Vector3 g_pred_body = quatRotateLocal(q_conj, g_ref);
     
     // Subtraction residual: z = g_meas - g_pred
     Vector3 z = g_meas_body - g_pred_body;
-    
-    // Store innovation for diagnostics
-    last_accel_innovation = z;
-    last_accel_innovation_norm = z.norm();
-    
+
     // Measurement matrix H = -skew(g_pred)
     Param::Matrix36 H;
     H(0,0) = 0;                H(0,1) = -g_pred_body(2); H(0,2) = g_pred_body(1);
@@ -175,15 +183,11 @@ void ObserverClass::updateWithMagnetometer(const Vector3& mag_meas, Scalar dt) {
     Quat q_conj;
     q_conj(0) = q_hat(0);
     q_conj.setSegment(1, -q_hat.segment<3>(1));
-    Vector3 B_pred_body = helpers.quatRotate(q_conj, B_ref);
+    Vector3 B_pred_body = quatRotateLocal(q_conj, B_ref);
     
     // Subtraction residual: z = B_meas - B_pred
     Vector3 z = B_meas_body - B_pred_body;
-    
-    // Store innovation for diagnostics
-    last_mag_innovation = z;
-    last_mag_innovation_norm = z.norm();
-    
+
     // Measurement matrix H = -skew(B_pred)
     Param::Matrix36 H;
     H(0,0) = 0;                H(0,1) = -B_pred_body(2); H(0,2) = B_pred_body(1);
@@ -319,7 +323,7 @@ void ObserverClass::initializeFromStatic() {
         q_hat.normalize();
         // B_ref consistent with the just-computed attitude so the first mag
         // update has zero innovation. quatRotate(q_hat, body) → inertial.
-        B_ref = helpers.quatRotate(q_hat, m_body_unit);
+        B_ref = quatRotateLocal(q_hat, m_body_unit);
     } else {
         // Mag fusion disabled (bench / no Helmholtz cage). Yaw is unobservable
         // from accel alone, so pin yaw=0 and use a pure tilt quaternion derived
