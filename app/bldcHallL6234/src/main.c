@@ -5,8 +5,11 @@
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/pwm.h>
+#include <zephyr/drivers/can.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/sys/atomic.h>
+#include <errno.h>
+#include "../../../common/can_proto.h"
 
 #define USER_NODE DT_PATH(zephyr_user)
 
@@ -137,11 +140,10 @@ BUILD_ASSERT((M1_MAGNETIC_POLES % 2U) == 0U && M1_MAGNETIC_POLES >= 2U,
 static const uint8_t hall_ring_fwd[6] = {1, 5, 4, 6, 2, 3};
 
 #define TELEMETRY_MS 500U
-#define FAKE_CAN_REF_MS 10U
 #define MOTOR_CTRL_BASE_MS 1U
 
 #define MOTOR_CTRL_THREAD_PRIO 1
-#define FAKE_CAN_THREAD_PRIO 3
+#define CAN_RX_THREAD_PRIO 3
 #define TELEMETRY_THREAD_PRIO 5
 #define APP_THREAD_STACK_SIZE 2048
 
@@ -308,14 +310,16 @@ static float speed_rpm_ctrl_filt[NMOTORS];
 static bool speed_rpm_ctrl_filt_valid[NMOTORS];
 static volatile float rpm_ref_cmd[NMOTORS];
 static atomic_t app_run = ATOMIC_INIT(1);
+static const struct device *can_dev = DEVICE_DT_GET(DT_NODELABEL(fdcan1));
+CAN_MSGQ_DEFINE(can_rx_q, 16);
 
 static struct gpio_callback hall_cb_gpiod;
 static struct gpio_callback hall_cb_gpioe;
 static struct k_thread motor_ctrl_thread_data;
-static struct k_thread fake_can_thread_data;
+static struct k_thread can_rx_thread_data;
 static struct k_thread telemetry_thread_data;
 K_THREAD_STACK_DEFINE(motor_ctrl_stack, APP_THREAD_STACK_SIZE);
-K_THREAD_STACK_DEFINE(fake_can_stack, APP_THREAD_STACK_SIZE);
+K_THREAD_STACK_DEFINE(can_rx_stack, APP_THREAD_STACK_SIZE);
 K_THREAD_STACK_DEFINE(telemetry_stack, APP_THREAD_STACK_SIZE);
 
 static bool motor_has_speed_ctrl(unsigned mi)
@@ -901,6 +905,123 @@ static float clampf(float x, float lo, float hi)
 	return x;
 }
 
+static int16_t unpack_be_i16(uint8_t msb, uint8_t lsb)
+{
+	return (int16_t)((uint16_t)msb << 8 | (uint16_t)lsb);
+}
+
+static bool set_motor_rpm_ref(unsigned motor_idx, float rpm_ref)
+{
+	if (!motor_has_speed_ctrl(motor_idx)) {
+		return false;
+	}
+
+	const float ref_min = motor_ref_rpm_min(motor_idx);
+	const float ref_max = motor_ref_rpm_max(motor_idx);
+	const float lo = fmaxf(fminf(ref_min, ref_max), -(float)WHEEL_RPM_ABS_MAX);
+	const float hi = fminf(fmaxf(ref_min, ref_max), (float)WHEEL_RPM_ABS_MAX);
+
+	rpm_ref_cmd[motor_idx] = clampf(rpm_ref, lo, hi);
+	return true;
+}
+
+static void handle_can_command(const struct can_frame *f)
+{
+	const uint8_t src = (uint8_t)((f->id >> 14) & 0xFFU);
+	const uint8_t dst = (uint8_t)((f->id >> 6) & 0xFFU);
+	const uint8_t msg_class = (uint8_t)(f->id & 0x3FU);
+
+	if (msg_class != CLS_COMMAND || src != ADCS_ID) {
+		return;
+	}
+	if (dst != MOTOR_ID && dst != CAN_BROADCAST) {
+		return;
+	}
+	if (f->dlc < 5U || f->data[1] != OP_SET_WHEEL_RPM) {
+		return;
+	}
+
+	const uint8_t motor_sel = f->data[2];
+	const int16_t rpm_i16 = unpack_be_i16(f->data[3], f->data[4]);
+
+	if (motor_sel == 0U) {
+		for (unsigned mi = 0; mi < NMOTORS; mi++) {
+			if (!motor_is_active(mi)) {
+				continue;
+			}
+			(void)set_motor_rpm_ref(mi, (float)rpm_i16);
+		}
+		printk("CAN RPM cmd: all=%d from ADCS\n", (int)rpm_i16);
+		return;
+	}
+
+	if (motor_sel > NMOTORS) {
+		return;
+	}
+
+	const unsigned mi = (unsigned)(motor_sel - 1U);
+
+	if (!motor_is_active(mi)) {
+		return;
+	}
+	if (set_motor_rpm_ref(mi, (float)rpm_i16)) {
+		printk("CAN RPM cmd: M%u=%d from ADCS\n", mi + 1U, (int)rpm_i16);
+	}
+}
+
+static int can_setup(void)
+{
+	if (!device_is_ready(can_dev)) {
+		printk("ERR: CAN device not ready\n");
+		return -ENODEV;
+	}
+
+	int ret = can_set_bitrate(can_dev, 500000);
+
+	if (ret != 0) {
+		printk("ERR: CAN bitrate cfg failed (%d)\n", ret);
+		return ret;
+	}
+
+	ret = can_set_mode(can_dev, CAN_MODE_NORMAL);
+	if (ret != 0) {
+		printk("ERR: CAN mode cfg failed (%d)\n", ret);
+		return ret;
+	}
+
+	ret = can_start(can_dev);
+	if (ret != 0) {
+		printk("ERR: CAN start failed (%d)\n", ret);
+		return ret;
+	}
+
+	const struct can_filter to_me = {
+		.id = CAN_DST(MOTOR_ID),
+		.mask = CAN_DST_MASK_29,
+		.flags = CAN_FILTER_IDE,
+	};
+	const struct can_filter bcast = {
+		.id = CAN_DST(CAN_BROADCAST),
+		.mask = CAN_DST_MASK_29,
+		.flags = CAN_FILTER_IDE,
+	};
+
+	ret = can_add_rx_filter_msgq(can_dev, &can_rx_q, &to_me);
+	if (ret < 0) {
+		printk("ERR: CAN to_me filter failed (%d)\n", ret);
+		return ret;
+	}
+
+	ret = can_add_rx_filter_msgq(can_dev, &can_rx_q, &bcast);
+	if (ret < 0) {
+		printk("ERR: CAN bcast filter failed (%d)\n", ret);
+		return ret;
+	}
+
+	printk("CAN ready: node=0x%02X, ADCS cmd opcode=0x%02X\n", MOTOR_ID, OP_SET_WHEEL_RPM);
+	return 0;
+}
+
 static float motor_rpm_from_transition_window(unsigned mi, uint32_t trans_now,
 					      uint32_t trans_prev, uint32_t dt_ms)
 {
@@ -1126,23 +1247,19 @@ static void all_motors_off(void)
 	}
 }
 
-static void fake_can_ref_thread(void *arg1, void *arg2, void *arg3)
+static void can_rx_ref_thread(void *arg1, void *arg2, void *arg3)
 {
 	ARG_UNUSED(arg1);
 	ARG_UNUSED(arg2);
 	ARG_UNUSED(arg3);
 
 	while (atomic_get(&app_run) != 0) {
-		const int64_t now = k_uptime_get();
+		struct can_frame rx = {0};
+		int ret = k_msgq_get(&can_rx_q, &rx, K_MSEC(100));
 
-		for (unsigned mi = 0; mi < NMOTORS; mi++) {
-			if (!motor_is_active(mi) || !motor_has_speed_ctrl(mi)) {
-				continue;
-			}
-			rpm_ref_cmd[mi] = motor_speed_ref_at_uptime(mi, now);
+		if (ret == 0) {
+			handle_can_command(&rx);
 		}
-
-		k_msleep(FAKE_CAN_REF_MS);
 	}
 }
 
@@ -1339,10 +1456,13 @@ int main(void)
 
 	for (unsigned mi = 0; mi < NMOTORS; mi++) {
 		if (motor_is_active(mi) && motor_has_speed_ctrl(mi)) {
-			const float ref0 = motor_speed_ref_at_uptime(mi, 0);
-			rpm_ref_cmd[mi] = ref0;
-			duty_pct[mi] = motor_speed_duty_ff_pct(mi, ref0);
+			rpm_ref_cmd[mi] = 0.f;
+			duty_pct[mi] = 0.f;
 		}
+	}
+
+	if (can_setup() != 0) {
+		return -1;
 	}
 
 	printk("\n============================================\n");
@@ -1532,10 +1652,10 @@ int main(void)
 			      K_THREAD_STACK_SIZEOF(motor_ctrl_stack),
 			      motor_ctrl_thread, NULL, NULL, NULL,
 			      MOTOR_CTRL_THREAD_PRIO, 0, K_NO_WAIT);
-	(void)k_thread_create(&fake_can_thread_data, fake_can_stack,
-			      K_THREAD_STACK_SIZEOF(fake_can_stack),
-			      fake_can_ref_thread, NULL, NULL, NULL,
-			      FAKE_CAN_THREAD_PRIO, 0, K_NO_WAIT);
+	(void)k_thread_create(&can_rx_thread_data, can_rx_stack,
+			      K_THREAD_STACK_SIZEOF(can_rx_stack),
+			      can_rx_ref_thread, NULL, NULL, NULL,
+			      CAN_RX_THREAD_PRIO, 0, K_NO_WAIT);
 	(void)k_thread_create(&telemetry_thread_data, telemetry_stack,
 			      K_THREAD_STACK_SIZEOF(telemetry_stack),
 			      telemetry_thread, NULL, NULL, NULL,
@@ -1550,7 +1670,7 @@ int main(void)
 		k_msleep(1);
 	}
 
-	k_thread_join(&fake_can_thread_data, K_MSEC(200));
+	k_thread_join(&can_rx_thread_data, K_MSEC(200));
 	k_thread_join(&motor_ctrl_thread_data, K_MSEC(200));
 	k_thread_join(&telemetry_thread_data, K_MSEC(200));
 

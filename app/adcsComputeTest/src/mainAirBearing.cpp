@@ -6,7 +6,7 @@
 #include <zephyr/drivers/i2c.h>
 
 #include "ADCSCore.hpp"
-
+ 
 #define VERBOSE_EVERY    100  /* full sensor dump every Nth cycle */
 #define TELEMETRY_EVERY  10   /* ADCS estimator/controller telemetry cadence */
 
@@ -311,7 +311,7 @@ static void adcs_loop(void *, void *, void *)
 				mag_started[i] = true;
 			}
 		}
-		k_msleep(10);
+		//k_msleep(10);
 
 		int16_t mag_raw[3][3];
 		uint16_t mag_temp[3];
@@ -409,7 +409,7 @@ static void adcs_loop(void *, void *, void *)
 
 		ADCS::Command adcs_cmd;
 #if ADCS_AIR_BEARING_FORCE_DETUMBLE
-		adcs_cmd.mode = ADCS::MissionMode::SAFE;
+		adcs_cmd.mode = ADCS::MissionMode::OFF;
 #endif
 		ADCS::AdcsOutput out = adcs_core.update(sd, adcs_cmd);
 
