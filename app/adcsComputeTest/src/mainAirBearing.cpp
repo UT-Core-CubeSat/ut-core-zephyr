@@ -311,7 +311,7 @@ static constexpr float MAG_SCALE_Z  = 0.242e-6f;
  * compares a *gravity-direction* unit vector to g_ref=(0,0,1); negate so rest
  * reading matches identity attitude (avoids huge accel innovation -> bogus β̂). */
 #ifndef AIR_BEARING_ACCEL_AS_GRAVITY_NEGATE
-#define AIR_BEARING_ACCEL_AS_GRAVITY_NEGATE 1
+#define AIR_BEARING_ACCEL_AS_GRAVITY_NEGATE 0
 #endif
 
 /* ===================================================================
@@ -494,19 +494,21 @@ static void adcs_loop(void *, void *, void *)
 
 		ADCS::SensorData sd;
 		sd.unix_time = (double)k_uptime_get() / 1000.0;
+		/* Frame rotation R = [0,1,0; -1,0,0; 0,0,1]: x'=y, y'=-x, z'=z */
 #if AIR_BEARING_ACCEL_AS_GRAVITY_NEGATE
-		sd.accelerometer = Math::Vec<3>{-accel_avg[0], -accel_avg[1], -accel_avg[2]};
+		sd.accelerometer = Math::Vec<3>{-accel_avg[1], accel_avg[0], -accel_avg[2]};
 #else
-		sd.accelerometer = Math::Vec<3>{accel_avg[0], accel_avg[1], accel_avg[2]};
+		sd.accelerometer = Math::Vec<3>{accel_avg[1], -accel_avg[0], accel_avg[2]};
 #endif
-		sd.gyro = Math::Vec<3>{gyro_avg[0], gyro_avg[1], gyro_avg[2]};
+		sd.gyro = Math::Vec<3>{gyro_avg[1], -gyro_avg[0], gyro_avg[2]};
 
 		/* Track worst-case gyro norm since last telemetry print, for motion-gate diagnosis. */
 		float gn = sqrtf(gyro_avg[0]*gyro_avg[0] +
 		                 gyro_avg[1]*gyro_avg[1] +
 		                 gyro_avg[2]*gyro_avg[2]);
 		if (gn > gyro_norm_max_window) gyro_norm_max_window = gn;
-		sd.magnetometer  = Math::Vec<3>{mag_avg[0], mag_avg[1], mag_avg[2]};
+		/* Frame rotation R = [0,-1,0; -1,0,0; 0,0,-1]: x'=-y, y'=-x, z'=-z */
+		sd.magnetometer  = Math::Vec<3>{-mag_avg[1], -mag_avg[0], -mag_avg[2]};
 		sd.wheel_speeds  = Math::Vec<4>::Zero();
 
 		ADCS::Command adcs_cmd;
