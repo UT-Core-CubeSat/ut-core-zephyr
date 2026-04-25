@@ -8,6 +8,7 @@
 #include <zephyr/logging/log.h>
 #include <string.h>
 #include "C:\Users\notbr\Documents\all_coding\ut-core\common\can_proto.h"
+#include "C:\Users\notbr\Documents\all_coding\ut-core\common\temp_telemetry.h"
 
 #include <stm32_ll_tim.h>
 
@@ -48,6 +49,7 @@ static const struct device *const gpioa   = DEVICE_DT_GET(DT_NODELABEL(gpioa));
 static const struct device *const pwm1_dev = DEVICE_DT_GET(DT_NODELABEL(pwm1));
 static const struct device *const pwm3_dev = DEVICE_DT_GET(DT_NODELABEL(pwm3));
 static const struct device *const can_dev  = DEVICE_DT_GET(DT_NODELABEL(fdcan1));
+static const struct device *i2c_bus = DEVICE_DT_GET(DT_NODELABEL(i2c1));
 
 /* Transceiver pins — adjust to your schematic */
 #define PIN_SHDN    10
@@ -164,20 +166,35 @@ static void send_soh(void)
 
     uint8_t duty = (uint8_t)current_duty_percent;
 
-    /* Placeholder temps — replace with actual ADC reads */
-    uint8_t temp1 = 0, temp2 = 0, temp3 = 0, temp4 = 0;
+    /* Read all temp sensors */
+    struct temp_telemetry telem;
+    int ok = temp_telemetry_read_all(i2c_bus, &telem);
+
+    /* Pack first 4 sensor temps as rounded integer °C into payload.
+     * Clamp to int8_t range (-128..127) since each slot is one byte. */
+    uint8_t temps[4] = {0};
+    for (int i = 0; i < 4 && i < NUM_TEMP_SENSORS; i++) {
+        if (telem.s[i].status == 0) {
+            int32_t c = (telem.s[i].temp_q4 + 8) / 16;
+            if (c > 127) c = 127;
+            if (c < -128) c = -128;
+            temps[i] = (uint8_t)(int8_t)c;
+        }
+    }
 
     can_fill_payload(&f, NODE_ID,
-        0x01,       /* opcode: SOH */
+        0x01,           /* opcode: SOH */
         duty,
-        temp1, temp2, temp3, temp4,
-        0x00        /* status flags */
+        temps[0], temps[1], temps[2], temps[3],
+        0x00            /* status flags */
     );
 
     can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
-    LOG_DBG("TX SOH  duty=%u%%", duty);
-}
 
+    /* Print to console */
+    LOG_INF("TX SOH  duty=%u%%  temps: %d/%d ok", duty, ok, NUM_TEMP_SENSORS);
+    temp_telemetry_print(&telem);
+}
 /* ===================================================== */
 /* ================= CAN RX ============================ */
 /* ===================================================== */
@@ -313,6 +330,11 @@ int main(void)
         printk("ERROR: GPIOA not ready!\n");
         return 0;
     }
+
+    if (!device_is_ready(i2c_bus)) {
+    LOG_ERR("I2C bus not ready — SOH temps will fail");
+    }
+
     gpio_pin_configure(gpioa, 5, GPIO_OUTPUT_ACTIVE);
     gpio_pin_set(gpioa, 5, 0);
 
