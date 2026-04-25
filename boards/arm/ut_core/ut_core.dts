@@ -7,7 +7,7 @@
 #include "ut_core-common.dtsi"
 #include <zephyr/dt-bindings/spi/spi.h>
 #include <zephyr/dt-bindings/dma/stm32_dma.h>
-#include <zephyr/dt-bindings/clock/stm32_clock.h>
+//#include <zephyr/dt-bindings/clock/stm32_clock.h>
 
 / {
 model = "UT-CORE STM32U5A5";
@@ -227,7 +227,7 @@ status = "disabled";
 	clock-frequency = <DT_FREQ_M(160)>;
 
 	ahb-prescaler  = <1>;
-	apb1-prescaler = <8>;
+	apb1-prescaler = <1>;
 	apb2-prescaler = <1>;
 	apb3-prescaler = <1>;
 };

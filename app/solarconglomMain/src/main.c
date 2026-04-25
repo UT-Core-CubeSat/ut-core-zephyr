@@ -34,20 +34,21 @@ static void tim1_enable_ch4n(void)
 static void set_all_duty(uint32_t duty_percent)
 {
 	uint32_t pulse_tim = ((uint64_t)PWM_PERIOD * duty_percent) / 100U;
+	uint32_t pulse_inv = PWM_PERIOD - pulse_tim;  /* inverted for CH4N */
 
-	/* PC5: TIM1_CH4N */
-	pwm_set(pwm1_dev, TIM1_CH4, PWM_PERIOD, pulse_tim, PWM_POLARITY_NORMAL);
+	/* PC5: TIM1_CH4N — complementary, so invert */
+	pwm_set(pwm1_dev, TIM1_CH4, PWM_PERIOD, pulse_inv, PWM_POLARITY_NORMAL);
 	TIM1->CCER |= TIM_CCER_CC4NE | TIM_CCER_CC4E;
 	TIM1->BDTR |= TIM_BDTR_MOE;
 
-	// /* PC6: TIM3_CH1 */
-	// pwm_set(pwm3_dev, TIM3_CH1, PWM_PERIOD, pulse_tim, PWM_POLARITY_NORMAL);
+	/* PC6: TIM3_CH1 */
+	pwm_set(pwm3_dev, TIM3_CH1, PWM_PERIOD, pulse_tim, PWM_POLARITY_NORMAL);
 
-	// /* PA7: TIM3_CH2 */
-	// pwm_set(pwm3_dev, TIM3_CH2, PWM_PERIOD, pulse_tim, PWM_POLARITY_NORMAL);
+	/* PA7: TIM3_CH2 */
+	pwm_set(pwm3_dev, TIM3_CH2, PWM_PERIOD, pulse_tim, PWM_POLARITY_NORMAL);
 
-	// /* PC9: TIM3_CH4 */
-	// pwm_set(pwm3_dev, TIM3_CH4, PWM_PERIOD, pulse_tim, PWM_POLARITY_NORMAL);
+	/* PC9: TIM3_CH4 */
+	pwm_set(pwm3_dev, TIM3_CH4, PWM_PERIOD, pulse_tim, PWM_POLARITY_NORMAL);
 }
 
 int main(void)
@@ -65,13 +66,13 @@ int main(void)
 	gpio_pin_set(gpioa, 5, 0);
 	printk("PA5: mux enable LOW\n");
 
-    const struct device *const gpioc = DEVICE_DT_GET(DT_NODELABEL(gpioc));
-    gpio_pin_configure(gpioc, 2, GPIO_OUTPUT_INACTIVE);
-    gpio_pin_configure(gpioc, 3, GPIO_OUTPUT_INACTIVE);
-    gpio_pin_configure(gpioc, 4, GPIO_OUTPUT_INACTIVE);
-    gpio_pin_set(gpioc, 2, 0);
-    gpio_pin_set(gpioc, 3, 0);
-    gpio_pin_set(gpioc, 4, 0);
+    // const struct device *const gpioc = DEVICE_DT_GET(DT_NODELABEL(gpioc));
+    // gpio_pin_configure(gpioc, 2, GPIO_OUTPUT_INACTIVE);
+    // gpio_pin_configure(gpioc, 3, GPIO_OUTPUT_INACTIVE);
+    // gpio_pin_configure(gpioc, 4, GPIO_OUTPUT_INACTIVE);
+    // gpio_pin_set(gpioc, 2, 0);
+    // gpio_pin_set(gpioc, 3, 0);
+    // gpio_pin_set(gpioc, 4, 0);
 
 	/* Check devices */
 	if (!device_is_ready(pwm1_dev)) {
@@ -91,39 +92,35 @@ int main(void)
 	tim1_enable_ch4n();
 	printk("PC5 TIM1_CH4N: %s\n", ret ? "FAIL" : "OK");
 
-	// /* PC6: TIM3_CH1 */
-	// ret = pwm_set(pwm3_dev, TIM3_CH1, PWM_PERIOD, half, PWM_POLARITY_NORMAL);
-	// printk("PC6 TIM3_CH1:  %s\n", ret ? "FAIL" : "OK");
+	/* PC6: TIM3_CH1 */
+	ret = pwm_set(pwm3_dev, TIM3_CH1, PWM_PERIOD, half, PWM_POLARITY_NORMAL);
+	printk("PC6 TIM3_CH1:  %s\n", ret ? "FAIL" : "OK");
 
-	// /* PA7: TIM3_CH2 */
-	// ret = pwm_set(pwm3_dev, TIM3_CH2, PWM_PERIOD, half, PWM_POLARITY_NORMAL);
-	// printk("PA7 TIM3_CH2:  %s\n", ret ? "FAIL" : "OK");
+	/* PA7: TIM3_CH2 */
+	ret = pwm_set(pwm3_dev, TIM3_CH2, PWM_PERIOD, half, PWM_POLARITY_NORMAL);
+	printk("PA7 TIM3_CH2:  %s\n", ret ? "FAIL" : "OK");
 
-	// /* PC9: TIM3_CH4 */
-	// ret = pwm_set(pwm3_dev, TIM3_CH4, PWM_PERIOD, half, PWM_POLARITY_NORMAL);
-	// printk("PC9 TIM3_CH4:  %s\n", ret ? "FAIL" : "OK");
+	/* PC9: TIM3_CH4 */
+	ret = pwm_set(pwm3_dev, TIM3_CH4, PWM_PERIOD, half, PWM_POLARITY_NORMAL);
+	printk("PC9 TIM3_CH4:  %s\n", ret ? "FAIL" : "OK");
 
 	printk("\nAll channels at 50%% -- verify with scope.\n");
 	printk("Sweep starts in 5 s ...\n\n");
 	k_msleep(5000);
 
 	/* Sweep all channels together */
-	// while (1) {
-	// 	for (int duty = 0; duty <= 100; duty += 5) {
-	// 		set_all_duty(duty);
-	// 		printk("duty=%3d%%\n", duty);
-	// 		k_msleep(3000);
-	// 	}
+	while (1) {
+		for (int duty = 0; duty <= 100; duty += 5) {
+			set_all_duty(duty);
+			printk("duty=%3d%%\n", duty);
+			k_msleep(8000);
+		}
 
-	// 	for (int duty = 100; duty >= 0; duty -= 5) {
-	// 		set_all_duty(duty);
-	// 		printk("duty=%3d%%\n", duty);
-	// 		k_msleep(3000);
-	// 	}
-	// }
-while (1) {
-    set_all_duty(35);
-    k_msleep(10000);
-}
+		for (int duty = 100; duty >= 0; duty -= 5) {
+			set_all_duty(duty);
+			printk("duty=%3d%%\n", duty);
+			k_msleep(8000);
+		}
+	}
 	return 0;
 }
