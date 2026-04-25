@@ -7,11 +7,10 @@
 class ControllerNDI {
 public:
 
-    // Output Struct 
+    // Output Struct
     struct NDIOutput {
         Param::Vector4 tau_wheel;
         Param::Vector3 tau_mtq;
-        Param::Vector7 states_m;
     };
     
     // Type Aliases for readability 
@@ -73,12 +72,8 @@ private:
     RegOutput regularize_reference(const Param::Vector4& q_m, 
                                   const Reference& reference);
     
-    bool checkWheelSaturation(const Vector4& tau_cmd, 
+    bool checkWheelSaturation(const Vector4& tau_cmd,
                               const Vector4& omega_w);
-
-    // Feed-forward compensation helpers
-    Vector4 compute_friction_feedforward(const Vector4& omega_w) const;
-    Vector4 compute_ripple_feedforward(const Vector4& omega_w, Param::Real time) const;
 
     // Private members
     Param::Matrix3 I;
@@ -104,11 +99,8 @@ private:
     Scalar h_cg;
     Scalar m;
 
-    // Saturation anti windup 
+    // Saturation anti windup
     bool is_saturated;
-
-    // Feed-forward state tracking 
-    Param::Real accumulated_time;
 
     // Desaturation scheduler state
     bool desat_active;

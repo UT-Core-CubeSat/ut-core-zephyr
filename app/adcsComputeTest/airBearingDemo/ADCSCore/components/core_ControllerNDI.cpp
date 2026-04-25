@@ -22,7 +22,6 @@ ControllerNDI::ControllerNDI()
     h_cg(Param::Apparatus::h_cg),
     m(Param::Spacecraft::mass),
     is_saturated(false),
-    accumulated_time(static_cast<Param::Real>(0.0)),
     desat_active(false),
     desat_entry_timer(static_cast<Param::Real>(0.0)),
     desat_exit_timer(static_cast<Param::Real>(0.0)),
@@ -201,45 +200,18 @@ ControllerNDI::NDIOutput ControllerNDI::update(const Param::Vector11& states,
 
     Vector3 tau_mtq = desat_out.tau_mtq_expected;
 
-    // Convert to wheel torques, plus desat 
+    // Convert to wheel torques, plus desat
     Vector4 tau_tilde = allocateActuators(tau_NDI, tau_mtq, omega_w,
                                           mtq_comp_scale,
                                           attitude_scale,
                                           null_scale);
 
-    // Feed forward compensation for internal wheel dynamics
-    Vector4 tau_ff = Vector4::Zero();
-    if (Param::Controller::FeedForward::enable_friction_comp) {
-        tau_ff += compute_friction_feedforward(omega_w);
-    }
-    if (Param::Controller::FeedForward::enable_ripple_comp) {
-        tau_ff += compute_ripple_feedforward(omega_w, accumulated_time);
-    }
-
-    // Apply feed-forward scaling 
-    tau_ff *= Param::Controller::FeedForward::ff_gain;
-
-    // Add feed-forward to commanded torque 
-    tau_tilde += tau_ff;
-
-    // Update accumulated time for ripple tracking 
-    accumulated_time += dt;
-
     // Anti windup: Check for saturation for NEXT timestep
     is_saturated = checkWheelSaturation(tau_tilde, omega_w);
     // Apply Saturation
     Vector4 tau_wheel = applyWheelSaturation(tau_tilde, omega_w);
-    
-    // Pack up model 
-    Quat q_m_out;
-    q_m_out(0) = x_model(3);
-    q_m_out(1) = x_model(0);
-    q_m_out(2) = x_model(1);
-    q_m_out(3) = x_model(2);
-    StateVector states_m;
-    states_m.setSegment(0, q_m_out);
-    states_m.setSegment(4, omega_m);
-    return NDIOutput{tau_wheel, desat_out.m_cmd, states_m};
+
+    return NDIOutput{tau_wheel, desat_out.m_cmd};
 }
 
 ControllerNDI::StateVector ControllerNDI::reference_model_dif_eq(const StateVector& x_m, const Reference& reference) 
@@ -504,40 +476,4 @@ bool ControllerNDI::checkWheelSaturation(const Vector4& tau_cmd, const Vector4& 
     }
     
     return torque_saturated || speed_saturated;
-}
-
-ControllerNDI::Vector4 ControllerNDI::compute_friction_feedforward(const Vector4& omega_w) const {
-    // Predict friction torque using controller's model
-    // tau_fric = b*omega + tau_c*sign(omega)
-    
-    Vector4 tau_ff = Vector4::Zero();
-    Scalar b = Param::Controller::FeedForward::b_viscous;
-    Scalar tau_c = Param::Controller::FeedForward::tau_coulomb;
-    Scalar omega_eps = Param::Controller::FeedForward::omega_eps;
-    
-    for (int i = 0; i < 4; ++i) {
-        Scalar sign = std::tanh(omega_w(i) / omega_eps);  // Smooth sign function
-        tau_ff(i) = b * omega_w(i) + tau_c * sign;
-    }
-    
-    return tau_ff;
-}
-
-ControllerNDI::Vector4 ControllerNDI::compute_ripple_feedforward(const Vector4& omega_w, Param::Real time) const {
-    // Predict torque ripple using controller's model
-    // tau_ripple = A*sin(h*theta)
-    // where theta = integral(omega * h) over time
-    
-    Vector4 tau_ff = Vector4::Zero();
-    Scalar amp = Param::Controller::FeedForward::ripple_amp;
-    Scalar h = Param::Controller::FeedForward::ripple_harmonic;
-    
-    for (int i = 0; i < 4; ++i) {
-        // Estimate phase from accumulated time and current wheel speed
-        // This is approximate since we don't track exact phase in controller
-        Scalar phase = h * std::abs(omega_w(i)) * time;
-        tau_ff(i) = amp * std::sin(phase);
-    }
-    
-    return tau_ff;
 }

@@ -60,7 +60,6 @@ ControllerBDot::Vector3 ControllerBDot::update(const Measurements& measurements,
     
     m_sat = saturateSymmetric(m_tilde, m_max);
     // Four long-face panel coils provide no body-Z magnetic authority in this test setup.
-    m_sat(2) = static_cast<Scalar>(0.0);
     // Update B_prev
     B_prev = B_now;
     return m_sat;
