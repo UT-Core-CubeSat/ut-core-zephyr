@@ -1,0 +1,60 @@
+/ {
+	pins {
+		compatible = "gpio-leds";
+
+		led0: led_0 {
+			gpios = <&gpioa 10 GPIO_ACTIVE_HIGH>;
+			label = "LED0_PA10";
+		};
+
+		led1: led_1 {
+			gpios = <&gpioc 12 GPIO_ACTIVE_HIGH>;
+			label = "LED1_PC12";
+		};
+
+		led2: led_2 {
+			gpios = <&gpioc 13 GPIO_ACTIVE_HIGH>;
+			label = "LED2_PC13";
+		};
+	};
+
+	chosen {
+		zephyr,console = &lpuart1;
+	};
+};
+
+/* Release PB9 from FRAM WP gpio-hog so it can be used as I2C1 SDA */
+&gpiob {
+	/delete-node/ fram_wp_hog;
+
+	fram_wp_hog_no_pb9 {
+		gpio-hog;
+		gpios = <12 GPIO_ACTIVE_HIGH>,
+			<5 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "FRAM_WP";
+	};
+};
+
+/* Remap I2C1 from PB6/PB7 (board default) to PB8 (SCL) / PB9 (SDA) */
+&pinctrl {
+	i2c1_scl_pb8: i2c1_scl_pb8 {
+		pinmux = <STM32_PINMUX('B', 8, AF4)>;
+		drive-open-drain;
+	};
+
+	i2c1_sda_pb9: i2c1_sda_pb9 {
+		pinmux = <STM32_PINMUX('B', 9, AF4)>;
+		drive-open-drain;
+	};
+};
+
+/* PB8 is SPI2 CS1 in board DTS — disable SPI2 so it can't claim the pin */
+&spi2 {
+	status = "disabled";
+};
+
+&i2c1 {
+	pinctrl-0 = <&i2c1_scl_pb8 &i2c1_sda_pb9>;
+	pinctrl-names = "default";
+};

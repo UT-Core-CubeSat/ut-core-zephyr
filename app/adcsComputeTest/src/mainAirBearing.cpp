@@ -1,11 +1,30 @@
+#include <cmath>
+
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/i2c.h>
 
 #include "ADCSCore.hpp"
-
+ 
 #define VERBOSE_EVERY    100  /* full sensor dump every Nth cycle */
+#define TELEMETRY_EVERY  10   /* ADCS estimator/controller telemetry cadence */
+
+/* 1: command MissionMode::SAFE -> B-dot detumble (wheels zeroed, mtq active).
+ * 0: default BEARING -> detumble until rates calm, then NDI point. */
+#ifndef ADCS_AIR_BEARING_FORCE_DETUMBLE
+#define ADCS_AIR_BEARING_FORCE_DETUMBLE 1
+#endif
+
+/* ADCS loop runs in its own preemptive thread (large stack: matrix math in Core). */
+#define ADCS_LOOP_STACK_SIZE  16384
+#define ADCS_LOOP_PRIORITY    K_PRIO_PREEMPT(5)
+
+static struct k_thread adcs_loop_thread;
+K_THREAD_STACK_DEFINE(adcs_loop_stack, ADCS_LOOP_STACK_SIZE);
+
+/* File scope: loop thread must not use Core on main's stack after main returns. */
+static ADCS::Core adcs_core;
 
 /* ===================================================================
  *  LEDs
@@ -150,6 +169,19 @@ static const uint8_t mlx90393_addrs[] = {
 	MLX90393_ADDR_A, MLX90393_ADDR_B, MLX90393_ADDR_C
 };
 
+/* Magnetometer hard-iron bias and diagonal scale from magCalTest. */
+static const float MAG_BIAS[3][3] = {
+	{-396.500f, 2064.500f, 1274.500f},
+	{3192.000f, -2262.000f, 133.500f},
+	{-375.500f, 2299.000f, -2352.000f},
+};
+
+static const float MAG_CAL_SCALE[3][3] = {
+	{0.894505f, 0.966746f, 1.179710f},
+	{0.923704f, 0.989683f, 1.102564f},
+	{0.887704f, 0.950533f, 1.217349f},
+};
+
 static int mlx90393_cmd(uint8_t addr, uint8_t cmd, uint8_t *status_out)
 {
 	uint8_t st;
@@ -208,6 +240,14 @@ static int mlx90393_collect(uint8_t addr, int16_t mag[3], uint16_t *temp)
 	return 0;
 }
 
+static void mag_apply_calibration(size_t sensor_idx, const int16_t raw[3], float cal[3])
+{
+	for (int ax = 0; ax < 3; ax++) {
+		float centered = (float)raw[ax] - MAG_BIAS[sensor_idx][ax];
+		cal[ax] = centered * MAG_CAL_SCALE[sensor_idx][ax];
+	}
+}
+
 /* ===================================================================
  *  Sensor conversion constants
  *
@@ -216,13 +256,241 @@ static int mlx90393_collect(uint8_t addr, int16_t mag[3], uint16_t *temp)
  *  I3G4250D      @ +/-245 dps: 8.75 mdps/LSB -> rad/s
  *  MLX90393      @ default gain: ~0.150 uT/LSB (XY), ~0.242 uT/LSB (Z)
  * =================================================================== */
-static constexpr float ACCEL_SCALE = 0.122e-3f * 9.80665f;  /* LSB -> m/s^2 */
+static constexpr float ACCEL_SCALE = 0.061e-3f * 9.80665f;  /* LSB -> m/s^2  (+/-2g mode, 0.061 mg/LSB) */
 static constexpr float GYRO_SCALE  = 8.75e-3f * (Math::PI / 180.0f);
 static constexpr float MAG_SCALE_XY = 0.150e-6f;
 static constexpr float MAG_SCALE_Z  = 0.242e-6f;
 
+/* LSM6DSV reports specific force (reaction to gravity). The air-bearing observer
+ * compares a *gravity-direction* unit vector to g_ref=(0,0,1); negate so rest
+ * reading matches identity attitude (avoids huge accel innovation -> bogus β̂). */
+#ifndef AIR_BEARING_ACCEL_AS_GRAVITY_NEGATE
+#define AIR_BEARING_ACCEL_AS_GRAVITY_NEGATE 1
+#endif
+
 /* ===================================================================
- *  main  —  Air Bearing Demo
+ *  ADCS compute thread  —  sensors, Core::update, heartbeat LEDs
+ * =================================================================== */
+static void adcs_loop(void *, void *, void *)
+{
+	int cycle = 0;
+	int64_t prev_time = k_uptime_get();
+	float gyro_norm_max_window = 0.0f;
+
+	while (1) {
+		int64_t now = k_uptime_get();
+		int64_t loop_dt_ms = now - prev_time;
+		prev_time = now;
+		bool verbose = (cycle % VERBOSE_EVERY == 0);
+		bool telemetry = (cycle % TELEMETRY_EVERY == 0);
+
+		if (verbose || telemetry) {
+			printk("--- cycle %d  (loop dt %lld ms) ---\n", cycle, loop_dt_ms);
+		}
+
+		/* Read IMU + gyro (fast I2C, ~1ms each) */
+		int16_t imu_accel[2][3], imu_gyro[2][3];
+		bool imu_ok[2] = {false, false};
+		for (size_t i = 0; i < ARRAY_SIZE(lsm6dsv_addrs); i++) {
+			if (lsm6dsv_read(lsm6dsv_addrs[i], imu_accel[i], imu_gyro[i]) == 0) {
+				imu_ok[i] = true;
+			}
+		}
+
+		int16_t gyr_raw[2][3];
+		bool gyr_ok[2] = {false, false};
+		for (size_t i = 0; i < ARRAY_SIZE(i3g4250d_addrs); i++) {
+			if (i3g4250d_read(i3g4250d_addrs[i], gyr_raw[i]) == 0) {
+				gyr_ok[i] = true;
+			}
+		}
+
+		/* Magnetometers — parallel start, single wait, read all */
+		bool mag_started[3] = {false, false, false};
+		for (size_t i = 0; i < ARRAY_SIZE(mlx90393_addrs); i++) {
+			if (mlx90393_start(mlx90393_addrs[i]) == 0) {
+				mag_started[i] = true;
+			}
+		}
+		//k_msleep(10);
+
+		int16_t mag_raw[3][3];
+		uint16_t mag_temp[3];
+		bool mag_ok[3] = {false, false, false};
+		for (size_t i = 0; i < ARRAY_SIZE(mlx90393_addrs); i++) {
+			if (mag_started[i] &&
+			    mlx90393_collect(mlx90393_addrs[i], mag_raw[i], &mag_temp[i]) == 0) {
+				mag_ok[i] = true;
+			}
+		}
+
+		if (verbose) {
+			for (int i = 0; i < 2; i++) {
+				if (imu_ok[i])
+					printk("IMU%d A:%6d %6d %6d G:%6d %6d %6d\n", i,
+					       imu_accel[i][0], imu_accel[i][1], imu_accel[i][2],
+					       imu_gyro[i][0], imu_gyro[i][1], imu_gyro[i][2]);
+			}
+			for (int i = 0; i < 2; i++) {
+				if (gyr_ok[i])
+					printk("GYR%d G:%6d %6d %6d\n", i,
+					       gyr_raw[i][0], gyr_raw[i][1], gyr_raw[i][2]);
+			}
+			for (int i = 0; i < 3; i++) {
+				if (mag_ok[i])
+					printk("MAG%d M:%6d %6d %6d T:%u\n", i,
+					       mag_raw[i][0], mag_raw[i][1], mag_raw[i][2],
+					       mag_temp[i]);
+			}
+		}
+
+		/* Convert raw readings to physical units & average */
+		float accel_avg[3] = {0.0f, 0.0f, 0.0f};
+		int accel_count = 0;
+		for (int i = 0; i < 2; i++) {
+			if (imu_ok[i]) {
+				for (int ax = 0; ax < 3; ax++)
+					accel_avg[ax] += (float)imu_accel[i][ax] * ACCEL_SCALE;
+				accel_count++;
+			}
+		}
+		if (accel_count > 0) {
+			for (int ax = 0; ax < 3; ax++)
+				accel_avg[ax] /= (float)accel_count;
+		}
+
+		/* I2C frame glitches occasionally pass a successful read but with corrupt bytes
+		 * (near-int16-max LSBs -> multi-rad/s spikes). Reject per-sensor outliers
+		 * before averaging so one bad frame can't poison the fused gyro. */
+		constexpr float GYRO_SANE_MAX = 5.0f;  /* rad/s; ~286 deg/s — far beyond bench use */
+		auto gyro_sane = [](const int16_t g[3]) -> bool {
+			for (int ax = 0; ax < 3; ax++) {
+				float v = (float)g[ax] * GYRO_SCALE;
+				if (!(v >= -GYRO_SANE_MAX && v <= GYRO_SANE_MAX)) return false;
+			}
+			return true;
+		};
+
+		float gyro_avg[3] = {0.0f, 0.0f, 0.0f};
+		int gyro_count = 0;
+		for (int i = 0; i < 2; i++) {
+			if (imu_ok[i] && gyro_sane(imu_gyro[i])) {
+				for (int ax = 0; ax < 3; ax++)
+					gyro_avg[ax] += (float)imu_gyro[i][ax] * GYRO_SCALE;
+				gyro_count++;
+			}
+		}
+		for (int i = 0; i < 2; i++) {
+			if (gyr_ok[i] && gyro_sane(gyr_raw[i])) {
+				for (int ax = 0; ax < 3; ax++)
+					gyro_avg[ax] += (float)gyr_raw[i][ax] * GYRO_SCALE;
+				gyro_count++;
+			}
+		}
+		if (gyro_count > 0) {
+			for (int ax = 0; ax < 3; ax++)
+				gyro_avg[ax] /= (float)gyro_count;
+		}
+
+		float mag_avg[3] = {0.0f, 0.0f, 0.0f};
+		int mag_count = 0;
+		for (int i = 0; i < 3; i++) {
+			if (mag_ok[i]) {
+				float mag_cal[3];
+				mag_apply_calibration(i, mag_raw[i], mag_cal);
+				mag_avg[0] += mag_cal[0] * MAG_SCALE_XY;
+				mag_avg[1] += mag_cal[1] * MAG_SCALE_XY;
+				mag_avg[2] += mag_cal[2] * MAG_SCALE_Z;
+				mag_count++;
+			}
+		}
+		if (mag_count > 0) {
+			for (int ax = 0; ax < 3; ax++)
+				mag_avg[ax] /= (float)mag_count;
+		}
+
+		ADCS::SensorData sd;
+		sd.unix_time = (double)k_uptime_get() / 1000.0;
+#if AIR_BEARING_ACCEL_AS_GRAVITY_NEGATE
+		sd.accelerometer = Math::Vec<3>{-accel_avg[0], -accel_avg[1], -accel_avg[2]};
+#else
+		sd.accelerometer = Math::Vec<3>{accel_avg[0], accel_avg[1], accel_avg[2]};
+#endif
+		sd.gyro = Math::Vec<3>{gyro_avg[0], gyro_avg[1], gyro_avg[2]};
+
+		/* Track worst-case gyro norm since last telemetry print, for motion-gate diagnosis. */
+		float gn = sqrtf(gyro_avg[0]*gyro_avg[0] +
+		                 gyro_avg[1]*gyro_avg[1] +
+		                 gyro_avg[2]*gyro_avg[2]);
+		if (gn > gyro_norm_max_window) gyro_norm_max_window = gn;
+		sd.magnetometer  = Math::Vec<3>{mag_avg[0], mag_avg[1], mag_avg[2]};
+		sd.wheel_speeds  = Math::Vec<4>::Zero();
+
+		ADCS::Command adcs_cmd;
+#if ADCS_AIR_BEARING_FORCE_DETUMBLE
+		adcs_cmd.mode = ADCS::MissionMode::OFF;
+#endif
+		ADCS::AdcsOutput out = adcs_core.update(sd, adcs_cmd);
+
+		if (telemetry) {
+			const char *mode = "?";
+			switch (out.current_mode) {
+			case ADCS::MissionMode::OFF:
+				mode = "OFF";
+				break;
+			case ADCS::MissionMode::SAFE:
+				mode = "SAFE(detumble)"; /* wheels forced 0; B-dot drives mtq */
+				break;
+			case ADCS::MissionMode::BEARING:
+				mode = "BEARING(point)"; /* NDI wheels; mtq only when desat active */
+				break;
+			}
+			printk("[ADCS] mode=%s  meas|gy|=%.4f rad/s  valid:%d  init:%s (%d/%d)\n", mode,
+			       (double)(std::fabs((double)sd.gyro(0)) +
+					std::fabs((double)sd.gyro(1)) +
+					std::fabs((double)sd.gyro(2))),
+			       out.estimator_valid ? 1 : 0,
+			       adcs_core.observerRunning() ? "RUN" : "COLLECT",
+			       adcs_core.observerInitSamples(),
+			       adcs_core.observerInitTarget());
+			printk("[ADCS] q: %.4f %.4f %.4f %.4f\n",
+			       (double)out.attitude_est(0), (double)out.attitude_est(1),
+			       (double)out.attitude_est(2), (double)out.attitude_est(3));
+			printk("[ADCS] w: %.4f %.4f %.4f rad/s\n",
+			       (double)out.rate_est(0), (double)out.rate_est(1),
+			       (double)out.rate_est(2));
+			double bn = std::sqrt((double)sd.magnetometer(0) * (double)sd.magnetometer(0) +
+			                      (double)sd.magnetometer(1) * (double)sd.magnetometer(1) +
+			                      (double)sd.magnetometer(2) * (double)sd.magnetometer(2));
+			printk("[ADCS] B [T]: %.4e %.4e %.4e  |B|=%.4e (%.1f uT)\n",
+			       (double)sd.magnetometer(0), (double)sd.magnetometer(1),
+			       (double)sd.magnetometer(2), bn, bn * 1e6);
+			printk("[ADCS] a [m/s^2]: %.4e %.4e %.4e\n",
+			       (double)sd.accelerometer(0), (double)sd.accelerometer(1),
+			       (double)sd.accelerometer(2));
+			printk("[ADCS] gy_raw [rad/s]: %.4f %.4f %.4f  |max_win|=%.4f\n",
+			       (double)sd.gyro(0), (double)sd.gyro(1), (double)sd.gyro(2),
+			       (double)gyro_norm_max_window);
+			gyro_norm_max_window = 0.0f;
+			/* %.6f hides sub-micro torques; dipole is [A·m²] not N·m */
+			printk("[ADCS] tau_w [N*m]: %.4e %.4e %.4e %.4e\n",
+			       (double)out.wheel_torque(0), (double)out.wheel_torque(1),
+			       (double)out.wheel_torque(2), (double)out.wheel_torque(3));
+			printk("[ADCS] mtq [A*m^2]: %.4e %.4e %.4e\n",
+			       (double)out.mtq_dipole(0), (double)out.mtq_dipole(1),
+			       (double)out.mtq_dipole(2));
+		}
+
+		gpio_pin_toggle_dt(&led0);
+		if (cycle % 2 == 0) gpio_pin_toggle_dt(&led1);
+		if (cycle % 3 == 0) gpio_pin_toggle_dt(&led2);
+
+		cycle++;
+	}
+}
+
+/* ===================================================================
+ *  main  —  Air Bearing Demo (bring-up); ADCS loop in adcs_loop thread
  * =================================================================== */
 int main(void)
 {
@@ -296,187 +564,22 @@ int main(void)
 
 	k_msleep(50);
 
-	/* --- ADCS Core init --- */
-	printk("\n[ADCS] Initializing ADCSCore (Air Bearing)...\n");
-	ADCS::Core adcs_core;
-	printk("[ADCS] Mode: POINT (NDI controller)\n");
+	printk("\n[ADCS] ADCSCore (Air Bearing) — compute thread starting\n");
+#if ADCS_AIR_BEARING_FORCE_DETUMBLE
+	printk("[ADCS] Command: SAFE — forced B-dot detumble (tau_w=0 by policy)\n");
+#else
+	printk("[ADCS] Command: BEARING — detumble until arm, then NDI point\n");
+#endif
 	printk("[ADCS] Sensors: accel (2x avg), gyro (4x avg), mag (3x avg)\n");
 	printk("[ADCS] Actuators: reaction wheels (wheel_speeds zeroed until connected)\n\n");
 
-	printk("========== Read loop start ==========\n\n");
+	k_thread_create(&adcs_loop_thread, adcs_loop_stack,
+			K_THREAD_STACK_SIZEOF(adcs_loop_stack),
+			adcs_loop, NULL, NULL, NULL,
+			ADCS_LOOP_PRIORITY, 0, K_NO_WAIT);
 
-	int cycle = 0;
-	int64_t prev_time = k_uptime_get();
-	while (1) {
-		int64_t now = k_uptime_get();
-		int64_t loop_dt_ms = now - prev_time;
-		prev_time = now;
-		bool verbose = (cycle % VERBOSE_EVERY == 0);
+	printk("========== ADCS loop thread started ==========\n\n");
 
-		if (verbose) {
-			printk("--- cycle %d  (loop dt %lld ms) ---\n", cycle, loop_dt_ms);
-		}
-
-		/* ============================================================
-		 *  Read IMU + gyro (fast I2C, ~1ms each)
-		 * ============================================================ */
-		int16_t imu_accel[2][3], imu_gyro[2][3];
-		bool imu_ok[2] = {false, false};
-		for (size_t i = 0; i < ARRAY_SIZE(lsm6dsv_addrs); i++) {
-			if (lsm6dsv_read(lsm6dsv_addrs[i], imu_accel[i], imu_gyro[i]) == 0) {
-				imu_ok[i] = true;
-			}
-		}
-
-		int16_t gyr_raw[2][3];
-		bool gyr_ok[2] = {false, false};
-		for (size_t i = 0; i < ARRAY_SIZE(i3g4250d_addrs); i++) {
-			if (i3g4250d_read(i3g4250d_addrs[i], gyr_raw[i]) == 0) {
-				gyr_ok[i] = true;
-			}
-		}
-
-		/* ============================================================
-		 *  Read magnetometers — parallel start, single wait, read all
-		 * ============================================================ */
-		bool mag_started[3] = {false, false, false};
-		for (size_t i = 0; i < ARRAY_SIZE(mlx90393_addrs); i++) {
-			if (mlx90393_start(mlx90393_addrs[i]) == 0) {
-				mag_started[i] = true;
-			}
-		}
-		k_msleep(10);
-
-		int16_t mag_raw[3][3];
-		uint16_t mag_temp[3];
-		bool mag_ok[3] = {false, false, false};
-		for (size_t i = 0; i < ARRAY_SIZE(mlx90393_addrs); i++) {
-			if (mag_started[i] &&
-			    mlx90393_collect(mlx90393_addrs[i], mag_raw[i], &mag_temp[i]) == 0) {
-				mag_ok[i] = true;
-			}
-		}
-
-		if (verbose) {
-			for (int i = 0; i < 2; i++) {
-				if (imu_ok[i])
-					printk("IMU%d A:%6d %6d %6d G:%6d %6d %6d\n", i,
-					       imu_accel[i][0], imu_accel[i][1], imu_accel[i][2],
-					       imu_gyro[i][0], imu_gyro[i][1], imu_gyro[i][2]);
-			}
-			for (int i = 0; i < 2; i++) {
-				if (gyr_ok[i])
-					printk("GYR%d G:%6d %6d %6d\n", i,
-					       gyr_raw[i][0], gyr_raw[i][1], gyr_raw[i][2]);
-			}
-			for (int i = 0; i < 3; i++) {
-				if (mag_ok[i])
-					printk("MAG%d M:%6d %6d %6d T:%u\n", i,
-					       mag_raw[i][0], mag_raw[i][1], mag_raw[i][2],
-					       mag_temp[i]);
-			}
-		}
-
-		/* ============================================================
-		 *  Convert raw readings to physical units & average
-		 * ============================================================ */
-
-		/* Accelerometer: average across both LSM6DSV IMUs */
-		float accel_avg[3] = {0.0f, 0.0f, 0.0f};
-		int accel_count = 0;
-		for (int i = 0; i < 2; i++) {
-			if (imu_ok[i]) {
-				for (int ax = 0; ax < 3; ax++)
-					accel_avg[ax] += (float)imu_accel[i][ax] * ACCEL_SCALE;
-				accel_count++;
-			}
-		}
-		if (accel_count > 0) {
-			for (int ax = 0; ax < 3; ax++)
-				accel_avg[ax] /= (float)accel_count;
-		}
-
-		/* Gyro: average across LSM6DSV (x2) + I3G4250D (x2) = up to 4 sources */
-		float gyro_avg[3] = {0.0f, 0.0f, 0.0f};
-		int gyro_count = 0;
-		for (int i = 0; i < 2; i++) {
-			if (imu_ok[i]) {
-				for (int ax = 0; ax < 3; ax++)
-					gyro_avg[ax] += (float)imu_gyro[i][ax] * GYRO_SCALE;
-				gyro_count++;
-			}
-		}
-		for (int i = 0; i < 2; i++) {
-			if (gyr_ok[i]) {
-				for (int ax = 0; ax < 3; ax++)
-					gyro_avg[ax] += (float)gyr_raw[i][ax] * GYRO_SCALE;
-				gyro_count++;
-			}
-		}
-		if (gyro_count > 0) {
-			for (int ax = 0; ax < 3; ax++)
-				gyro_avg[ax] /= (float)gyro_count;
-		}
-
-		/* Magnetometer: average across 3 MLX90393 sensors */
-		float mag_avg[3] = {0.0f, 0.0f, 0.0f};
-		int mag_count = 0;
-		for (int i = 0; i < 3; i++) {
-			if (mag_ok[i]) {
-				mag_avg[0] += (float)mag_raw[i][0] * MAG_SCALE_XY;
-				mag_avg[1] += (float)mag_raw[i][1] * MAG_SCALE_XY;
-				mag_avg[2] += (float)mag_raw[i][2] * MAG_SCALE_Z;
-				mag_count++;
-			}
-		}
-		if (mag_count > 0) {
-			for (int ax = 0; ax < 3; ax++)
-				mag_avg[ax] /= (float)mag_count;
-		}
-
-		/* ============================================================
-		 *  Pack ADCS::SensorData & run core
-		 *
-		 *  Air bearing SensorData:
-		 *    accelerometer  [m/s^2]  gravity vector in body frame
-		 *    gyro           [rad/s]  body rates
-		 *    magnetometer   [T]      B-field in body frame
-		 *    wheel_speeds   [rad/s]  reaction wheel speeds (zeroed until connected)
-		 * ============================================================ */
-		ADCS::SensorData sd;
-		sd.unix_time     = (double)k_uptime_get() / 1000.0;
-		sd.accelerometer = Math::Vec<3>{accel_avg[0], accel_avg[1], accel_avg[2]};
-		sd.gyro          = Math::Vec<3>{gyro_avg[0], gyro_avg[1], gyro_avg[2]};
-		sd.magnetometer  = Math::Vec<3>{mag_avg[0], mag_avg[1], mag_avg[2]};
-		sd.wheel_speeds  = Math::Vec<4>::Zero();
-
-		ADCS::AdcsOutput out = adcs_core.update(sd);
-
-		/* Print ADCS output only on verbose cycles to avoid burning
-		   the entire loop budget on float-to-string formatting. */
-		if (verbose) {
-			printk("[ADCS] q: %.4f %.4f %.4f %.4f\n",
-			       (double)out.attitude_est(0), (double)out.attitude_est(1),
-			       (double)out.attitude_est(2), (double)out.attitude_est(3));
-			printk("[ADCS] w: %.4f %.4f %.4f rad/s\n",
-			       (double)out.rate_est(0), (double)out.rate_est(1),
-			       (double)out.rate_est(2));
-			printk("[ADCS] tau_w: %.6f %.6f %.6f %.6f\n",
-			       (double)out.wheel_torque(0), (double)out.wheel_torque(1),
-			       (double)out.wheel_torque(2), (double)out.wheel_torque(3));
-			printk("[ADCS] mtq: %.6f %.6f %.6f  valid:%d\n",
-			       (double)out.mtq_dipole(0), (double)out.mtq_dipole(1),
-			       (double)out.mtq_dipole(2),
-			       out.estimator_valid ? 1 : 0);
-		}
-
-		/* --- LEDs --- */
-		gpio_pin_toggle_dt(&led0);
-		if (cycle % 2 == 0) gpio_pin_toggle_dt(&led1);
-		if (cycle % 3 == 0) gpio_pin_toggle_dt(&led2);
-
-		cycle++;
-	}
-
+	/* Main exits; ADCS runs on adcs_loop stack. */
 	return 0;
 }

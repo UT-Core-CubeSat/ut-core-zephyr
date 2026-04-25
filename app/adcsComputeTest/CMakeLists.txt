@@ -13,7 +13,7 @@ option(AIR_BEARING "Build for air bearing demo instead of orbit" OFF)
 
 if(AIR_BEARING)
     message(STATUS ">>> Building: Air Bearing Demo <<<")
-    set(ADCS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/airBearingDemo/sim/ADCSCore/components)
+    set(ADCS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/airBearingDemo/ADCSCore/components)
 
     target_sources(app PRIVATE
         src/mainAirBearing.cpp
@@ -23,6 +23,7 @@ if(AIR_BEARING)
         ${ADCS_DIR}/core_ControllerNDI.cpp
         ${ADCS_DIR}/core_ControllerBDot.cpp
         ${ADCS_DIR}/core_HelperFunctions.cpp
+        ${ADCS_DIR}/core_MTQAllocator.cpp
     )
 else()
     message(STATUS ">>> Building: Orbit Flight SW <<<")

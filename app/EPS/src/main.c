@@ -12,6 +12,9 @@
 #define TOTAL_CHANNELS  (NUM_INA * INA_CHANNELS)
 
 #define TELEMETRY_INTERVAL_MS 1000
+#define LED_BLINK_INTERVAL_MS 500
+
+static const struct gpio_dt_spec led0 = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
 
 /* ── Load switch GPIOs (active-high enable) ─────────────────────── */
 
@@ -223,9 +226,20 @@ int main(void)
 	printk("EPS: %d/%d INA3221 sensors ready (%d total channels)\n",
 	       ina_ready, NUM_INA, ina_ready * INA_CHANNELS);
 
+	if (!gpio_is_ready_dt(&led0)) {
+		printk("EPS: led0 gpio not ready\n");
+		return 0;
+	}
+	err = gpio_pin_configure_dt(&led0, GPIO_OUTPUT_ACTIVE);
+	if (err) {
+		printk("EPS: led0 config failed (%d)\n", err);
+		return 0;
+	}
+
 	while (1) {
+		gpio_pin_toggle_dt(&led0);
 		read_power_monitors();
 		print_telemetry();
-		k_msleep(TELEMETRY_INTERVAL_MS);
+		k_msleep(LED_BLINK_INTERVAL_MS);
 	}
 }
