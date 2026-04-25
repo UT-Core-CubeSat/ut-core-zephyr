@@ -135,6 +135,7 @@ typedef struct {
     node_status_t motor;
     node_status_t gnss;
     node_status_t star;
+    node_status_t solar;
 } node_heartbeat_t;
 
 /* Zero-init = all nodes start as "not yet seen". */
@@ -398,6 +399,7 @@ static node_status_t *get_node_status(uint8_t node_id)
         case MOTOR_ID: return &node_alive.motor;
         case GNSS_ID:  return &node_alive.gnss;
         case STAR_ID:  return &node_alive.star;
+        case SOLAR_ID: return &node_alive.solar;
         default:       return NULL;
     }
 }
@@ -415,7 +417,8 @@ static node_status_t *get_node_status(uint8_t node_id)
 static void send_simple(uint8_t dst, uint8_t cls, uint8_t op, uint8_t val)
 {
     struct can_frame f = {0};
-    f.id = CAN_ID_FULL(PRIO_LOW, NODE_ID, dst, cls);
+    f.id    = CAN_ID_FULL(PRIO_LOW, NODE_ID, dst, cls);
+    f.flags = CAN_FRAME_IDE;
     can_fill_payload(&f, NODE_ID, op, val, 0, 0, 0, 0, 0);
     can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
 }
@@ -622,6 +625,7 @@ static void check_node_timeouts(void)
         { MOTOR_ID, "MOTOR", &node_alive.motor },
         { GNSS_ID,  "GNSS",  &node_alive.gnss  },
         { STAR_ID,  "STAR",  &node_alive.star  },
+        { STAR_ID,  "SOLAR",  &node_alive.solar  },
     };
 
     for (int i = 0; i < ARRAY_SIZE(nodes); i++) {
