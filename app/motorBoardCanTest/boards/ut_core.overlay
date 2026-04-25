@@ -1,0 +1,47 @@
+#include <zephyr/dt-bindings/pinctrl/stm32-pinctrl.h>
+#include <zephyr/dt-bindings/clock/stm32u5_clock.h>
+
+/ {
+	chosen {
+		zephyr,console = &usart3;
+	};
+};
+
+&pinctrl {
+	usart3_tx_pc10: usart3_tx_pc10 {
+		pinmux = <STM32_PINMUX('C', 10, AF7)>;
+	};
+
+	usart3_rx_pc11: usart3_rx_pc11 {
+		pinmux = <STM32_PINMUX('C', 11, AF7)>;
+	};
+};
+
+&usart3 {
+	status = "okay";
+	current-speed = <115200>;
+	pinctrl-0 = <&usart3_tx_pc10 &usart3_rx_pc11>;
+	pinctrl-names = "default";
+};
+
+/*
+ * Mirror BLDC app CAN block exactly so this test app uses
+ * the same FDCAN pin/clock/MRAM setup.
+ */
+&fdcan1 {
+	status = "okay";
+	pinctrl-0 = <&fdcan1_rx_pa11 &fdcan1_tx_pa12>;
+	pinctrl-names = "default";
+	/* U5-specific APB1_2 bus encoding for FDCAN peripheral clock */
+	clocks = <&rcc 0x0A0 0x00000200>,
+	         <&rcc STM32_SRC_PLL1_Q FDCAN1_SEL(1)>;
+
+	/* Optional but explicit */
+	clk-divider = <1>;
+
+	bitrate = <500000>;
+	sample-point = <875>;
+
+	/* REQUIRED for this Zephyr STM32U5 FDCAN driver */
+	bosch,mram-cfg = <0x0 28 8 3 3 0 3 3>;
+};
