@@ -55,6 +55,7 @@ typedef enum {
     OP_HEARTBEAT = 0x30,
     OP_SET_MODE  = 0x40,
     OP_REBOOT    = 0x41,
+    OP_SET_BOARD_PWR = 0x50,
 } can_op_t;
 
 /* 8-byte app payload */
