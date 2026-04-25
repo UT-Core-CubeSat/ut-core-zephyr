@@ -37,6 +37,7 @@
 #define MOTOR_ID    0x05
 #define GNSS_ID     0x06
 #define STAR_ID     0x07
+#define SOLAR_ID    0x08
 
 /* Message Classes */
 #define CLS_HEARTBEAT   0
