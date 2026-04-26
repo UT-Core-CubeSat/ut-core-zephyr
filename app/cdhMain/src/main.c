@@ -27,9 +27,9 @@
 #include <stdbool.h>
 #include <string.h>
 
-#include "C:\Users\notbr\Documents\all_coding\ut-core\app\cdhMain\src\board_config.h"
-#include "C:\Users\notbr\Documents\all_coding\ut-core\common\can_proto.h"
-#include "C:\Users\notbr\Documents\all_coding\ut-core\common\temp_telemetry.h"
+#include "board_config.h"
+#include "../../../common/can_proto.h"
+#include "../../../common/temp_telemetry.h"
 
 LOG_MODULE_REGISTER(cdh, LOG_LEVEL_INF);
 

@@ -7,8 +7,8 @@
 #include <zephyr/sys/printk.h>
 #include <zephyr/logging/log.h>
 #include <string.h>
-#include "C:\Users\notbr\Documents\all_coding\ut-core\common\can_proto.h"
-#include "C:\Users\notbr\Documents\all_coding\ut-core\common\temp_telemetry.h"
+#include "..\..\..\common\can_proto.h"
+#include "..\..\..\common\temp_telemetry.h"
 
 #include <stm32_ll_tim.h>
 
@@ -23,9 +23,6 @@ LOG_MODULE_REGISTER(solarcon, LOG_LEVEL_INF);
 #define NODE_CDH        0x01
 #define NODE_ADCS       0x04
 #define CAN_BROADCAST   0xFF
-
-/* Command opcodes (inside CLS_COMMAND) */
-#define OP_SET_MAG_DIPOLE   0x10
 
 /* Priority levels */
 #define PRIO_HIGH  0
@@ -68,6 +65,14 @@ CAN_MSGQ_DEFINE(rxq, 16);
 
 /* Shared state — current duty for telemetry reporting */
 static volatile uint32_t current_duty_percent = 50;
+static volatile uint32_t face_duty_percent[4] = {50, 50, 50, 50};
+
+enum mtq_face_idx {
+    MTQ_FACE_X_POS = 0,
+    MTQ_FACE_X_NEG = 1,
+    MTQ_FACE_Y_POS = 2,
+    MTQ_FACE_Y_NEG = 3,
+};
 
 /* ===================================================== */
 /* ================= PWM HELPERS ======================= */
@@ -79,45 +84,60 @@ static void tim1_enable_ch4n(void)
     TIM1->BDTR |= TIM_BDTR_MOE;
 }
 
-static void set_all_duty(uint32_t duty_percent)
-{
-    if (duty_percent > 100) duty_percent = 100;
+static void set_face_pwm(uint32_t duty_x_pos, uint32_t duty_x_neg, uint32_t duty_y_pos, uint32_t duty_y_neg) {
+    if (duty_x_pos > 100) 
+        duty_x_pos = 100;
+    if (duty_x_neg > 100) 
+        duty_x_neg = 100;
+    if (duty_y_pos > 100) 
+        duty_y_pos = 100;
+    if (duty_y_neg > 100) 
+        duty_y_neg = 100;
 
-    uint32_t pulse_tim = ((uint64_t)PWM_PERIOD * duty_percent) / 100U;
-    uint32_t pulse_inv = PWM_PERIOD - pulse_tim;
+    /* NOTE: edit this mapping later when final pin/face assignment is known. */
+    uint32_t duty_by_face[4] = {
+        duty_x_pos, duty_x_neg, duty_y_pos, duty_y_neg
+    };
 
-    pwm_set(pwm1_dev, TIM1_CH4, PWM_PERIOD, pulse_inv, PWM_POLARITY_NORMAL);
+    uint32_t pulse_x_pos = ((uint64_t)PWM_PERIOD * duty_by_face[MTQ_FACE_X_POS]) / 100U;
+    uint32_t pulse_x_neg = ((uint64_t)PWM_PERIOD * duty_by_face[MTQ_FACE_X_NEG]) / 100U;
+    uint32_t pulse_y_pos = ((uint64_t)PWM_PERIOD * duty_by_face[MTQ_FACE_Y_POS]) / 100U;
+    uint32_t pulse_y_neg = ((uint64_t)PWM_PERIOD * duty_by_face[MTQ_FACE_Y_NEG]) / 100U;
+    uint32_t pulse_y_neg_tim1 = PWM_PERIOD - pulse_y_neg;
+
+    /* Verified mapping from scope tests:
+     *   TIM3_CH2 -> +X
+     *   TIM3_CH1 -> -X
+     *   TIM3_CH4 -> +Y
+     *   TIM1_CH4 -> -Y
+     */
+    /* TIM1 CH4 path is electrically inverted on this board path. */
+    pwm_set(pwm1_dev, TIM1_CH4, PWM_PERIOD, pulse_y_neg_tim1, PWM_POLARITY_NORMAL);
     TIM1->CCER |= TIM_CCER_CC4NE | TIM_CCER_CC4E;
     TIM1->BDTR |= TIM_BDTR_MOE;
+    pwm_set(pwm3_dev, TIM3_CH1, PWM_PERIOD, pulse_x_neg, PWM_POLARITY_NORMAL);
+    pwm_set(pwm3_dev, TIM3_CH2, PWM_PERIOD, pulse_x_pos, PWM_POLARITY_NORMAL);
+    pwm_set(pwm3_dev, TIM3_CH4, PWM_PERIOD, pulse_y_pos, PWM_POLARITY_NORMAL);
 
-    pwm_set(pwm3_dev, TIM3_CH1, PWM_PERIOD, pulse_tim, PWM_POLARITY_NORMAL);
-    pwm_set(pwm3_dev, TIM3_CH2, PWM_PERIOD, pulse_tim, PWM_POLARITY_NORMAL);
-    pwm_set(pwm3_dev, TIM3_CH4, PWM_PERIOD, pulse_tim, PWM_POLARITY_NORMAL);
+    face_duty_percent[MTQ_FACE_X_POS] = duty_by_face[MTQ_FACE_X_POS];
+    face_duty_percent[MTQ_FACE_X_NEG] = duty_by_face[MTQ_FACE_X_NEG];
+    face_duty_percent[MTQ_FACE_Y_POS] = duty_by_face[MTQ_FACE_Y_POS];
+    face_duty_percent[MTQ_FACE_Y_NEG] = duty_by_face[MTQ_FACE_Y_NEG];
 
-    current_duty_percent = duty_percent;
+    uint32_t max_duty = duty_by_face[MTQ_FACE_X_POS];
+    if (duty_by_face[MTQ_FACE_X_NEG] > max_duty) max_duty = duty_by_face[MTQ_FACE_X_NEG];
+    if (duty_by_face[MTQ_FACE_Y_POS] > max_duty) max_duty = duty_by_face[MTQ_FACE_Y_POS];
+    if (duty_by_face[MTQ_FACE_Y_NEG] > max_duty) max_duty = duty_by_face[MTQ_FACE_Y_NEG];
+    current_duty_percent = max_duty;
 }
 
 /* ===================================================== */
 /* =========== MAGNETIC DIPOLE → PWM STUB ============== */
 /* ===================================================== */
 
-/*
- * mag_dipole_to_duty() - Convert a magnetic dipole moment value to PWM duty %.
- *
- * The ADCS sends a signed 16-bit dipole value (data[2]:data[3], big-endian).
- * For now this is a linear mapping:
- *   dipole  0        → duty  0%
- *   dipole ±32767    → duty 100%
- *
- * TODO: replace with your actual torquer calibration curve.
- */
-static uint32_t mag_dipole_to_duty(int16_t dipole)
+static inline int16_t unpack_be16(uint8_t msb, uint8_t lsb)
 {
-    uint32_t mag = (dipole < 0) ? (uint32_t)(-dipole) : (uint32_t)dipole;
-    /* Linear scale: |dipole| / 327.67  ≈  mag * 100 / 32767 */
-    uint32_t duty = (mag * 100U) / 32767U;
-    if (duty > 100) duty = 100;
-    return duty;
+    return (int16_t)(((uint16_t)msb << 8) | (uint16_t)lsb);
 }
 
 /* ===================================================== */
@@ -216,14 +236,30 @@ static void handle_command(const can_packet_t *pkt)
 
     switch (opcode) {
     case OP_SET_MAG_DIPOLE: {
-        /* dipole value in data[2]:data[3], big-endian signed */
-        int16_t dipole = (int16_t)((pkt->data[2] << 8) | pkt->data[3]);
-        uint32_t duty  = mag_dipole_to_duty(dipole);
-        set_all_duty(duty);
-        LOG_INF("RX setMagDipoleMoment: dipole=%d → duty=%u%%", dipole, duty);
+        /* ADCS packs mx/my/mz in p2..p7 (big-endian int16). */
+        int16_t mx = unpack_be16(pkt->data[2], pkt->data[3]);
+        int16_t my = unpack_be16(pkt->data[4], pkt->data[5]);
+        int16_t mz = unpack_be16(pkt->data[6], pkt->data[7]);
+
+        /* Sign-based face selection:
+         *   +X -> x_pos=100, x_neg=0
+         *   -X -> x_pos=0,   x_neg=100
+         *   +Y -> y_pos=100, y_neg=0
+         *   -Y -> y_pos=0,   y_neg=100
+         *    0 -> both faces for that axis off
+         * Z currently ignored (no Z torquers on this board revision).
+         */
+        const uint32_t x_pos = (mx > 0) ? 100U : 0U;
+        const uint32_t x_neg = (mx < 0) ? 100U : 0U;
+        const uint32_t y_pos = (my > 0) ? 100U : 0U;
+        const uint32_t y_neg = (my < 0) ? 100U : 0U;
+        set_face_pwm(x_pos, x_neg, y_pos, y_neg);
+
+        LOG_INF("RX setMagDipoleMoment: mx=%d my=%d mz=%d -> X+/X-/Y+/Y- = %u/%u/%u/%u",
+                mx, my, mz, x_pos, x_neg, y_pos, y_neg);
 
         /* ACK back to sender */
-        send_simple(pkt->src, CLS_CMD_RESP, OP_SET_MAG_DIPOLE, (uint8_t)duty);
+        send_simple(pkt->src, CLS_CMD_RESP, OP_SET_MAG_DIPOLE, (uint8_t)current_duty_percent);
         break;
     }
     default:
@@ -342,29 +378,33 @@ int main(void)
     if (!device_is_ready(pwm1_dev)) { LOG_ERR("TIM1 not ready"); return 0; }
     if (!device_is_ready(pwm3_dev)) { LOG_ERR("TIM3 not ready"); return 0; }
 
-    /* Initial 50% on all channels */
-    uint32_t half = PWM_PERIOD / 2;
+    /* Initial OFF on all MTQ channels. */
+    uint32_t zero = 0;
 
-    ret = pwm_set(pwm1_dev, TIM1_CH4, PWM_PERIOD, half, PWM_POLARITY_NORMAL);
+    ret = pwm_set(pwm1_dev, TIM1_CH4, PWM_PERIOD, zero, PWM_POLARITY_NORMAL);
     tim1_enable_ch4n();
     LOG_INF("PC5 TIM1_CH4N: %s", ret ? "FAIL" : "OK");
 
-    ret = pwm_set(pwm3_dev, TIM3_CH1, PWM_PERIOD, half, PWM_POLARITY_NORMAL);
+    ret = pwm_set(pwm3_dev, TIM3_CH1, PWM_PERIOD, zero, PWM_POLARITY_NORMAL);
     LOG_INF("PC6 TIM3_CH1:  %s", ret ? "FAIL" : "OK");
 
-    ret = pwm_set(pwm3_dev, TIM3_CH2, PWM_PERIOD, half, PWM_POLARITY_NORMAL);
+    ret = pwm_set(pwm3_dev, TIM3_CH2, PWM_PERIOD, zero, PWM_POLARITY_NORMAL);
     LOG_INF("PA7 TIM3_CH2:  %s", ret ? "FAIL" : "OK");
 
-    ret = pwm_set(pwm3_dev, TIM3_CH4, PWM_PERIOD, half, PWM_POLARITY_NORMAL);
+    ret = pwm_set(pwm3_dev, TIM3_CH4, PWM_PERIOD, zero, PWM_POLARITY_NORMAL);
     LOG_INF("PC9 TIM3_CH4:  %s", ret ? "FAIL" : "OK");
 
-    current_duty_percent = 50;
+    current_duty_percent = 0;
+    face_duty_percent[MTQ_FACE_X_POS] = 0;
+    face_duty_percent[MTQ_FACE_X_NEG] = 0;
+    face_duty_percent[MTQ_FACE_Y_POS] = 0;
+    face_duty_percent[MTQ_FACE_Y_NEG] = 0;
 
     /* CAN bus init */
     tcan3403_wakeup();
     can_setup();
 
-    LOG_INF("Running — PWM at 50%%, waiting for CAN commands");
+    LOG_INF("Running — MTQ outputs OFF, waiting for CAN commands");
 
     /* Main loop: heartbeat + SOH telemetry */
     int64_t last_hb  = k_uptime_get();
