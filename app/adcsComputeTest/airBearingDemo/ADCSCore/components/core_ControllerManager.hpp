@@ -10,7 +10,8 @@ public:
 
     // Input / Output Structs
     struct ControlOutput {
-        Param::Vector7 tau;
+        Param::Vector4 wheel_rpm;   // [RPM] desired wheel speeds (0 in OFF/DETUMBLE)
+        Param::Vector3 mtq_dipole;  // [A·m²] magnetorquer dipole (0 in OFF/MOTOR)
     };
 
 

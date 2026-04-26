@@ -8,14 +8,15 @@ namespace ADCS {
 
 // COMMAND INTERFACE (What CDH/Ground sends to ADCS)
 enum class MissionMode {
-    OFF,       // No control
-    SAFE,      // B-dot active
-    BEARING    // NDI attitude hold + wheel desat
+    OFF,      // No control, all actuators idle
+    DETUMBLE, // BDot active (MTQ only, wheels idle)
+    MOTOR,    // NDI attitude hold (reaction wheels only, no MTQ)
+    BOTH      // NDI attitude hold + MTQ wheel desaturation
 };
 
 struct Command {
     MissionMode mode;
-    Command() : mode(MissionMode::BEARING) {}
+    Command() : mode(MissionMode::BOTH) {}
 };
 
 // SENSOR INTERFACE (What CAN provides from sensors)
@@ -29,8 +30,8 @@ struct SensorData {
 
 // OUTPUT INTERFACE (What ADCS sends back via CAN)
 struct AdcsOutput {
-    Math::Vec<4> wheel_torque;
-    Math::Vec<3> mtq_dipole;
+    Math::Vec<4> wheel_rpm;    // [RPM] desired wheel speeds (0 in OFF/DETUMBLE)
+    Math::Vec<3> mtq_dipole;   // [A·m²] magnetorquer dipole (0 in OFF/MOTOR)
     Math::Vec<4> attitude_est;
     Math::Vec<3> rate_est;
     bool estimator_valid;
@@ -62,8 +63,8 @@ private:
     // Reused across update() calls to minimize heap fragmentation and latency jitter
     mutable Param::Vector13 workspace_meas_;   // Measurement vector workspace
 
-    // BEARING mode only arms after rates are sufficiently low.
-    bool bearing_mode_armed;
+    // MOTOR/BOTH mode only arms after rates are sufficiently low.
+    bool motor_mode_armed;
 };
 
 } // namespace ADCS

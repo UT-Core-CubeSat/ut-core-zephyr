@@ -9,8 +9,8 @@ public:
 
     // Output Struct
     struct NDIOutput {
-        Param::Vector4 tau_wheel;
-        Param::Vector3 tau_mtq;
+        Param::Vector4 rpm_cmd;  // [RPM] desired wheel speeds
+        Param::Vector3 mtq_cmd;  // [A·m²] magnetorquer dipole
     };
     
     // Type Aliases for readability 
@@ -24,9 +24,14 @@ public:
     // Constructor
     ControllerNDI();
 
+    // enable_desat: true = BOTH mode (run MTQ desat), false = MOTOR mode (wheels only)
+    // apply_deadband: true = enforce ±omega_deadband via null-space torque
     NDIOutput update(const Param::Vector11& states,
                     const Param::Vector10& reference,
-                    const Param::Vector13& measurements, Param::Real dt);
+                    const Param::Vector13& measurements,
+                    Param::Real dt,
+                    bool enable_desat,
+                    bool apply_deadband);
 
 private:
     // Private methods 
@@ -51,11 +56,12 @@ private:
                                      const StateVector& states_desired,
                                      bool is_outer_loop); 
     Param::Vector4 allocateActuators(const Param::Vector3& tau_req,
-                                      const Param::Vector3& tau_mtq_expected, 
+                                      const Param::Vector3& tau_mtq_expected,
                                       const Param::Vector4& omega_w,
                                       Scalar mtq_comp_scale,
                                       Scalar attitude_scale,
-                                      Scalar null_scale);
+                                      Scalar null_scale,
+                                      bool apply_deadband);
     struct DesatOutput {
         Param::Vector3 m_cmd;
         Param::Vector3 tau_mtq_expected;
@@ -92,8 +98,12 @@ private:
 
     // Gains
     Scalar a0_model, a1_model, a0_plant, a1_plant;
-    Scalar k_desat, k_null;
+    Scalar k_desat, k_null, k_deadband;
     Scalar m_max, m_min;
+
+    // Deadband & back-EMF protection parameters
+    Scalar omega_deadband;
+    Scalar tau_rev_min_frac;
 
     // Air bearing 
     Scalar h_cg;

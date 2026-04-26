@@ -29,12 +29,13 @@ namespace Param {
     using Matrix6 = Math::Mat6;
 
     // INTERNAL CONTROL MODES
-    // These are what the controller understands as the current mode of operation. 
+    // These are what the controller understands as the current mode of operation.
     // The Core class will map these to the PointingMode based on sensor data and state.
-    enum class PointingMode { 
+    enum class PointingMode {
         OFF,      // No control
-        DETUMBLE, // BDot controller active
-        POINT     // NDI controller active
+        DETUMBLE, // BDot (MTQ only, wheels idle)
+        MOTOR,    // NDI (wheels only, no MTQ desat)
+        BOTH      // NDI + MTQ desaturation
     };
 
     namespace Apparatus {
@@ -116,6 +117,16 @@ namespace Param {
         constexpr Real tau_w_min = -tau_w_max;
         constexpr Real k_null = static_cast<Real>(2e-7);
 
+        // Back-EMF reversal protection: minimum fraction of tau_w_max allowed when
+        // the commanded torque opposes wheel spin direction.
+        // At zero speed the full torque is allowed; at omega_w_max only this fraction.
+        constexpr Real tau_rev_min_frac = static_cast<Real>(0.10);
+
+        // Deadband: wheels always spin at >= omega_deadband to keep hall sensors active.
+        // Null-space sign convention: wheels 0 & 1 → +deadband, wheels 2 & 3 → −deadband.
+        constexpr Real omega_deadband = static_cast<Real>(200.0) * static_cast<Real>(2.0) * PI / static_cast<Real>(60.0); // [rad/s]
+        constexpr Real k_deadband = static_cast<Real>(3e-7); // [N·m·s/rad]
+
         // Wheel Geometry
         constexpr Real theta = static_cast<Real>(50.0) * deg2rad;
         static const Matrix34 S = [] {
@@ -192,7 +203,7 @@ namespace Param {
             // outside a Helmholtz cage — indoor field distortion causes yaw to
             // drift to a different "rest" after any large board motion.
             // Re-enable in the cage (or once a trusted B_ref is available).
-            constexpr bool use_magnetometer = false;
+            constexpr bool use_magnetometer = true;
 
             // Measurement validity gates
             // accel: expect ~9.8 m/s^2 at rest; reject obviously bad reads.

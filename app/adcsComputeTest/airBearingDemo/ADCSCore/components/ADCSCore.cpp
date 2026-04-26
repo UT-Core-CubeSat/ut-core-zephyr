@@ -6,7 +6,7 @@ namespace ADCS {
 Core::Core()
     : observer_(), controller_(), last_time(static_cast<Param::TimeReal>(0.0)), first_update(true),
     workspace_meas_(Param::Vector13::Zero()),
-    bearing_mode_armed(false)
+    motor_mode_armed(false)
 {
 }
 
@@ -41,26 +41,39 @@ AdcsOutput Core::update(const SensorData& sensors, const Command& command)
     Param::Vector10 reference = Param::Vector10::Zero();
     reference(0) = 1; // unit quaternion, no rotation
 
-    if (command.mode != MissionMode::BEARING) {
-        bearing_mode_armed = false;
+    // Reset arm flag when transitioning away from wheel-active modes
+    if (command.mode != MissionMode::MOTOR && command.mode != MissionMode::BOTH) {
+        motor_mode_armed = false;
     }
 
-    Param::PointingMode mode = Param::PointingMode::POINT;
-    if (command.mode == MissionMode::OFF) {
-        mode = Param::PointingMode::OFF;
-    } else if (command.mode == MissionMode::SAFE) {
-        mode = Param::PointingMode::DETUMBLE;
-    } else if (command.mode == MissionMode::BEARING) {
-        if (!bearing_mode_armed) {
-            Param::Real w_thresh = Param::Controller::bearing_entry_axis_rate_threshold;
-            bool rates_ready = (std::abs(sensors.gyro(0)) <= w_thresh) &&
-                               (std::abs(sensors.gyro(1)) <= w_thresh) &&
-                               (std::abs(sensors.gyro(2)) <= w_thresh);
-            if (rates_ready) {
-                bearing_mode_armed = true;
-            }
+    // Entry guard for MOTOR and BOTH: require low rates before handing off to NDI
+    if ((command.mode == MissionMode::MOTOR || command.mode == MissionMode::BOTH)
+        && !motor_mode_armed)
+    {
+        Param::Real w_thresh = Param::Controller::bearing_entry_axis_rate_threshold;
+        bool rates_ready = (std::abs(sensors.gyro(0)) <= w_thresh) &&
+                           (std::abs(sensors.gyro(1)) <= w_thresh) &&
+                           (std::abs(sensors.gyro(2)) <= w_thresh);
+        if (rates_ready) {
+            motor_mode_armed = true;
         }
-        mode = bearing_mode_armed ? Param::PointingMode::POINT : Param::PointingMode::DETUMBLE;
+    }
+
+    Param::PointingMode mode;
+    switch (command.mode) {
+        case MissionMode::OFF:
+            mode = Param::PointingMode::OFF;
+            break;
+        case MissionMode::DETUMBLE:
+            mode = Param::PointingMode::DETUMBLE;
+            break;
+        case MissionMode::MOTOR:
+            mode = motor_mode_armed ? Param::PointingMode::MOTOR : Param::PointingMode::DETUMBLE;
+            break;
+        case MissionMode::BOTH:
+        default:
+            mode = motor_mode_armed ? Param::PointingMode::BOTH : Param::PointingMode::DETUMBLE;
+            break;
     }
 
     // 4. Run controller
@@ -72,17 +85,17 @@ AdcsOutput Core::update(const SensorData& sensors, const Command& command)
     //   [4..6]   bias-corrected body rate omega_b_hat
     //   [7..10]  wheel speeds omega_w (from measurements)
     AdcsOutput out;
-    out.wheel_torque = ctrl_out.tau.segment<4>(0);
-    out.mtq_dipole = ctrl_out.tau.segment<3>(4);
-    out.attitude_est = states_hat.segment<4>(0);
-    out.rate_est = states_hat.segment<3>(4);
+    out.wheel_rpm      = ctrl_out.wheel_rpm;
+    out.mtq_dipole     = ctrl_out.mtq_dipole;
+    out.attitude_est   = states_hat.segment<4>(0);
+    out.rate_est       = states_hat.segment<3>(4);
     out.estimator_valid = !states_hat.hasNaN();
-    if (mode == Param::PointingMode::OFF) {
-        out.current_mode = MissionMode::OFF;
-    } else if (mode == Param::PointingMode::DETUMBLE) {
-        out.current_mode = MissionMode::SAFE;
-    } else {
-        out.current_mode = MissionMode::BEARING;
+    switch (mode) {
+        case Param::PointingMode::OFF:      out.current_mode = MissionMode::OFF;      break;
+        case Param::PointingMode::DETUMBLE: out.current_mode = MissionMode::DETUMBLE; break;
+        case Param::PointingMode::MOTOR:    out.current_mode = MissionMode::MOTOR;    break;
+        case Param::PointingMode::BOTH:
+        default:                            out.current_mode = MissionMode::BOTH;     break;
     }
 
     return out;
@@ -99,7 +112,7 @@ void Core::reset() {
     controller_ = ControllerManager();
     first_update = true;
     last_time = static_cast<Param::TimeReal>(0.0);
-    bearing_mode_armed = false;
+    motor_mode_armed = false;
 }
 
 } // namespace ADCS

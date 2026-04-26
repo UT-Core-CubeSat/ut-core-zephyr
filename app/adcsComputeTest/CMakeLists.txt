@@ -22,8 +22,6 @@ if(AIR_BEARING)
         ${ADCS_DIR}/core_ControllerManager.cpp
         ${ADCS_DIR}/core_ControllerNDI.cpp
         ${ADCS_DIR}/core_ControllerBDot.cpp
-        ${ADCS_DIR}/core_HelperFunctions.cpp
-        ${ADCS_DIR}/core_MTQAllocator.cpp
     )
 else()
     message(STATUS ">>> Building: Orbit Flight SW <<<")
