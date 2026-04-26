@@ -1,7 +1,7 @@
 #include <zephyr/dt-bindings/gpio/gpio.h>
 
 / {
-	leds {
+	pins {
 		compatible = "gpio-leds";
 
 		led0: led_0 {

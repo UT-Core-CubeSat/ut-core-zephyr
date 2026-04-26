@@ -6,6 +6,7 @@ project(gnss_node)
 
 target_sources(app PRIVATE
     src/main.c
+    #gps_test_app.c
     orion_b16/orion_b16_parser.c
     orion_b16/orion_b16_commands.c
     orion_b16/orion_b16_driver.c

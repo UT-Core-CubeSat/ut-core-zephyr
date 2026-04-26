@@ -59,27 +59,6 @@ BUILD_ASSERT((M1_MAGNETIC_POLES % 2U) == 0U && M1_MAGNETIC_POLES >= 2U,
 #define M2_DUTY_MAX_PCT 95U
 
 /* M1 speed-loop setup: PI closes RPM with duty clamped to M1_DUTY_MAX_PCT. */
-/*
- * Reference shape (pick one):
- *   M1_REF_MODE_TRIANGLE — ramp MIN→MAX→MIN forever (M1_REF_PROFILE_PERIOD_MS).
- *   M1_REF_MODE_STEP     — repeating square: MIN for M1_STEP_LOW_HOLD_MS, then
- *                          MAX for M1_STEP_HIGH_HOLD_MS, then repeat (triangle
- *                          code stays in this file).
- *   M1_REF_MODE_SINE     — sinusoid over REF_PROFILE_PERIOD_MS with optional
- *                          phase offset in degrees.
- */
-#define M1_REF_MODE_TRIANGLE 0
-#define M1_REF_MODE_STEP     1
-#define M1_REF_MODE_SINE     2
-#define M1_REF_MODE          M1_REF_MODE_SINE
-
-#define M1_REF_RPM_MIN            -10000.f
-#define M1_REF_RPM_MAX            10000.f
-#define M1_REF_PROFILE_PERIOD_MS  20000
-#define M1_REF_PHASE_DEG          0.f
-/* Step / square-wave mode: plateau durations (ms) at each command level. */
-#define M1_STEP_LOW_HOLD_MS   8000U
-#define M1_STEP_HIGH_HOLD_MS  8000U
 #define M1_SPEED_KP_DUTY_PCT  0.002f
 #define M1_SPEED_KI_DUTY_PCT  0.020f
 #define M1_SPEED_CTRL_MS      5U
@@ -88,13 +67,6 @@ BUILD_ASSERT((M1_MAGNETIC_POLES % 2U) == 0U && M1_MAGNETIC_POLES >= 2U,
 #define M1_OPEN_LOOP_REVERSE  0 /* 1 = reverse commutation table */
 
 #define M2_RPM_MEAS_SIGN (+1.f)
-#define M2_REF_MODE          M1_REF_MODE_SINE
-#define M2_REF_RPM_MIN            -10000.f
-#define M2_REF_RPM_MAX            10000.f
-#define M2_REF_PROFILE_PERIOD_MS  20000
-#define M2_REF_PHASE_DEG          33.f
-#define M2_STEP_LOW_HOLD_MS   8000U
-#define M2_STEP_HIGH_HOLD_MS  8000U
 #define M2_SPEED_KP_DUTY_PCT  0.002f
 #define M2_SPEED_KI_DUTY_PCT  0.020f
 #define M2_SPEED_CTRL_MS      5U
@@ -104,13 +76,6 @@ BUILD_ASSERT((M1_MAGNETIC_POLES % 2U) == 0U && M1_MAGNETIC_POLES >= 2U,
 
 #define M3_DUTY_MAX_PCT 95U
 #define M3_RPM_MEAS_SIGN (+1.f)
-#define M3_REF_MODE          M1_REF_MODE_SINE
-#define M3_REF_RPM_MIN            -10000.f
-#define M3_REF_RPM_MAX            10000.f
-#define M3_REF_PROFILE_PERIOD_MS  20000
-#define M3_REF_PHASE_DEG          66.f
-#define M3_STEP_LOW_HOLD_MS   8000U
-#define M3_STEP_HIGH_HOLD_MS  8000U
 #define M3_SPEED_KP_DUTY_PCT  0.002f
 #define M3_SPEED_KI_DUTY_PCT  0.020f
 #define M3_SPEED_CTRL_MS      5U
@@ -120,13 +85,6 @@ BUILD_ASSERT((M1_MAGNETIC_POLES % 2U) == 0U && M1_MAGNETIC_POLES >= 2U,
 
 #define M4_DUTY_MAX_PCT 95U
 #define M4_RPM_MEAS_SIGN (+1.f)
-#define M4_REF_MODE          M1_REF_MODE_SINE
-#define M4_REF_RPM_MIN            -10000.f
-#define M4_REF_RPM_MAX            10000.f
-#define M4_REF_PROFILE_PERIOD_MS  20000
-#define M4_REF_PHASE_DEG          99.f
-#define M4_STEP_LOW_HOLD_MS   8000U
-#define M4_STEP_HIGH_HOLD_MS  8000U
 #define M4_SPEED_KP_DUTY_PCT  0.002f
 #define M4_SPEED_KI_DUTY_PCT  0.020f
 #define M4_SPEED_CTRL_MS      5U
@@ -141,12 +99,15 @@ BUILD_ASSERT((M1_MAGNETIC_POLES % 2U) == 0U && M1_MAGNETIC_POLES >= 2U,
 static const uint8_t hall_ring_fwd[6] = {1, 5, 4, 6, 2, 3};
 
 #define TELEMETRY_MS       500U
+#define SOH_TX_MS         1000U
 #define CAN_HEARTBEAT_MS  1000U /* CAN beacon (OP_HEARTBEAT) TX rate */
 #define MOTOR_CTRL_BASE_MS 1U
 
 #define MOTOR_CTRL_THREAD_PRIO 1
 #define CAN_RX_THREAD_PRIO 3
-#define TELEMETRY_THREAD_PRIO 5
+#define CAN_PROCESS_THREAD_PRIO 4
+#define SCHEDULER_THREAD_PRIO 5
+#define SOH_THREAD_PRIO 6
 #define APP_THREAD_STACK_SIZE 2048
 
 /* Consecutive invalid hall samples (0/7) before latching m_run=false. */
@@ -318,15 +279,28 @@ static const struct device *can_dev = DEVICE_DT_GET(DT_NODELABEL(fdcan1));
 static const struct gpio_dt_spec can_stb = GPIO_DT_SPEC_GET(CAN_STB_NODE, gpios);
 #endif
 CAN_MSGQ_DEFINE(can_rx_q, 4);
+K_MSGQ_DEFINE(can_proc_q, sizeof(struct can_frame), 16, 4);
+
+typedef struct {
+	uint8_t msg_class;
+	uint8_t src;
+	uint8_t dst;
+	uint8_t data[8];
+	uint8_t dlc;
+} can_packet_t;
 
 static struct gpio_callback hall_cb_gpiod;
 static struct gpio_callback hall_cb_gpioe;
 static struct k_thread motor_ctrl_thread_data;
 static struct k_thread can_rx_thread_data;
-static struct k_thread telemetry_thread_data;
+static struct k_thread can_process_thread_data;
+static struct k_thread scheduler_thread_data;
+static struct k_thread soh_thread_data;
 K_THREAD_STACK_DEFINE(motor_ctrl_stack, APP_THREAD_STACK_SIZE);
 K_THREAD_STACK_DEFINE(can_rx_stack, APP_THREAD_STACK_SIZE);
-K_THREAD_STACK_DEFINE(telemetry_stack, APP_THREAD_STACK_SIZE);
+K_THREAD_STACK_DEFINE(can_process_stack, APP_THREAD_STACK_SIZE);
+K_THREAD_STACK_DEFINE(scheduler_stack, APP_THREAD_STACK_SIZE);
+K_THREAD_STACK_DEFINE(soh_stack, APP_THREAD_STACK_SIZE);
 
 static bool motor_has_speed_ctrl(unsigned mi)
 {
@@ -442,118 +416,6 @@ static float motor_speed_rpm_per_duty_pct(unsigned mi)
 		return M4_SPEED_RPM_PER_DUTY_PCT;
 	default:
 		return 0.f;
-	}
-}
-
-static int motor_ref_mode(unsigned mi)
-{
-	switch (mi) {
-	case 0U:
-		return M1_REF_MODE;
-	case 1U:
-		return M2_REF_MODE;
-	case M3_IDX:
-		return M3_REF_MODE;
-	case M4_IDX:
-		return M4_REF_MODE;
-	default:
-		return M1_REF_MODE_STEP;
-	}
-}
-
-static float motor_ref_rpm_min(unsigned mi)
-{
-	switch (mi) {
-	case 0U:
-		return M1_REF_RPM_MIN;
-	case 1U:
-		return M2_REF_RPM_MIN;
-	case M3_IDX:
-		return M3_REF_RPM_MIN;
-	case M4_IDX:
-		return M4_REF_RPM_MIN;
-	default:
-		return 0.f;
-	}
-}
-
-static float motor_ref_rpm_max(unsigned mi)
-{
-	switch (mi) {
-	case 0U:
-		return M1_REF_RPM_MAX;
-	case 1U:
-		return M2_REF_RPM_MAX;
-	case M3_IDX:
-		return M3_REF_RPM_MAX;
-	case M4_IDX:
-		return M4_REF_RPM_MAX;
-	default:
-		return 0.f;
-	}
-}
-
-static uint32_t motor_ref_profile_period_ms(unsigned mi)
-{
-	switch (mi) {
-	case 0U:
-		return M1_REF_PROFILE_PERIOD_MS;
-	case 1U:
-		return M2_REF_PROFILE_PERIOD_MS;
-	case M3_IDX:
-		return M3_REF_PROFILE_PERIOD_MS;
-	case M4_IDX:
-		return M4_REF_PROFILE_PERIOD_MS;
-	default:
-		return 0U;
-	}
-}
-
-static float motor_ref_phase_deg(unsigned mi)
-{
-	switch (mi) {
-	case 0U:
-		return M1_REF_PHASE_DEG;
-	case 1U:
-		return M2_REF_PHASE_DEG;
-	case M3_IDX:
-		return M3_REF_PHASE_DEG;
-	case M4_IDX:
-		return M4_REF_PHASE_DEG;
-	default:
-		return 0.f;
-	}
-}
-
-static uint32_t motor_step_low_hold_ms(unsigned mi)
-{
-	switch (mi) {
-	case 0U:
-		return M1_STEP_LOW_HOLD_MS;
-	case 1U:
-		return M2_STEP_LOW_HOLD_MS;
-	case M3_IDX:
-		return M3_STEP_LOW_HOLD_MS;
-	case M4_IDX:
-		return M4_STEP_LOW_HOLD_MS;
-	default:
-		return 0U;
-	}
-}
-
-static uint32_t motor_step_high_hold_ms(unsigned mi)
-{
-	switch (mi) {
-	case 0U:
-		return M1_STEP_HIGH_HOLD_MS;
-	case 1U:
-		return M2_STEP_HIGH_HOLD_MS;
-	case M3_IDX:
-		return M3_STEP_HIGH_HOLD_MS;
-	case M4_IDX:
-		return M4_STEP_HIGH_HOLD_MS;
-	default:
-		return 0U;
 	}
 }
 
@@ -916,18 +778,21 @@ static int16_t unpack_be_i16(uint8_t msb, uint8_t lsb)
 	return (int16_t)((uint16_t)msb << 8 | (uint16_t)lsb);
 }
 
+static void pack_be_i16(int16_t v, uint8_t *msb, uint8_t *lsb)
+{
+	*msb = (uint8_t)(((uint16_t)v >> 8) & 0xFFU);
+	*lsb = (uint8_t)((uint16_t)v & 0xFFU);
+}
+
 static bool set_motor_rpm_ref(unsigned motor_idx, float rpm_ref)
 {
 	if (!motor_has_speed_ctrl(motor_idx)) {
 		return false;
 	}
 
-	const float ref_min = motor_ref_rpm_min(motor_idx);
-	const float ref_max = motor_ref_rpm_max(motor_idx);
-	const float lo = fmaxf(fminf(ref_min, ref_max), -(float)WHEEL_RPM_ABS_MAX);
-	const float hi = fminf(fmaxf(ref_min, ref_max), (float)WHEEL_RPM_ABS_MAX);
-
-	rpm_ref_cmd[motor_idx] = clampf(rpm_ref, lo, hi);
+	rpm_ref_cmd[motor_idx] = clampf(rpm_ref,
+					 -(float)WHEEL_RPM_ABS_MAX,
+					 (float)WHEEL_RPM_ABS_MAX);
 	return true;
 }
 
@@ -973,6 +838,17 @@ static void handle_can_command(const struct can_frame *f)
 	if (set_motor_rpm_ref(mi, (float)rpm_i16)) {
 		printk("CAN RPM cmd: M%u=%d from ADCS\n", mi + 1U, (int)rpm_i16);
 	}
+}
+
+static void decode_can_packet(const struct can_frame *f, can_packet_t *pkt)
+{
+	const uint32_t id = f->id;
+
+	pkt->src = (uint8_t)((id >> 14) & 0xFFU);
+	pkt->dst = (uint8_t)((id >> 6) & 0xFFU);
+	pkt->msg_class = (uint8_t)(id & 0x3FU);
+	pkt->dlc = f->dlc;
+	memcpy(pkt->data, f->data, f->dlc);
 }
 
 static int can_setup(void)
@@ -1100,6 +976,44 @@ static void send_can_beacon(uint32_t seq)
 	}
 }
 
+static void send_soh_frame(void)
+{
+	struct can_frame f = {0};
+	int ret;
+
+	f.id = CAN_ID_FULL(2U, MOTOR_ID, CAN_BROADCAST, CLS_HEALTH);
+	can_fill_payload(&f, MOTOR_ID, OP_HEARTBEAT,
+			 (uint8_t)gpio_pin_get_dt(&fault_in),
+			 (uint8_t)gpio_pin_get_dt(&kill_in),
+			 (uint8_t)atomic_get(&app_run), 0, 0, 0);
+
+	ret = can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+	if (ret != 0) {
+		printk("WARN: SOH tx failed (%d)\n", ret);
+	}
+}
+
+static void send_motor_rpm_frame(unsigned mi, float rpm_signed)
+{
+	struct can_frame f = {0};
+	int16_t rpm_i16;
+	uint8_t rpm_msb;
+	uint8_t rpm_lsb;
+	int ret;
+
+	rpm_i16 = (int16_t)lrintf(clampf(rpm_signed, -32768.f, 32767.f));
+	pack_be_i16(rpm_i16, &rpm_msb, &rpm_lsb);
+
+	f.id = CAN_ID_FULL(2U, MOTOR_ID, CAN_BROADCAST, CLS_TELEMETRY);
+	can_fill_payload(&f, MOTOR_ID, OP_SET_WHEEL_RPM,
+			 (uint8_t)(mi + 1U), rpm_msb, rpm_lsb, 0, 0, 0);
+
+	ret = can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+	if (ret != 0) {
+		printk("WARN: RPM tx failed M%u (%d)\n", mi + 1U, ret);
+	}
+}
+
 static float motor_rpm_from_transition_window(unsigned mi, uint32_t trans_now, uint32_t trans_prev, uint32_t dt_ms) {
 	if (dt_ms == 0U) {
 		return 0.f;
@@ -1136,104 +1050,6 @@ static void motor_speed_ctrl_reset(unsigned mi) {
 	speed_rpm_ctrl_filt[mi] = 0.f;
 	speed_rpm_ctrl_filt_valid[mi] = false;
 	speed_trans_prev_ctrl[mi] = m_trans[mi];
-}
-
-/* Triangle profile (MIN↔MAX over profile period, repeating). */
-static float motor_speed_ref_triangle(unsigned mi, int64_t t_ms) {
-	const float lo = fminf(motor_ref_rpm_min(mi), motor_ref_rpm_max(mi));
-	const float hi = fmaxf(motor_ref_rpm_min(mi), motor_ref_rpm_max(mi));
-	const int64_t p = (int64_t)motor_ref_profile_period_ms(mi);
-
-	if (hi <= lo) {
-		return lo;
-	}
-	if (p <= 0) {
-		return hi;
-	}
-
-	int64_t ph = t_ms % p;
-
-	if (ph < 0) {
-		ph += p;
-	}
-
-	const int64_t half = p / 2;
-	float u;
-
-	if (half <= 0) {
-		return hi;
-	}
-
-	if (ph < half) {
-		u = (float)ph / (float)half;
-	} else {
-		u = (float)(p - ph) / (float)half;
-	}
-
-	return lo + (hi - lo) * u;
-}
-
-/* Square-wave profile: MIN then MAX, repeating. */
-static float motor_speed_ref_step(unsigned mi, int64_t t_ms) {
-	const float lo = fminf(motor_ref_rpm_min(mi), motor_ref_rpm_max(mi));
-	const float hi = fmaxf(motor_ref_rpm_min(mi), motor_ref_rpm_max(mi));
-	const int64_t low_ms = (int64_t)motor_step_low_hold_ms(mi);
-	const int64_t high_ms = (int64_t)motor_step_high_hold_ms(mi);
-	const int64_t period = low_ms + high_ms;
-
-	if (period <= 0) {
-		return lo;
-	}
-
-	int64_t ph = t_ms % period;
-
-	if (ph < 0) {
-		ph += period;
-	}
-
-	if (ph < low_ms) {
-		return lo;
-	}
-
-	return hi;
-}
-
-/* Sinusoid profile over period, with optional phase offset (degrees). */
-static float motor_speed_ref_sine(unsigned mi, int64_t t_ms) {
-	const float lo = fminf(motor_ref_rpm_min(mi), motor_ref_rpm_max(mi));
-	const float hi = fmaxf(motor_ref_rpm_min(mi), motor_ref_rpm_max(mi));
-	const int64_t p = (int64_t)motor_ref_profile_period_ms(mi);
-	const float center = 0.5f * (lo + hi);
-	const float amp = 0.5f * (hi - lo);
-	const float two_pi = 6.28318530717958647692f;
-
-	if (p <= 0 || amp <= 0.f) {
-		return center;
-	}
-
-	int64_t ph = t_ms % p;
-
-	if (ph < 0) {
-		ph += p;
-	}
-
-	const float u = (float)ph / (float)p;
-	const float phase_rad = motor_ref_phase_deg(mi) * (two_pi / 360.f);
-	const float y = center + amp * sinf(two_pi * u + phase_rad);
-
-	return clampf(y, lo, hi);
-}
-
-/* Positive mechanical RPM command vs board uptime (ms). */
-static float motor_speed_ref_at_uptime(unsigned mi, int64_t t_ms) {
-	if (motor_ref_mode(mi) == M1_REF_MODE_STEP) {
-		return motor_speed_ref_step(mi, t_ms);
-	}
-	if (motor_ref_mode(mi) == M1_REF_MODE_SINE) {
-		return motor_speed_ref_sine(mi, t_ms);
-	}
-
-	return motor_speed_ref_triangle(mi, t_ms);
 }
 
 static void motor_speed_pi_step(unsigned mi, uint32_t dt_ms, float rpm_ref_signed) {
@@ -1315,7 +1131,7 @@ static void all_motors_off(void) {
 	}
 }
 
-static void can_rx_ref_thread(void *arg1, void *arg2, void *arg3) {
+static void can_rx_thread(void *arg1, void *arg2, void *arg3) {
 	ARG_UNUSED(arg1);
 	ARG_UNUSED(arg2);
 	ARG_UNUSED(arg3);
@@ -1325,7 +1141,33 @@ static void can_rx_ref_thread(void *arg1, void *arg2, void *arg3) {
 		int ret = k_msgq_get(&can_rx_q, &rx, K_MSEC(100));
 
 		if (ret == 0) {
-			handle_can_command(&rx);
+			(void)k_msgq_put(&can_proc_q, &rx, K_NO_WAIT);
+		}
+	}
+}
+
+static void can_process_thread(void *arg1, void *arg2, void *arg3)
+{
+	ARG_UNUSED(arg1);
+	ARG_UNUSED(arg2);
+	ARG_UNUSED(arg3);
+
+	while (atomic_get(&app_run) != 0) {
+		struct can_frame frame = {0};
+		can_packet_t pkt = {0};
+		int ret = k_msgq_get(&can_proc_q, &frame, K_MSEC(100));
+
+		if (ret != 0) {
+			continue;
+		}
+
+		decode_can_packet(&frame, &pkt);
+		if (pkt.dst != MOTOR_ID && pkt.dst != CAN_BROADCAST) {
+			continue;
+		}
+
+		if (pkt.msg_class == CLS_COMMAND) {
+			handle_can_command(&frame);
 		}
 	}
 }
@@ -1363,13 +1205,12 @@ static void motor_ctrl_thread(void *arg1, void *arg2, void *arg3) {
 	}
 }
 
-static void telemetry_thread(void *arg1, void *arg2, void *arg3)
+static void scheduler_thread(void *arg1, void *arg2, void *arg3)
 {
 	ARG_UNUSED(arg1);
 	ARG_UNUSED(arg2);
 	ARG_UNUSED(arg3);
 
-	int64_t t_last_telem = k_uptime_get();
 	int64_t t_last_hb = k_uptime_get();
 	uint32_t can_beacon_seq = 0U;
 
@@ -1381,6 +1222,27 @@ static void telemetry_thread(void *arg1, void *arg2, void *arg3)
 			send_can_beacon(can_beacon_seq++);
 		}
 
+		k_msleep(10);
+	}
+}
+
+static void soh_thread(void *arg1, void *arg2, void *arg3)
+{
+	ARG_UNUSED(arg1);
+	ARG_UNUSED(arg2);
+	ARG_UNUSED(arg3);
+
+	int64_t t_last_telem = k_uptime_get();
+	int64_t t_last_soh = k_uptime_get();
+
+	while (atomic_get(&app_run) != 0) {
+		const int64_t now = k_uptime_get();
+
+		if ((now - t_last_soh) >= (int64_t)SOH_TX_MS) {
+			t_last_soh = now;
+			printk("soh handling, TODO\n");
+		}
+
 		if ((now - t_last_telem) >= TELEMETRY_MS) {
 			t_last_telem = now;
 
@@ -1389,7 +1251,6 @@ static void telemetry_thread(void *arg1, void *arg2, void *arg3)
 					continue;
 				}
 				const uint32_t trn = m_trans[mi];
-				const uint32_t dte = trn - speed_trans_prev_telem[mi];
 				const float rpm_win =
 					motor_rpm_from_transition_window(mi, trn,
 									 speed_trans_prev_telem[mi],
@@ -1399,51 +1260,12 @@ static void telemetry_thread(void *arg1, void *arg2, void *arg3)
 					speed_rpm_ctrl_filt[mi] : fabsf(rpm_win);
 				const float rpm_ctrl_signed =
 					copysignf(rpm_ctrl, m_use_rev[mi] ? -1.f : 1.f);
-				const float rpm_ref = rpm_ref_cmd[mi];
-				const float rpm_err = fabsf(rpm_ref) - rpm_ctrl;
-				const float rpm_edge = (mi == 0U) ? m1_rpm_from_hall_edges() : 0.f;
-				const float meas_sign =
-					(mi == 0U) ?
-					(motor_rpm_meas_sign(mi) * (float)m1_last_period_sign) : 0.f;
-
-				uint32_t dp = (uint32_t)(duty_pct[mi] * 1000.f + 0.5f);
-				const char *cmd_dir = m_use_rev[mi] ? "rev" : "fwd";
-				const char *meas_dir =
-					(mi == 0U) ?
-					((meas_sign > 0.f) ? "fwd" :
-					 (meas_sign < 0.f) ? "rev" : "unk") :
-					"n/a";
-
 				speed_trans_prev_telem[mi] = trn;
-
-				// printk("M%uLOG,%lld,%d,%d\n",
-				//        mi + 1U, (long long)now,
-				//        (int)lrintf(rpm_ref),
-				//        (int)lrintf(rpm_ctrl_signed));
-
-				// printk("M%u ref=%d rpm_edge=%d rpm_win=%d rpm_ctrl=%d err=%d duty=%u.%03u pct cmd=%s meas=%s hall=%u dtrans=%u trans=%u\n",
-				//        mi + 1U, (int)lrintf(rpm_ref),
-				//        (int)lrintf(rpm_edge), (int)lrintf(rpm_win),
-				//        (int)lrintf(rpm_ctrl_signed),
-				//        (int)lrintf(rpm_err),
-				//        (unsigned)(dp / 1000U),
-				//        (unsigned)(dp % 1000U),
-				//        cmd_dir, meas_dir,
-				//        (unsigned)m_hall[mi], (unsigned)dte,
-				//        (unsigned)trn);
-			}
-
-			for (unsigned mi = 0; mi < NMOTORS; mi++) {
-				if (motor_has_speed_ctrl(mi) && motor_is_active(mi)) {
-					continue;
-				}
-				// printk("M%u %s\n", mi + 1U,
-				//        motor_is_active(mi) ? "(enabled)"
-				// 			   : "(disabled)");
+				send_motor_rpm_frame(mi, rpm_ctrl_signed);
 			}
 
 			if (gpio_pin_get_dt(&kill_in) != 0) {
-				//printk("KILL asserted\n");
+				printk("KILL asserted, stopping motor app\n");
 				atomic_set(&app_run, 0);
 			}
 		}
@@ -1554,56 +1376,22 @@ int main(void)
 		if (!motor_has_speed_ctrl(mi)) {
 			continue;
 		}
-		const uint32_t ref_lo =
-			(uint32_t)lrintf(fminf(motor_ref_rpm_min(mi), motor_ref_rpm_max(mi)));
-		const uint32_t ref_hi =
-			(uint32_t)lrintf(fmaxf(motor_ref_rpm_min(mi), motor_ref_rpm_max(mi)));
 		const uint32_t kp_ppm =
 			(uint32_t)lrintf(motor_speed_kp(mi) * 1000000.f);
 		const uint32_t ki_ppm =
 			(uint32_t)lrintf(motor_speed_ki(mi) * 1000000.f);
 		const uint32_t ff_rpm_per_pct =
 			(uint32_t)lrintf(motor_speed_rpm_per_duty_pct(mi) * 1000.f);
-		const float ref0 = motor_speed_ref_at_uptime(mi, 0);
-		const uint32_t ff_duty_milli_pct =
-			(uint32_t)lrintf(motor_speed_duty_ff_pct(mi, ref0) * 1000.f);
-
-		if (motor_ref_mode(mi) == M1_REF_MODE_STEP) {
-			printk("M%u ref STEP(square) %u..%u rpm  low %u ms  high %u ms  period %u ms  FF@t0=%u.%03u pct (%u.%03u rpm/pct)  PI kp=%u ppm ki=%u ppm  reverse=%u  duty cap %u%%\n",
-			       mi + 1U, (unsigned)ref_lo, (unsigned)ref_hi,
-			       (unsigned)motor_step_low_hold_ms(mi),
-			       (unsigned)motor_step_high_hold_ms(mi),
-			       (unsigned)(motor_step_low_hold_ms(mi) +
-					  motor_step_high_hold_ms(mi)),
-			       (unsigned)(ff_duty_milli_pct / 1000U),
-			       (unsigned)(ff_duty_milli_pct % 1000U),
-			       (unsigned)(ff_rpm_per_pct / 1000U),
-			       (unsigned)(ff_rpm_per_pct % 1000U),
-			       (unsigned)kp_ppm, (unsigned)ki_ppm,
-			       (unsigned)m_use_rev[mi], (unsigned)motor_duty_max_pct(mi));
-		} else if (motor_ref_mode(mi) == M1_REF_MODE_SINE) {
-			printk("M%u ref SINE %d..%d rpm  period %u ms  phase %d deg  FF@t0=%u.%03u pct (%u.%03u rpm/pct)  PI kp=%u ppm ki=%u ppm  reverse=%u  duty cap %u%%\n",
-			       mi + 1U, (int)lrintf(motor_ref_rpm_min(mi)),
-			       (int)lrintf(motor_ref_rpm_max(mi)),
-			       (unsigned)motor_ref_profile_period_ms(mi),
-			       (int)lrintf(motor_ref_phase_deg(mi)),
-			       (unsigned)(ff_duty_milli_pct / 1000U),
-			       (unsigned)(ff_duty_milli_pct % 1000U),
-			       (unsigned)(ff_rpm_per_pct / 1000U),
-			       (unsigned)(ff_rpm_per_pct % 1000U),
-			       (unsigned)kp_ppm, (unsigned)ki_ppm,
-			       (unsigned)m_use_rev[mi], (unsigned)motor_duty_max_pct(mi));
-		} else {
-			printk("M%u ref TRIANGLE %u..%u rpm  period %u ms  FF@t0=%u.%03u pct (%u.%03u rpm/pct)  PI kp=%u ppm ki=%u ppm  reverse=%u  duty cap %u%%\n",
-			       mi + 1U, (unsigned)ref_lo, (unsigned)ref_hi,
-			       (unsigned)motor_ref_profile_period_ms(mi),
-			       (unsigned)(ff_duty_milli_pct / 1000U),
-			       (unsigned)(ff_duty_milli_pct % 1000U),
-			       (unsigned)(ff_rpm_per_pct / 1000U),
-			       (unsigned)(ff_rpm_per_pct % 1000U),
-			       (unsigned)kp_ppm, (unsigned)ki_ppm,
-			       (unsigned)m_use_rev[mi], (unsigned)motor_duty_max_pct(mi));
-		}
+		printk("M%u ref CAN-driven (%d..%d rpm)  FF gain=%u.%03u rpm/pct  PI kp=%u ppm ki=%u ppm  reverse=%u  duty cap %u%%\n",
+		       mi + 1U,
+		       -(int)WHEEL_RPM_ABS_MAX,
+		       (int)WHEEL_RPM_ABS_MAX,
+		       (unsigned)(ff_rpm_per_pct / 1000U),
+		       (unsigned)(ff_rpm_per_pct % 1000U),
+		       (unsigned)kp_ppm,
+		       (unsigned)ki_ppm,
+		       (unsigned)m_use_rev[mi],
+		       (unsigned)motor_duty_max_pct(mi));
 	}
 	printk("M1 hall dt_min: %u cycles (reject sub-step GPIO IRQ bunching)\n\n",
 	       m1_hall_dt_min_cyc);
@@ -1727,12 +1515,20 @@ int main(void)
 			      MOTOR_CTRL_THREAD_PRIO, 0, K_NO_WAIT);
 	(void)k_thread_create(&can_rx_thread_data, can_rx_stack,
 			      K_THREAD_STACK_SIZEOF(can_rx_stack),
-			      can_rx_ref_thread, NULL, NULL, NULL,
+			      can_rx_thread, NULL, NULL, NULL,
 			      CAN_RX_THREAD_PRIO, 0, K_NO_WAIT);
-	(void)k_thread_create(&telemetry_thread_data, telemetry_stack,
-			      K_THREAD_STACK_SIZEOF(telemetry_stack),
-			      telemetry_thread, NULL, NULL, NULL,
-			      TELEMETRY_THREAD_PRIO, 0, K_NO_WAIT);
+	(void)k_thread_create(&can_process_thread_data, can_process_stack,
+			      K_THREAD_STACK_SIZEOF(can_process_stack),
+			      can_process_thread, NULL, NULL, NULL,
+			      CAN_PROCESS_THREAD_PRIO, 0, K_NO_WAIT);
+	(void)k_thread_create(&scheduler_thread_data, scheduler_stack,
+			      K_THREAD_STACK_SIZEOF(scheduler_stack),
+			      scheduler_thread, NULL, NULL, NULL,
+			      SCHEDULER_THREAD_PRIO, 0, K_NO_WAIT);
+	(void)k_thread_create(&soh_thread_data, soh_stack,
+			      K_THREAD_STACK_SIZEOF(soh_stack),
+			      soh_thread, NULL, NULL, NULL,
+			      SOH_THREAD_PRIO, 0, K_NO_WAIT);
 
 	while (atomic_get(&app_run) != 0) {
 		for (unsigned mi = 0; mi < NMOTORS; mi++) {
@@ -1744,8 +1540,10 @@ int main(void)
 	}
 
 	k_thread_join(&can_rx_thread_data, K_MSEC(200));
+	k_thread_join(&can_process_thread_data, K_MSEC(200));
 	k_thread_join(&motor_ctrl_thread_data, K_MSEC(200));
-	k_thread_join(&telemetry_thread_data, K_MSEC(200));
+	k_thread_join(&scheduler_thread_data, K_MSEC(200));
+	k_thread_join(&soh_thread_data, K_MSEC(200));
 
 	for (unsigned mi = 0; mi < NMOTORS; mi++) {
 		const motor_desc_t *m = &motor_desc[mi];

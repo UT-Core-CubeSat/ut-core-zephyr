@@ -61,6 +61,28 @@ typedef enum {
      *   p3..p4 = signed RPM reference (big-endian int16_t)
      */
     OP_SET_WHEEL_RPM = 0x50,
+    /*
+     * Set magnetorquer commanded dipole vector (CLS_COMMAND):
+     *   p2..p3 = mx (big-endian int16_t, 1e-4 A*m^2 per LSB)
+     *   p4..p5 = my (big-endian int16_t, 1e-4 A*m^2 per LSB)
+     *   p6..p7 = mz (big-endian int16_t, 1e-4 A*m^2 per LSB)
+     */
+    OP_SET_MAG_DIPOLE = 0x51,
+    /*
+     * EPS load switch command (CLS_COMMAND):
+     *   p2 = load index (1..12), or 0 for all loads
+     *   p3 = enable flag (0 = disable, nonzero = enable)
+     */
+    OP_SET_EPS_LOAD = 0x52,
+    /*
+     * ADCS app telemetry/scaffold opcodes:
+     *   OP_ADCS_SOH_ATTITUDE (CLS_HEALTH): qx/qy/qz packed in p2..p7
+     *   OP_ADCS_WHEEL_RPM    (CLS_TELEMETRY): wheel1..wheel3 rpm packed in p2..p7
+     *   OP_ADCS_MTQ_DIPOLE   (CLS_TELEMETRY): mx/my/mz packed in p2..p7
+     */
+    OP_ADCS_SOH_ATTITUDE = 0x70,
+    OP_ADCS_WHEEL_RPM    = 0x71,
+    OP_ADCS_MTQ_DIPOLE   = 0x72,
 } can_op_t;
 
 /* 8-byte app payload */

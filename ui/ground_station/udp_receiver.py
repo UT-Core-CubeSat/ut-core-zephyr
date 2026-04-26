@@ -112,7 +112,7 @@ if __name__ == "__main__":
         f"[{f.timestamp_ms:>10} ms] "
         f"{can_proto.name_node(f.src):>9} -> {can_proto.name_node(f.dst):<9} "
         f"{can_proto.name_class(f.cls):<10} "
-        f"op={can_proto.name_opcode(f.opcode):<10} "
+        f"op={can_proto.name_opcode(f.opcode, f.cls):<14} "
         f"p2-p7={f.p2:3} {f.p3:3} {f.p4:3} {f.p5:3} {f.p6:3} {f.p7:3}"
     ))
     rx.start()

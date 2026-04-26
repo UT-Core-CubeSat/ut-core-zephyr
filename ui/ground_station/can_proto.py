@@ -25,11 +25,42 @@ CLASS_NAMES = {
 OP_PING, OP_PONG = 0x01, 0x02
 OP_BUTTON, OP_SET_LED = 0x10, 0x20
 OP_HEARTBEAT, OP_SET_MODE, OP_REBOOT = 0x30, 0x40, 0x41
+OP_SET_WHEEL_RPM, OP_SET_MAG_DIPOLE, OP_SET_EPS_LOAD = 0x50, 0x51, 0x52
+OP_ADCS_SOH_ATTITUDE, OP_ADCS_WHEEL_RPM, OP_ADCS_MTQ_DIPOLE = 0x70, 0x71, 0x72
 
 OPCODE_NAMES = {
     OP_PING: "PING", OP_PONG: "PONG", OP_BUTTON: "BUTTON",
     OP_SET_LED: "SET_LED", OP_HEARTBEAT: "HEARTBEAT",
     OP_SET_MODE: "SET_MODE", OP_REBOOT: "REBOOT",
+    OP_SET_WHEEL_RPM: "SET_WHEEL_RPM",
+    OP_SET_MAG_DIPOLE: "SET_MAG_DIPOLE",
+    OP_SET_EPS_LOAD: "SET_EPS_LOAD",
+    OP_ADCS_SOH_ATTITUDE: "ADCS_SOH_ATTITUDE",
+    OP_ADCS_WHEEL_RPM: "ADCS_WHEEL_RPM",
+    OP_ADCS_MTQ_DIPOLE: "ADCS_MTQ_DIPOLE",
+}
+
+CLASS_OPCODE_NAMES = {
+    CLS_HEARTBEAT: {
+        OP_HEARTBEAT: "HEARTBEAT",
+    },
+    CLS_COMMAND: {
+        OP_SET_MODE: "SET_MODE",
+        OP_REBOOT: "REBOOT",
+        OP_SET_LED: "SET_LED",
+        OP_SET_WHEEL_RPM: "SET_WHEEL_RPM",
+        OP_SET_MAG_DIPOLE: "SET_MAG_DIPOLE",
+        OP_SET_EPS_LOAD: "SET_EPS_LOAD",
+    },
+    CLS_TELEMETRY: {
+        OP_SET_WHEEL_RPM: "WHEEL_RPM_TELEM",
+        OP_ADCS_WHEEL_RPM: "ADCS_WHEEL_RPM",
+        OP_ADCS_MTQ_DIPOLE: "ADCS_MTQ_DIPOLE",
+    },
+    CLS_HEALTH: {
+        OP_HEARTBEAT: "SOH_STATUS",
+        OP_ADCS_SOH_ATTITUDE: "ADCS_SOH_ATTITUDE",
+    },
 }
 
 
@@ -51,5 +82,11 @@ def name_class(cls: int) -> str:
     return CLASS_NAMES.get(cls, f"CLS_{cls}")
 
 
-def name_opcode(op: int) -> str:
+def name_opcode(op: int, cls: int | None = None) -> str:
+    if cls is not None:
+        by_class = CLASS_OPCODE_NAMES.get(cls, {})
+        name = by_class.get(op)
+        if name is not None:
+            return name
+        return f"{name_class(cls)}_0x{op:02X}"
     return OPCODE_NAMES.get(op, f"0x{op:02X}")
