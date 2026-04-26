@@ -55,6 +55,8 @@ typedef enum {
     OP_HEARTBEAT = 0x30,
     OP_SET_MODE  = 0x40,
     OP_REBOOT    = 0x41,
+    OP_SET_PWR_STATE = 0x60,
+    OP_GET_POS = 0x61,
     /*
      * Set wheel RPM reference (CLS_COMMAND):
      *   p2 = motor index (1..4), or 0 for all motors

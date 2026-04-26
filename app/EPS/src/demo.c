@@ -18,7 +18,7 @@ LOG_MODULE_REGISTER(eps, LOG_LEVEL_INF);
 #define INA_CHANNELS    3
 #define TOTAL_CHANNELS  (NUM_INA * INA_CHANNELS)
 
-#define TELEMETRY_INTERVAL_MS 1000
+#define TELEMETRY_INTERVAL_MS 5000
 #define LED_BLINK_INTERVAL_MS 500
 #define HEARTBEAT_INTERVAL_MS 1000
 
@@ -200,13 +200,47 @@ static void handle_heartbeat(const can_packet_t *pkt)
 	LOG_INF("RX heartbeat from 0x%02X", pkt->src);
 }
 
+static void handle_set_pwr_state(const can_packet_t *pkt)
+{
+	uint8_t load_num = pkt->data[2];   /* p2: load number (1..12) */
+	uint8_t state    = pkt->data[3];   /* p3: 1 = enable, 0 = disable */
+	int ret;
+
+	if (state) {
+		ret = enable_load(load_num);
+	} else {
+		ret = disable_load(load_num);
+	}
+
+	LOG_INF("SET_PWR_STATE load=%d state=%d result=%d", load_num, state, ret);
+
+	/* Send command response back to the requester */
+	struct can_frame f = {0};
+	f.id    = CAN_ID_FULL(PRIO_LOW, NODE_ID, pkt->src, CLS_CMD_RESP);
+	f.flags = CAN_FRAME_IDE;
+	uint8_t status = (ret == 0) ? 0x00 : 0x01;  /* 0x00 = success, 0x01 = error */
+	can_fill_payload(&f, NODE_ID, OP_SET_PWR_STATE, load_num, state, status, 0, 0, 0);
+	can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+}
+
 static void can_dispatch(const can_packet_t *pkt)
 {
 	switch (pkt->msg_class) {
 	case CLS_HEARTBEAT:
 		handle_heartbeat(pkt);
 		break;
-	/* TODO: CLS_COMMAND handler for load/motor control */
+	case CLS_COMMAND: {
+		uint8_t op = pkt->data[1];
+		switch (op) {
+		case OP_SET_PWR_STATE:
+			handle_set_pwr_state(pkt);
+			break;
+		default:
+			LOG_WRN("Unknown command opcode: 0x%02X from 0x%02X", op, pkt->src);
+			break;
+		}
+		break;
+	}
 	default:
 		LOG_WRN("Unhandled class: %d from 0x%02X", pkt->msg_class, pkt->src);
 		break;
