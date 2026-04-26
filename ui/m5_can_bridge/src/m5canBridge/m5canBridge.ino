@@ -1,12 +1,33 @@
 #include <Arduino.h>
 #include "driver/twai.h"
+#include <WiFi.h>
+#include <WiFiUdp.h>
+
+// ---------- WIFI CONFIG ----------
+static const char* WIFI_SSID     = "braydonxps";
+static const char* WIFI_PASSWORD = "chimichanga";
+static const IPAddress LAPTOP_IP(192, 168, 137, 1);
+static const uint16_t UDP_PORT   = 5005;
+// --------------------------------
+
+static WiFiUDP udp;
+static bool udp_ready = false;
+
+#pragma pack(push, 1)
+struct udp_can_frame {
+    uint64_t timestamp_ms;
+    uint32_t can_id;
+    uint8_t dlc;
+    uint8_t data[8];
+};
+#pragma pack(pop)
 
 // ---------- CONFIG ----------
 static const gpio_num_t TWAI_TX_GPIO = GPIO_NUM_8;
 static const gpio_num_t TWAI_RX_GPIO = GPIO_NUM_4;
 static const int STATUS_LED = 21;
 static constexpr twai_mode_t TWAI_RUN_MODE = TWAI_MODE_NORMAL;  // ACK-capable node.
-static constexpr bool ENABLE_TX_TEST = true;
+static constexpr bool ENABLE_TX_TEST = false;
 static constexpr bool ENABLE_LOCAL_GPIO_LOOPBACK_TEST = false;   // Only true for raw GPIO test.
 static constexpr uint8_t TX_TARGET_MOTOR = 1;                    // 1..4, or 0 for all motors.
 static constexpr int16_t TX_RPM_REF_LOW = 1200;                  // Signed RPM command.
@@ -102,18 +123,65 @@ static void print_frame(const twai_message_t& msg) {
     Serial.println();
 }
 
+static void wifi_task() {
+    static bool started = false;
+    static bool initialized = false;
+
+    if (!started) {
+        Serial.printf("Connecting to WiFi '%s'...\n", WIFI_SSID);
+        WiFi.mode(WIFI_STA);
+        WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+        started = true;
+    }
+
+    if (WiFi.status() == WL_CONNECTED && !initialized) {
+        Serial.printf("WiFi connected! IP=%s\n",
+                      WiFi.localIP().toString().c_str());
+
+        udp.begin(UDP_PORT);
+        udp_ready = true;
+        initialized = true;
+    }
+}
+
+static void send_frame_udp(uint32_t can_id, uint8_t dlc, const uint8_t* data) {
+    if (!udp_ready) return;
+
+    udp_can_frame pkt = {};
+    pkt.timestamp_ms = millis();
+    pkt.can_id = can_id;
+    pkt.dlc = dlc;
+
+    for (uint8_t i = 0; i < dlc && i < 8; i++) {
+        pkt.data[i] = data[i];
+    }
+
+    udp.beginPacket(LAPTOP_IP, UDP_PORT);
+    udp.write((const uint8_t*)&pkt, sizeof(pkt));
+    udp.endPacket();
+}
+
 void setup() {
+    pinMode(STATUS_LED, OUTPUT);
+    digitalWrite(STATUS_LED, LOW);
+
     Serial.begin(115200);
-    while (!Serial) delay(10);
+    delay(1200); // Give host monitor time to attach after reset/flash.
+    uint32_t serial_wait_start = millis();
+    Serial.begin(115200);
+    delay(1200);
 
     Serial.println("\n=== CAN MONITOR MODE ===");
-
-    pinMode(STATUS_LED, OUTPUT);
+    for (int i = 0; i < 6; i++) {
+        digitalWrite(STATUS_LED, !digitalRead(STATUS_LED));
+        Serial.printf("BOOT alive %d\n", i);
+        delay(120);
+    }
     digitalWrite(STATUS_LED, LOW);
 
     if (!twai_init()) {
         Serial.println("TWAI INIT FAILED");
-        while (true) delay(1000);
+        // Keep running so serial output proves firmware is alive.
     }
 
     Serial.printf("TWAI READY (%s)\n", twai_mode_name());
@@ -121,10 +189,12 @@ void setup() {
 }
 
 void loop() {
+    wifi_task();
     twai_message_t msg;
     static uint32_t last_status_ms = 0;
     static uint32_t last_tx_ms = 0;
     static uint32_t last_switch_ms = 0;
+    static uint32_t last_alive_ms = 0;
     static int16_t current_rpm_ref = TX_RPM_REF_LOW;
     const uint32_t now = millis();
 
@@ -156,10 +226,9 @@ void loop() {
 
     // Wait up to 100 ms for a frame so TX test and status logs stay responsive.
     if (twai_receive(&msg, pdMS_TO_TICKS(100)) == ESP_OK) {
-        print_frame(msg);
-
-        // Blink LED on activity
-        digitalWrite(STATUS_LED, !digitalRead(STATUS_LED));
+       print_frame(msg);
+       send_frame_udp(msg.identifier, msg.data_length_code, msg.data);
+       digitalWrite(STATUS_LED, !digitalRead(STATUS_LED));
     } else if (now - last_status_ms >= 2000U) {
         last_status_ms = now;
         twai_status_info_t st = {};
@@ -183,7 +252,12 @@ void loop() {
                 }
             }
         } else {
-            Serial.println("CAN idle...");
+            Serial.println("CAN idle... (status unavailable)");
         }
+    }
+
+    if (now - last_alive_ms >= 3000U) {
+        last_alive_ms = now;
+        Serial.println("Bridge alive");
     }
 }

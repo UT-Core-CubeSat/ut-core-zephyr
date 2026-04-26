@@ -77,6 +77,8 @@ class NodeHealthTab(QtWidgets.QWidget):
         )
 
     def on_frame(self, f: Frame) -> None:
+        if f.cls != can_proto.CLS_HEARTBEAT or f.opcode != can_proto.OP_HEARTBEAT:
+            return
         self._last_seen[f.src] = f.rx_wall_time
         self._count[f.src] += 1
 
@@ -223,7 +225,7 @@ class FrameLogTab(QtWidgets.QWidget):
             src = can_proto.name_node(f.src)
             dst = can_proto.name_node(f.dst)
             cls_name = can_proto.name_class(f.cls)
-            op_name = can_proto.name_opcode(f.opcode)
+            op_name = can_proto.name_opcode(f.opcode, f.cls)
             if needle:
                 hay = f"{src} {dst} {cls_name} {op_name}".upper()
                 if needle not in hay:

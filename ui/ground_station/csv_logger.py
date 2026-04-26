@@ -49,7 +49,7 @@ class CsvLogger:
                 f.priority, f.src, can_proto.name_node(f.src),
                 f.dst, can_proto.name_node(f.dst),
                 f.cls, can_proto.name_class(f.cls),
-                f.opcode, can_proto.name_opcode(f.opcode),
+                f.opcode, can_proto.name_opcode(f.opcode, f.cls),
                 f.p2, f.p3, f.p4, f.p5, f.p6, f.p7,
                 f"0x{f.can_id:08X}",
             ])
