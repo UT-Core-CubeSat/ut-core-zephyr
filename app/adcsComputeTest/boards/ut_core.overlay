@@ -58,3 +58,7 @@
 	pinctrl-0 = <&i2c1_scl_pb8 &i2c1_sda_pb9>;
 	pinctrl-names = "default";
 };
+
+&fdcan1 {
+	status = "okay";
+};

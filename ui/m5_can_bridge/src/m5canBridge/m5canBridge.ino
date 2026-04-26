@@ -26,8 +26,14 @@ struct udp_can_frame {
 static const gpio_num_t TWAI_TX_GPIO = GPIO_NUM_8;
 static const gpio_num_t TWAI_RX_GPIO = GPIO_NUM_4;
 static const int STATUS_LED = 21;
+static constexpr uint32_t HEARTBEAT_PERIOD_MS = 1000U;
+static constexpr uint8_t CAN_BROADCAST = 0xFF;
+static constexpr uint8_t COMMS_ID = 0x03;
+static constexpr uint8_t CLS_HEARTBEAT = 0x00;
+static constexpr uint8_t OP_HEARTBEAT = 0x30;
+static constexpr uint8_t PRIO_LOW = 6;
 static constexpr twai_mode_t TWAI_RUN_MODE = TWAI_MODE_NORMAL;  // ACK-capable node.
-static constexpr bool ENABLE_TX_TEST = false;
+static constexpr bool ENABLE_TX_TEST = true;
 static constexpr bool ENABLE_LOCAL_GPIO_LOOPBACK_TEST = false;   // Only true for raw GPIO test.
 static constexpr uint8_t TX_TARGET_MOTOR = 1;                    // 1..4, or 0 for all motors.
 static constexpr int16_t TX_RPM_REF_LOW = 1200;                  // Signed RPM command.
@@ -161,6 +167,36 @@ static void send_frame_udp(uint32_t can_id, uint8_t dlc, const uint8_t* data) {
     udp.endPacket();
 }
 
+static uint32_t make_can_id(uint8_t prio, uint8_t src, uint8_t dst, uint8_t cls) {
+    return (((uint32_t)prio & 0x07U) << 26) |
+           (((uint32_t)src  & 0xFFU) << 14) |
+           (((uint32_t)dst  & 0xFFU) << 6)  |
+           ((uint32_t)cls   & 0x3FU);
+}
+
+static void send_bridge_heartbeat() {
+    twai_message_t hb = {};
+    hb.extd = 1;
+    hb.identifier = make_can_id(PRIO_LOW, COMMS_ID, CAN_BROADCAST, CLS_HEARTBEAT);
+    hb.data_length_code = 8;
+    hb.data[0] = COMMS_ID;
+    hb.data[1] = OP_HEARTBEAT;
+    hb.data[2] = 0;
+    hb.data[3] = 0;
+    hb.data[4] = 0;
+    hb.data[5] = 0;
+    hb.data[6] = 0;
+    hb.data[7] = 0;
+
+    const esp_err_t tx_ret = twai_transmit(&hb, pdMS_TO_TICKS(20));
+    if (tx_ret != ESP_OK) {
+        Serial.printf("CAN TX HEARTBEAT failed ret=%d\n", (int)tx_ret);
+    }
+
+    // Mirror heartbeat directly to UDP so the ground station can always show COMMS health.
+    send_frame_udp(hb.identifier, hb.data_length_code, hb.data);
+}
+
 void setup() {
     pinMode(STATUS_LED, OUTPUT);
     digitalWrite(STATUS_LED, LOW);
@@ -195,10 +231,16 @@ void loop() {
     static uint32_t last_tx_ms = 0;
     static uint32_t last_switch_ms = 0;
     static uint32_t last_alive_ms = 0;
+    static uint32_t last_heartbeat_ms = 0;
     static int16_t current_rpm_ref = TX_RPM_REF_LOW;
     const uint32_t now = millis();
 
     (void)twai_ensure_running();
+
+    if (now - last_heartbeat_ms >= HEARTBEAT_PERIOD_MS) {
+        last_heartbeat_ms = now;
+        send_bridge_heartbeat();
+    }
 
     if (ENABLE_TX_TEST && (now - last_switch_ms >= TX_RPM_SWITCH_MS)) {
         last_switch_ms = now;

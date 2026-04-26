@@ -1,14 +1,29 @@
 #include <cmath>
+#include <cstring>
 
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
+#include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/i2c.h>
+#include <zephyr/drivers/can.h>
+#include <zephyr/logging/log.h>
 
 #include "ADCSCore.hpp"
+#include "../../../common/can_proto.h"
+
+LOG_MODULE_REGISTER(adcs_air_bearing, LOG_LEVEL_INF);
  
 #define VERBOSE_EVERY    100  /* full sensor dump every Nth cycle */
 #define TELEMETRY_EVERY  10   /* ADCS estimator/controller telemetry cadence */
+#define HEARTBEAT_INTERVAL_MS 1000
+#define ADCS_TELEM_INTERVAL_MS 1000
+
+/* CAN protocol defaults mirroring other UT-core boards. */
+#define NODE_ID        ADCS_ID
+#define PRIO_LOW       4
+#define PIN_SHDN       10
+#define PIN_SILENT      9
 
 /* 1: command MissionMode::SAFE -> B-dot detumble (wheels zeroed, mtq active).
  * 0: default BEARING -> detumble until rates calm, then NDI point. */
@@ -41,6 +56,215 @@ static const struct gpio_dt_spec led2 = GPIO_DT_SPEC_GET(LED2_NODE, gpios);
  *  I2C bus  (i2c1 remapped to PB8 SCL / PB9 SDA via overlay)
  * =================================================================== */
 static const struct device *i2c_dev = DEVICE_DT_GET(DT_NODELABEL(i2c1));
+static const struct device *can_dev = DEVICE_DT_GET(DT_NODELABEL(fdcan1));
+static const struct device *gpioa = DEVICE_DT_GET(DT_NODELABEL(gpioa));
+CAN_MSGQ_DEFINE(rxq, 16);
+
+typedef struct {
+	uint8_t priority;
+	uint8_t src;
+	uint8_t dst;
+	uint8_t msg_class;
+	uint8_t dlc;
+	uint8_t data[8];
+} can_packet_t;
+
+typedef struct {
+	bool valid;
+	float attitude_q[4];
+	float wheel_rpm[4];
+	float mtq_dipole[3];
+} adcs_can_snapshot_t;
+
+static adcs_can_snapshot_t g_can_snapshot;
+static struct k_mutex g_can_snapshot_mutex;
+
+static inline int16_t float_to_q15(float x)
+{
+	const float scaled = x * 10000.0f;
+	if (scaled > 32767.0f) return 32767;
+	if (scaled < -32768.0f) return -32768;
+	return (int16_t)scaled;
+}
+
+static inline void pack_be16(uint8_t *dst, int16_t val)
+{
+	dst[0] = (uint8_t)(((uint16_t)val >> 8) & 0xFF);
+	dst[1] = (uint8_t)((uint16_t)val & 0xFF);
+}
+
+static void send_simple(uint8_t dst, uint8_t cls, uint8_t op, uint8_t val)
+{
+	struct can_frame f = {0};
+	f.id = CAN_ID_FULL(PRIO_LOW, NODE_ID, dst, cls);
+	f.flags = CAN_FRAME_IDE;
+	can_fill_payload(&f, NODE_ID, op, val, 0, 0, 0, 0, 0);
+	can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+}
+
+static void send_heartbeat(void)
+{
+	send_simple(CAN_BROADCAST, CLS_HEARTBEAT, OP_HEARTBEAT, 0x00);
+}
+
+static void send_soh_attitude(void)
+{
+	adcs_can_snapshot_t snap;
+	k_mutex_lock(&g_can_snapshot_mutex, K_FOREVER);
+	snap = g_can_snapshot;
+	k_mutex_unlock(&g_can_snapshot_mutex);
+
+	struct can_frame f = {0};
+	f.id = CAN_ID_FULL(PRIO_LOW, NODE_ID, CAN_BROADCAST, CLS_HEALTH);
+	f.flags = CAN_FRAME_IDE;
+	f.dlc = 8;
+	f.data[0] = NODE_ID;
+	f.data[1] = OP_ADCS_SOH_ATTITUDE;
+
+	/* Scaffold: pack qx, qy, qz as q15-ish fixed-point; q0 can be added in a follow-up frame. */
+	pack_be16(&f.data[2], float_to_q15(snap.attitude_q[1]));
+	pack_be16(&f.data[4], float_to_q15(snap.attitude_q[2]));
+	pack_be16(&f.data[6], float_to_q15(snap.attitude_q[3]));
+	can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+}
+
+static void send_wheel_rpm_scaffold(void)
+{
+	adcs_can_snapshot_t snap;
+	k_mutex_lock(&g_can_snapshot_mutex, K_FOREVER);
+	snap = g_can_snapshot;
+	k_mutex_unlock(&g_can_snapshot_mutex);
+
+	struct can_frame f = {0};
+	f.id = CAN_ID_FULL(PRIO_LOW, NODE_ID, CAN_BROADCAST, CLS_TELEMETRY);
+	f.flags = CAN_FRAME_IDE;
+	f.dlc = 8;
+	f.data[0] = NODE_ID;
+	f.data[1] = OP_ADCS_WHEEL_RPM;
+
+	/* Scaffold: first 3 wheels in frame; wheel4 can be split into a second frame when finalized. */
+	pack_be16(&f.data[2], (int16_t)snap.wheel_rpm[0]);
+	pack_be16(&f.data[4], (int16_t)snap.wheel_rpm[1]);
+	pack_be16(&f.data[6], (int16_t)snap.wheel_rpm[2]);
+	can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+}
+
+static void send_mtq_dipole_scaffold(void)
+{
+	adcs_can_snapshot_t snap;
+	k_mutex_lock(&g_can_snapshot_mutex, K_FOREVER);
+	snap = g_can_snapshot;
+	k_mutex_unlock(&g_can_snapshot_mutex);
+
+	struct can_frame f = {0};
+	f.id = CAN_ID_FULL(PRIO_LOW, NODE_ID, CAN_BROADCAST, CLS_TELEMETRY);
+	f.flags = CAN_FRAME_IDE;
+	f.dlc = 8;
+	f.data[0] = NODE_ID;
+	f.data[1] = OP_ADCS_MTQ_DIPOLE;
+
+	/* Scaffold: mx/my/mz packed as 1e-4 A*m^2 fixed-point. */
+	pack_be16(&f.data[2], float_to_q15(snap.mtq_dipole[0]));
+	pack_be16(&f.data[4], float_to_q15(snap.mtq_dipole[1]));
+	pack_be16(&f.data[6], float_to_q15(snap.mtq_dipole[2]));
+	can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+}
+
+static void send_mtq_dipole_command_solar(float mx, float my, float mz)
+{
+	struct can_frame f = {0};
+	f.id = CAN_ID_FULL(PRIO_LOW, NODE_ID, SOLAR_ID, CLS_COMMAND);
+	f.flags = CAN_FRAME_IDE;
+	f.dlc = 8;
+	f.data[0] = NODE_ID;
+	f.data[1] = OP_SET_MAG_DIPOLE;
+
+	/* Pack commanded dipole [mx,my,mz] in one frame (p2..p7), 1e-4 A*m^2 per LSB. */
+	pack_be16(&f.data[2], float_to_q15(mx));
+	pack_be16(&f.data[4], float_to_q15(my));
+	pack_be16(&f.data[6], float_to_q15(mz));
+	can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+}
+
+static void tcan3403_wakeup(void)
+{
+	gpio_pin_configure(gpioa, PIN_SHDN, GPIO_OUTPUT_INACTIVE);
+	gpio_pin_configure(gpioa, PIN_SILENT, GPIO_OUTPUT_INACTIVE);
+	k_msleep(1);
+	LOG_INF("TCAN3403 Awake");
+}
+
+static void can_decode(const struct can_frame *f, can_packet_t *pkt)
+{
+	uint32_t id = f->id;
+	pkt->priority = (id >> 26) & 0x07;
+	pkt->src = (id >> 14) & 0xFF;
+	pkt->dst = (id >> 6) & 0xFF;
+	pkt->msg_class = id & 0x3F;
+	pkt->dlc = f->dlc;
+	memcpy(pkt->data, f->data, f->dlc);
+}
+
+static void can_setup(void)
+{
+	if (!device_is_ready(can_dev)) {
+		LOG_ERR("CAN not ready");
+		return;
+	}
+
+	can_set_bitrate(can_dev, 500000);
+	can_set_mode(can_dev, CAN_MODE_NORMAL);
+	can_start(can_dev);
+
+	const struct can_filter to_me = {
+		.id = CAN_DST(NODE_ID),
+		.mask = CAN_DST_MASK_29,
+		.flags = CAN_FILTER_IDE,
+	};
+	const struct can_filter bcast = {
+		.id = CAN_DST(CAN_BROADCAST),
+		.mask = CAN_DST_MASK_29,
+		.flags = CAN_FILTER_IDE,
+	};
+
+	can_add_rx_filter_msgq(can_dev, &rxq, &to_me);
+	can_add_rx_filter_msgq(can_dev, &rxq, &bcast);
+	LOG_INF("CAN initialized (29-bit extended), node=0x%02X", NODE_ID);
+}
+
+static void can_dispatch(const can_packet_t *pkt)
+{
+	switch (pkt->msg_class) {
+	case CLS_HEARTBEAT:
+		LOG_DBG("RX heartbeat from 0x%02X", pkt->src);
+		break;
+	case CLS_COMMAND:
+		/* Scaffold hook for future ADCS command handling (mode changes, wheel commands, etc). */
+		LOG_DBG("RX command from 0x%02X op=0x%02X", pkt->src, pkt->data[1]);
+		break;
+	default:
+		break;
+	}
+}
+
+#define CAN_RX_STACK_SIZE  1024
+#define CAN_RX_PRIORITY    5
+
+static void can_rx_thread(void *a, void *b, void *c)
+{
+	struct can_frame frame;
+	can_packet_t pkt;
+	while (1) {
+		if (k_msgq_get(&rxq, &frame, K_FOREVER) == 0) {
+			can_decode(&frame, &pkt);
+			can_dispatch(&pkt);
+		}
+	}
+}
+
+K_THREAD_DEFINE(can_rx_tid, CAN_RX_STACK_SIZE,
+	can_rx_thread, NULL, NULL, NULL,
+	CAN_RX_PRIORITY, 0, 0);
 
 /* ===================================================================
  *  LSM6DSV  —  6-axis IMU  (accel + gyro)
@@ -411,11 +635,11 @@ static void adcs_loop(void *, void *, void *)
 
 		ADCS::SensorData sd;
 		sd.unix_time = (double)k_uptime_get() / 1000.0;
-#if AIR_BEARING_ACCEL_AS_GRAVITY_NEGATE
-		sd.accelerometer = Math::Vec<3>{-accel_avg[0], -accel_avg[1], -accel_avg[2]};
-#else
-		sd.accelerometer = Math::Vec<3>{accel_avg[0], accel_avg[1], accel_avg[2]};
-#endif
+		#if AIR_BEARING_ACCEL_AS_GRAVITY_NEGATE
+			sd.accelerometer = Math::Vec<3>{-accel_avg[0], -accel_avg[1], -accel_avg[2]};
+		#else
+			sd.accelerometer = Math::Vec<3>{accel_avg[0], accel_avg[1], accel_avg[2]};
+		#endif
 		sd.gyro = Math::Vec<3>{gyro_avg[0], gyro_avg[1], gyro_avg[2]};
 
 		/* Track worst-case gyro norm since last telemetry print, for motion-gate diagnosis. */
@@ -427,10 +651,27 @@ static void adcs_loop(void *, void *, void *)
 		sd.wheel_speeds  = Math::Vec<4>::Zero();
 
 		ADCS::Command adcs_cmd;
-#if ADCS_AIR_BEARING_FORCE_DETUMBLE
-		adcs_cmd.mode = ADCS::MissionMode::OFF;
-#endif
+		#if ADCS_AIR_BEARING_FORCE_DETUMBLE
+			adcs_cmd.mode = ADCS::MissionMode::OFF;
+        #endif
 		ADCS::AdcsOutput out = adcs_core.update(sd, adcs_cmd);
+		/* Command the Solar board at the same cadence as ADCS compute. */
+		send_mtq_dipole_command_solar(out.mtq_dipole(0), out.mtq_dipole(1), out.mtq_dipole(2));
+		k_mutex_lock(&g_can_snapshot_mutex, K_FOREVER);
+		g_can_snapshot.valid = true;
+		g_can_snapshot.attitude_q[0] = out.attitude_est(0);
+		g_can_snapshot.attitude_q[1] = out.attitude_est(1);
+		g_can_snapshot.attitude_q[2] = out.attitude_est(2);
+		g_can_snapshot.attitude_q[3] = out.attitude_est(3);
+		/* Scaffold: replace with real wheel speed feedback once hardware path is connected. */
+		g_can_snapshot.wheel_rpm[0] = 0.0f;
+		g_can_snapshot.wheel_rpm[1] = 0.0f;
+		g_can_snapshot.wheel_rpm[2] = 0.0f;
+		g_can_snapshot.wheel_rpm[3] = 0.0f;
+		g_can_snapshot.mtq_dipole[0] = out.mtq_dipole(0);
+		g_can_snapshot.mtq_dipole[1] = out.mtq_dipole(1);
+		g_can_snapshot.mtq_dipole[2] = out.mtq_dipole(2);
+		k_mutex_unlock(&g_can_snapshot_mutex);
 
 		if (telemetry) {
 			const char *mode = "?";
@@ -494,6 +735,9 @@ static void adcs_loop(void *, void *, void *)
  * =================================================================== */
 int main(void)
 {
+	k_mutex_init(&g_can_snapshot_mutex);
+	memset(&g_can_snapshot, 0, sizeof(g_can_snapshot));
+
 	/* --- LEDs --- */
 	if (!gpio_is_ready_dt(&led0) ||
 	    !gpio_is_ready_dt(&led1) ||
@@ -573,13 +817,29 @@ int main(void)
 	printk("[ADCS] Sensors: accel (2x avg), gyro (4x avg), mag (3x avg)\n");
 	printk("[ADCS] Actuators: reaction wheels (wheel_speeds zeroed until connected)\n\n");
 
+	/* --- CAN init (common board protocol pattern) --- */
+	if (!device_is_ready(gpioa)) {
+		printk("GPIOA not ready (CAN transceiver pins)\n");
+		return 0;
+	}
+	tcan3403_wakeup();
+	can_setup();
+
 	k_thread_create(&adcs_loop_thread, adcs_loop_stack,
 			K_THREAD_STACK_SIZEOF(adcs_loop_stack),
 			adcs_loop, NULL, NULL, NULL,
 			ADCS_LOOP_PRIORITY, 0, K_NO_WAIT);
 
 	printk("========== ADCS loop thread started ==========\n\n");
+	LOG_INF("Running — heartbeat + ADCS telemetry scaffold active");
 
-	/* Main exits; ADCS runs on adcs_loop stack. */
-	return 0;
+	int64_t last_hb = k_uptime_get();
+	while (1) {
+		const int64_t now = k_uptime_get();
+		if ((now - last_hb) >= HEARTBEAT_INTERVAL_MS) {
+			send_heartbeat();
+			last_hb = now;
+		}
+		k_msleep(100);
+	}
 }

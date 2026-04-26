@@ -25,7 +25,7 @@ UI_TICK_MS = 100
 # Nodes to show in the health grid (order matters for layout)
 HEALTH_NODES = [
     can_proto.CDH_ID, can_proto.EPS_ID, can_proto.COMMS_ID, can_proto.ADCS_ID,
-    can_proto.MOTOR_ID, can_proto.GNSS_ID, can_proto.STAR_ID, can_proto.SOLAR_ID,
+    can_proto.MOTOR_ID, can_proto.GNSS_ID, can_proto.SOLAR_ID,
 ]
 
 CLASS_ROW_COLOR = {
@@ -79,8 +79,13 @@ class NodeHealthTab(QtWidgets.QWidget):
     def on_frame(self, f: Frame) -> None:
         if f.cls != can_proto.CLS_HEARTBEAT or f.opcode != can_proto.OP_HEARTBEAT:
             return
-        self._last_seen[f.src] = f.rx_wall_time
-        self._count[f.src] += 1
+        # Prefer payload source for heartbeat, but fall back to CAN-ID source.
+        # Some bridge-generated heartbeats may set one source field differently.
+        node_id = f.payload_src if f.payload_src in self._boxes else f.src
+        if node_id not in self._boxes:
+            return
+        self._last_seen[node_id] = f.rx_wall_time
+        self._count[node_id] += 1
 
     def refresh(self) -> None:
         now = time.time()

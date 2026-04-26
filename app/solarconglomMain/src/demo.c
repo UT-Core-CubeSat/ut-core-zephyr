@@ -24,9 +24,6 @@ LOG_MODULE_REGISTER(solarcon, LOG_LEVEL_INF);
 #define NODE_ADCS       0x04
 #define CAN_BROADCAST   0xFF
 
-/* Command opcodes (inside CLS_COMMAND) */
-#define OP_SET_MAG_DIPOLE   0x10
-
 /* Priority levels */
 #define PRIO_HIGH  0
 #define PRIO_MED   2
