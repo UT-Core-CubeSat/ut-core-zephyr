@@ -93,6 +93,12 @@ static inline void pack_be16(uint8_t *dst, int16_t val)
 	dst[1] = (uint8_t)((uint16_t)val & 0xFF);
 }
 
+static inline int16_t float_to_i16_rpm(float x)
+{
+	const float clamped = fminf(fmaxf(x, -32768.0f), 32767.0f);
+	return (int16_t)lrintf(clamped);
+}
+
 static void send_simple(uint8_t dst, uint8_t cls, uint8_t op, uint8_t val)
 {
 	struct can_frame f = {0};
@@ -184,6 +190,28 @@ static void send_mtq_dipole_command_solar(float mx, float my, float mz)
 	pack_be16(&f.data[4], float_to_q15(my));
 	pack_be16(&f.data[6], float_to_q15(mz));
 	can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+}
+
+static void send_wheel_rpm_command_motor(uint8_t motor_sel, float rpm_cmd)
+{
+	struct can_frame f = {0};
+	const int16_t rpm_i16 = float_to_i16_rpm(rpm_cmd);
+
+	f.id = CAN_ID_FULL(PRIO_LOW, NODE_ID, MOTOR_ID, CLS_COMMAND);
+	f.flags = CAN_FRAME_IDE;
+	can_fill_payload(&f, NODE_ID, OP_SET_WHEEL_RPM,
+			 motor_sel,
+			 (uint8_t)(((uint16_t)rpm_i16 >> 8) & 0xFF),
+			 (uint8_t)((uint16_t)rpm_i16 & 0xFF),
+			 0, 0, 0);
+	can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+}
+
+static void send_wheel_rpm_commands_motor(const float wheel_rpm_cmd[4])
+{
+	for (uint8_t motor = 1; motor <= 4; motor++) {
+		send_wheel_rpm_command_motor(motor, wheel_rpm_cmd[motor - 1]);
+	}
 }
 
 static void tcan3403_wakeup(void)
@@ -655,6 +683,13 @@ static void adcs_loop(void *, void *, void *)
 			adcs_cmd.mode = ADCS::MissionMode::OFF;
         #endif
 		ADCS::AdcsOutput out = adcs_core.update(sd, adcs_cmd);
+		/* Motor command packing follows bldcHallL6234 contract:
+		 * CLS_COMMAND + OP_SET_WHEEL_RPM, one frame per motor (p2=1..4, p3..p4=int16 rpm).
+		 * Controller output currently exposes wheel torque only, so keep rpm commands zeroed
+		 * until wheel-speed command path is promoted through ADCSCore.
+		 */
+		float wheel_rpm_cmd[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+		send_wheel_rpm_commands_motor(wheel_rpm_cmd);
 		/* Command the Solar board at the same cadence as ADCS compute. */
 		send_mtq_dipole_command_solar(out.mtq_dipole(0), out.mtq_dipole(1), out.mtq_dipole(2));
 		k_mutex_lock(&g_can_snapshot_mutex, K_FOREVER);
@@ -663,11 +698,10 @@ static void adcs_loop(void *, void *, void *)
 		g_can_snapshot.attitude_q[1] = out.attitude_est(1);
 		g_can_snapshot.attitude_q[2] = out.attitude_est(2);
 		g_can_snapshot.attitude_q[3] = out.attitude_est(3);
-		/* Scaffold: replace with real wheel speed feedback once hardware path is connected. */
-		g_can_snapshot.wheel_rpm[0] = 0.0f;
-		g_can_snapshot.wheel_rpm[1] = 0.0f;
-		g_can_snapshot.wheel_rpm[2] = 0.0f;
-		g_can_snapshot.wheel_rpm[3] = 0.0f;
+		g_can_snapshot.wheel_rpm[0] = wheel_rpm_cmd[0];
+		g_can_snapshot.wheel_rpm[1] = wheel_rpm_cmd[1];
+		g_can_snapshot.wheel_rpm[2] = wheel_rpm_cmd[2];
+		g_can_snapshot.wheel_rpm[3] = wheel_rpm_cmd[3];
 		g_can_snapshot.mtq_dipole[0] = out.mtq_dipole(0);
 		g_can_snapshot.mtq_dipole[1] = out.mtq_dipole(1);
 		g_can_snapshot.mtq_dipole[2] = out.mtq_dipole(2);

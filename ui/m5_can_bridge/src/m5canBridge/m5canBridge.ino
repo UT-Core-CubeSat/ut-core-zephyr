@@ -28,17 +28,26 @@ static const gpio_num_t TWAI_RX_GPIO = GPIO_NUM_4;
 static const int STATUS_LED = 21;
 static constexpr uint32_t HEARTBEAT_PERIOD_MS = 1000U;
 static constexpr uint8_t CAN_BROADCAST = 0xFF;
+static constexpr uint8_t ADCS_ID = 0x04;
 static constexpr uint8_t COMMS_ID = 0x03;
+static constexpr uint8_t SOLAR_ID = 0x08;
 static constexpr uint8_t CLS_HEARTBEAT = 0x00;
+static constexpr uint8_t CLS_COMMAND = 0x02;
 static constexpr uint8_t OP_HEARTBEAT = 0x30;
+static constexpr uint8_t OP_SET_MAG_DIPOLE = 0x51;
 static constexpr uint8_t PRIO_LOW = 6;
 static constexpr twai_mode_t TWAI_RUN_MODE = TWAI_MODE_NORMAL;  // ACK-capable node.
-static constexpr bool ENABLE_TX_TEST = true;
+static constexpr bool ENABLE_TX_TEST = false;
+static constexpr bool ENABLE_SOLAR_MAG_TEST = true;
 static constexpr bool ENABLE_LOCAL_GPIO_LOOPBACK_TEST = false;   // Only true for raw GPIO test.
 static constexpr uint8_t TX_TARGET_MOTOR = 1;                    // 1..4, or 0 for all motors.
 static constexpr int16_t TX_RPM_REF_LOW = 1200;                  // Signed RPM command.
 static constexpr int16_t TX_RPM_REF_HIGH = 5000;                 // Signed RPM command.
 static constexpr uint32_t TX_RPM_SWITCH_MS = 5000;               // Toggle command every 5 seconds.
+static constexpr uint32_t SOLAR_CMD_PERIOD_MS = 1000U;
+static constexpr int16_t SOLAR_TEST_MX = -32767;                 // -X command
+static constexpr int16_t SOLAR_TEST_MY = -32767;                 // -Y command
+static constexpr int16_t SOLAR_TEST_MZ = 0;                      // Z ignored by Solar board
 // ----------------------------
 
 static const char* twai_mode_name() {
@@ -197,6 +206,28 @@ static void send_bridge_heartbeat() {
     send_frame_udp(hb.identifier, hb.data_length_code, hb.data);
 }
 
+static void send_solar_mag_test_command() {
+    twai_message_t tx = {};
+    tx.extd = 1;
+    tx.identifier = make_can_id(PRIO_LOW, ADCS_ID, SOLAR_ID, CLS_COMMAND);
+    tx.data_length_code = 8;
+    tx.data[0] = ADCS_ID;
+    tx.data[1] = OP_SET_MAG_DIPOLE;
+    tx.data[2] = (uint8_t)((SOLAR_TEST_MX >> 8) & 0xFF);
+    tx.data[3] = (uint8_t)(SOLAR_TEST_MX & 0xFF);
+    tx.data[4] = (uint8_t)((SOLAR_TEST_MY >> 8) & 0xFF);
+    tx.data[5] = (uint8_t)(SOLAR_TEST_MY & 0xFF);
+    tx.data[6] = (uint8_t)((SOLAR_TEST_MZ >> 8) & 0xFF);
+    tx.data[7] = (uint8_t)(SOLAR_TEST_MZ & 0xFF);
+
+    const esp_err_t tx_ret = twai_transmit(&tx, pdMS_TO_TICKS(20));
+    Serial.printf("CAN TX SOLAR MTQ | ret=%d | mx=%d my=%d mz=%d\n",
+                  (int)tx_ret, (int)SOLAR_TEST_MX, (int)SOLAR_TEST_MY, (int)SOLAR_TEST_MZ);
+
+    // Mirror command to UDP for UI/log visibility even without local CAN echo.
+    send_frame_udp(tx.identifier, tx.data_length_code, tx.data);
+}
+
 void setup() {
     pinMode(STATUS_LED, OUTPUT);
     digitalWrite(STATUS_LED, LOW);
@@ -232,6 +263,7 @@ void loop() {
     static uint32_t last_switch_ms = 0;
     static uint32_t last_alive_ms = 0;
     static uint32_t last_heartbeat_ms = 0;
+    static uint32_t last_solar_cmd_ms = 0;
     static int16_t current_rpm_ref = TX_RPM_REF_LOW;
     const uint32_t now = millis();
 
@@ -264,6 +296,11 @@ void loop() {
         const esp_err_t tx_ret = twai_transmit(&tx, pdMS_TO_TICKS(20));
         Serial.printf("CAN TX RPM | ret=%d | motor=%u | rpm=%d\n",
                       (int)tx_ret, (unsigned)TX_TARGET_MOTOR, (int)current_rpm_ref);
+    }
+
+    if (ENABLE_SOLAR_MAG_TEST && (now - last_solar_cmd_ms >= SOLAR_CMD_PERIOD_MS)) {
+        last_solar_cmd_ms = now;
+        send_solar_mag_test_command();
     }
 
     // Wait up to 100 ms for a frame so TX test and status logs stay responsive.
