@@ -49,7 +49,6 @@ set(CORE_SOURCES
     ${BASE_DIR}/components/core_ControllerManager.cpp
     ${BASE_DIR}/components/core_ControllerNDI.cpp
     ${BASE_DIR}/components/core_ControllerBDot.cpp
-    ${BASE_DIR}/components/core_HelperFunctions.cpp
 )
 
 if(USE_ORBIT)

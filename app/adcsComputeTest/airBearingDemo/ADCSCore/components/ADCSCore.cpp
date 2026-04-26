@@ -40,7 +40,7 @@ AdcsOutput Core::update(const SensorData& sensors, const Command& command)
     // 3. Build reference (identity pointing: unit quaternion, zero rates/accel)
     Param::Vector10 reference = Param::Vector10::Zero();
     reference(0) = 1; // unit quaternion, no rotation
-
+    reference(3) = states_hat(3); // don't care about yaw
     // Reset arm flag when transitioning away from wheel-active modes
     if (command.mode != MissionMode::MOTOR && command.mode != MissionMode::BOTH) {
         motor_mode_armed = false;
@@ -50,13 +50,7 @@ AdcsOutput Core::update(const SensorData& sensors, const Command& command)
     if ((command.mode == MissionMode::MOTOR || command.mode == MissionMode::BOTH)
         && !motor_mode_armed)
     {
-        Param::Real w_thresh = Param::Controller::bearing_entry_axis_rate_threshold;
-        bool rates_ready = (std::abs(sensors.gyro(0)) <= w_thresh) &&
-                           (std::abs(sensors.gyro(1)) <= w_thresh) &&
-                           (std::abs(sensors.gyro(2)) <= w_thresh);
-        if (rates_ready) {
-            motor_mode_armed = true;
-        }
+        motor_mode_armed = true;
     }
 
     Param::PointingMode mode;

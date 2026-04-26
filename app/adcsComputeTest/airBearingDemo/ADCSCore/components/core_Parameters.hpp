@@ -162,9 +162,6 @@ namespace Param {
         constexpr Real t_s_model = static_cast<Real>(6);
         constexpr Real zeta_model = static_cast<Real>(0.85);
         constexpr Real lambda_min_model = static_cast<Real>(0.1);
-
-        // BEARING entry guard: only hand over to NDI once rates are calm.
-        constexpr Real bearing_entry_axis_rate_threshold = static_cast<Real>(1.0) * deg2rad;
         
         // B-Dot gains (not used for air bearing, but kept for completeness)
         constexpr Real K_Bdot = static_cast<Real>(100000);
