@@ -194,13 +194,13 @@ int main() {
 
     auto getCommand = [](Real t) {
         ADCS::Command cmd;
-        // Demo sequence: OFF for startup, SAFE for B-dot detumble, then BEARING for wheel hold.
+        // Demo sequence: OFF for startup, DETUMBLE for B-dot, then BOTH for NDI + MTQ desat.
         if (t < static_cast<Real>(0.5)) {
             cmd.mode = ADCS::MissionMode::OFF;
         } else if (t < static_cast<Real>(60.0)) {
-            cmd.mode = ADCS::MissionMode::SAFE;
+            cmd.mode = ADCS::MissionMode::BOTH;
         } else {
-            cmd.mode = ADCS::MissionMode::BEARING;
+            cmd.mode = ADCS::MissionMode::BOTH;
         }
         return cmd;
     };
@@ -223,29 +223,35 @@ int main() {
             ADCS::AdcsOutput actuators = adcsCore.update(sensorData, cmd);
             active_mode = actuators.current_mode;
 
-            // Remove these later !!!
-            states_hat = actuators.states_hat;
-            reference = actuators.reference;
-            states_m = actuators.states_m;
+            // Reconstruct states_hat for logging from available estimate fields
+            states_hat.setSegment(0, actuators.attitude_est);
+            states_hat.setSegment(4, actuators.rate_est);
+            states_hat.setSegment(7, measurements.segment<4>(9)); // wheel speeds from meas
 
-            // Extract for dynamics
-            tau_all(0) = actuators.wheel_torque(0);
-            tau_all(1) = actuators.wheel_torque(1);
-            tau_all(2) = actuators.wheel_torque(2);
-            tau_all(3) = actuators.wheel_torque(3);
+            // Convert ADCSCore wheel RPM commands → torque commands for the plant dynamics.
+            // Implements a deadbeat proportional RPM controller clamped to actuator limits,
+            // matching what the embedded motor controller does with the RPM setpoint.
+            {
+                Param::Vector4 omega_w_true = dynamics.getStates().segment<4>(7);
+                Param::Vector4 omega_w_cmd = actuators.wheel_rpm *
+                    (static_cast<Real>(2.0) * PlantParam::PI / static_cast<Real>(60.0));
+                Param::Real kp = PlantParam::Actuators::I_wheel / dt;
+                Param::Vector4 tau_cmd = kp * (omega_w_cmd - omega_w_true);
+                for (int i = 0; i < 4; ++i) {
+                    tau_cmd(i) = std::max(-PlantParam::Actuators::tau_w_max,
+                                 std::min( PlantParam::Actuators::tau_w_max, tau_cmd(i)));
+                }
+                tau_all(0) = tau_cmd(0);
+                tau_all(1) = tau_cmd(1);
+                tau_all(2) = tau_cmd(2);
+                tau_all(3) = tau_cmd(3);
+            }
             tau_all(4) = actuators.mtq_dipole(0);
             tau_all(5) = actuators.mtq_dipole(1);
             tau_all(6) = actuators.mtq_dipole(2);
 
-            // Extract MTQ per-face data for logging
-            mtq_face_current = actuators.mtq_face_current;
-            mtq_face_b_ref = actuators.mtq_face_b_ref;
-            
-            // Extract innovation diagnostics
-            accel_innov = actuators.accel_innovation;
-            accel_innov_norm = actuators.accel_innovation_norm;
-            mag_innov = actuators.mag_innovation;
-            mag_innov_norm = actuators.mag_innovation_norm;
+            // mtq_face_current, mtq_face_b_ref, and innovation diagnostics are not
+            // provided by this ADCSCore build — leave them as zero for the logger.
 
             dynamics.update(tau_all);
             t += dt;

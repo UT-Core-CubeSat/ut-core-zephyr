@@ -386,28 +386,32 @@ ControllerNDI::Vector4 ControllerNDI::allocateActuators(const Param::Vector3& ta
     Vector3 tau_to_wheels = (mtq_comp_scale * tau_mtq_expected) - (attitude_scale * tau_req);
     Vector4 tau_nom = S_pseudo * tau_to_wheels;
 
-    // Null-space speed equalization term
-    Vector4 omega_avg = Vector4::Constant(omega_w.mean());
-    Vector4 omega_err = omega_avg - omega_w;
-    Vector4 tau_null = (null_scale * k_null) * (N * omega_err);
-
     // Deadband enforcement via null-space (no net body torque).
     // Null-space direction for this tetrahedral geometry: [+1, +1, -1, -1].
     // Wheels 0 & 1 are driven to +omega_deadband, wheels 2 & 3 to -omega_deadband.
+    // Implemented as a bilateral proportional speed regulator: error is always
+    // (target − actual), so overshoot is actively braked rather than left to coast.
     Vector4 tau_deadband = Vector4::Zero();
     if (apply_deadband) {
         Vector4 deadband_sign;
         deadband_sign(0) = static_cast<Scalar>( 1); deadband_sign(1) = static_cast<Scalar>( 1);
         deadband_sign(2) = static_cast<Scalar>(-1); deadband_sign(3) = static_cast<Scalar>(-1);
-        Vector4 omega_deadband_err = Vector4::Zero();
+        Vector4 omega_deadband_err;
         for (int i = 0; i < 4; ++i) {
-            Scalar target = deadband_sign(i) * omega_deadband;
-            // Apply correction if wheel is below the deadband magnitude or on the wrong side
-            if (std::abs(omega_w(i)) < omega_deadband || omega_w(i) * deadband_sign(i) < static_cast<Scalar>(0)) {
-                omega_deadband_err(i) = target - omega_w(i);
-            }
+            omega_deadband_err(i) = deadband_sign(i) * omega_deadband - omega_w(i);
         }
         tau_deadband = k_deadband * (N * omega_deadband_err);
+    }
+
+    // Null-space speed equalization: drives all wheels toward their mean.
+    // Disabled when deadband is active because the deadband already governs the
+    // null space — running both simultaneously causes them to partially cancel
+    // (mean of [+db, +db, −db, −db] = 0, so equalization opposes the deadband).
+    Vector4 tau_null = Vector4::Zero();
+    if (!apply_deadband) {
+        Vector4 omega_avg = Vector4::Constant(omega_w.mean());
+        Vector4 omega_err = omega_avg - omega_w;
+        tau_null = (null_scale * k_null) * (N * omega_err);
     }
 
     return tau_nom + tau_null + tau_deadband;

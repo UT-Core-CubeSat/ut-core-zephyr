@@ -22,14 +22,14 @@ Set-Location ..
 ```
 ### For small changes 
 ```powershell
-Set-Location C:\Users\arick\Desktop\ut-core-controls\simulation\build
+Set-Location C:\Users\arick\zephyr-workspace\ut-core\app\adcsComputeTest\simulation\build
 cmake --build . --config Debug
 .\Debug\PlantSim.exe
 ```
 
 ### For Orbit Simulation
 ```powershell
-Set-Location C:\Users\arick\Desktop\ut-core-controls
+Set-Location C:\Users\arick\zephyr-workspace\ut-core\app\adcsComputeTest
 if (Test-Path simulation\build) { Remove-Item simulation\build -Recurse -Force }
 New-Item -ItemType Directory -Path simulation\build | Out-Null
 Set-Location simulation\build
@@ -42,7 +42,7 @@ cmake --build . --config Debug
 
 ### Air Bearing Demo (default)
 ```bat
-cd /d C:\Users\arick\Desktop\ut-core-controls
+cd /d C:\Users\arick\zephyr-workspace\ut-core\app\adcsComputeTest
 rmdir /s /q simulation\build
 mkdir simulation\build
 cd simulation\build
@@ -53,7 +53,7 @@ Debug\PlantSim.exe
 
 ### Orbit Simulation
 ```bat
-cd /d C:\Users\arick\Desktop\ut-core-controls
+cd /d C:\Users\arick\zephyr-workspace\ut-core\app\adcsComputeTest
 rmdir /s /q simulation\build
 mkdir simulation\build
 cd simulation\build
@@ -64,10 +64,10 @@ Debug\PlantSim.exe
 
 ## Build steps
 
-1. Create and enter a build directory (from the `ut-core-controls` root):
+1. Create and enter a build directory (from the `adcsComputeTest` root):
 
 ```powershell
-Set-Location C:\Users\arick\Desktop\ut-core-controls
+Set-Location C:\Users\arick\zephyr-workspace\ut-core\app\adcsComputeTest
 if (-not (Test-Path simulation\build)) { New-Item -ItemType Directory -Path simulation\build | Out-Null }
 Set-Location simulation\build
 ```

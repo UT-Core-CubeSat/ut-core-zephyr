@@ -124,7 +124,7 @@ namespace Param {
 
         // Deadband: wheels always spin at >= omega_deadband to keep hall sensors active.
         // Null-space sign convention: wheels 0 & 1 → +deadband, wheels 2 & 3 → −deadband.
-        constexpr Real omega_deadband = static_cast<Real>(200.0) * static_cast<Real>(2.0) * PI / static_cast<Real>(60.0); // [rad/s]
+        constexpr Real omega_deadband = static_cast<Real>(0.0) * static_cast<Real>(2.0) * PI / static_cast<Real>(60.0); // [rad/s]
         constexpr Real k_deadband = static_cast<Real>(3e-7); // [N·m·s/rad]
 
         // Wheel Geometry
@@ -236,14 +236,13 @@ namespace Param {
             constexpr Real p0_bias_sigma_deg_s = static_cast<Real>(0.05); // was 0.3
 
             // MEKF vector measurement covariance (unit-vector residual variance).
-            // Indoor reality: accel sees vibration + small modeling error,
-            // mag sees 5-15% distortion from wiring/metal. Tight values caused
-            // the filter to over-trust mismatched references and oscillate.
-            // Tilt anchor: tighter R_accel = filter snaps harder to true gravity
-            // (and re-estimates bias more aggressively via the cross-covariance).
-            // Safe to be tight now that TRIAD makes B_ref consistent at boot.
+            // R_accel: accel sees gravity + sensor noise; tight = strong tilt anchor.
+            // R_mag: Helmholtz cage field is clean and B_ref is exact, so we can trust it.
+            //   Simulation value 1e-5 ≈ 0.18° yaw uncertainty per update — keeps the filter
+            //   tracking yaw actively without yaw drift from the integrated Z-gyro bias.
+            //   For real indoor use, raise back to 1e-3 to tolerate lab field distortion.
             constexpr Real R_accel_var = static_cast<Real>(2e-6);
-            constexpr Real R_mag_var = static_cast<Real>(1e-3);
+            constexpr Real R_mag_var = static_cast<Real>(1e-5);
         }
 
         // ================================================================

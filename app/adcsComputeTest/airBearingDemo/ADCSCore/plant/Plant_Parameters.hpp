@@ -158,8 +158,8 @@ namespace PlantParam {
         Vector4 q0;
         q0(0) = static_cast<Real>(1.0); q0(1) = static_cast<Real>(0.0); q0(2) = static_cast<Real>(0.0); q0(3) = static_cast<Real>(0.0);
         Vector3 w0 = Vector3::Zero();
-        w0(1) = static_cast<Real>(deg2rad * 1); // 1 deg/s initial spin around Y-axis
-        w0(2) = static_cast<Real>(deg2rad * 5);  // 5 deg/s initial spin around Z-axis
+        w0(1) = static_cast<Real>(deg2rad * 0); // 1 deg/s initial spin around Y-axis
+        w0(2) = static_cast<Real>(deg2rad * 0);  // 5 deg/s initial spin around Z-axis
         Vector4 rw0 = Vector4::Zero();
         return FullState{q0, w0, rw0};
     }();
