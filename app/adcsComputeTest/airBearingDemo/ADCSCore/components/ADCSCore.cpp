@@ -81,6 +81,7 @@ AdcsOutput Core::update(const SensorData& sensors, const Command& command)
     AdcsOutput out;
     out.wheel_rpm      = ctrl_out.wheel_rpm;
     out.mtq_dipole     = ctrl_out.mtq_dipole;
+    out.mtq_coil_currents = ctrl_out.mtq_coil_currents;
     out.attitude_est   = states_hat.segment<4>(0);
     out.rate_est       = states_hat.segment<3>(4);
     out.estimator_valid = !states_hat.hasNaN();

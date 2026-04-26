@@ -66,7 +66,7 @@ namespace Param {
     // SPACECRAFT MODEL (Controller's estimate of truth)
 
     namespace Spacecraft {
-        constexpr Real mass = static_cast<Real>(5.0);  // [kg]
+        constexpr Real mass = static_cast<Real>(3.0);  // [kg]
         static const Vector3 I_principle = Vector3{static_cast<Real>(0.0523), static_cast<Real>(0.0520), static_cast<Real>(0.0083)};
         constexpr Real Ixy = static_cast<Real>(0.0032);
         constexpr Real Ixz = static_cast<Real>(-0.0018);

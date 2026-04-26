@@ -11,7 +11,9 @@ ControllerBDot::ControllerBDot()
     B_dot(Vector3::Zero()),
     alpha_Bdot(Param::Controller::alpha_BDot),
     Bdot_num_filt(Vector3::Zero()),
-    beta_fuse(Param::Controller::beta_fuse)
+    beta_fuse(Param::Controller::beta_fuse),
+    coil_state(Vector4::Zero()),
+    m_bang_state(Vector3::Zero())
 {
 
 }
@@ -24,7 +26,6 @@ ControllerBDot::Vector3 ControllerBDot::update(const Measurements& measurements,
     Vector3 omega_meas = measurements.segment<3>(3); // Assuming angular velocity is in elements 3-5
     Vector3 m_tilde;
     Vector3 Bh;
-    Vector3 m_sat;
     (void)states_hat;
 
     if (B_prev.isZero()) {
@@ -57,10 +58,49 @@ ControllerBDot::Vector3 ControllerBDot::update(const Measurements& measurements,
         // This removes the parallel component; no wasted torque along B-field
         m_tilde -= Bh * Bh.dot(m_tilde);
     }
+
+    const Scalar thresh_on = static_cast<Scalar>(0.10) * m_max;
+    const Scalar thresh_off = static_cast<Scalar>(0.03) * m_max; 
+
+    for (int i = 0; i < 3; ++i) {
+        Scalar cmd = m_tilde(i);
+        Scalar current = m_bang_state(i);
+
+        if (current > 0) {
+            m_bang_state(i) = (cmd > thresh_off) ? m_max : static_cast<Scalar>(0);
+        } else if (current < 0) {
+            m_bang_state(i) = (cmd < -thresh_off) ? -m_max : static_cast<Scalar>(0);
+        } else {
+            if      (cmd >  thresh_on) m_bang_state(i) =  m_max;
+            else if (cmd < -thresh_on) m_bang_state(i) = -m_max;
+        }
+    }
     
-    m_sat = saturateSymmetric(m_tilde, m_max);
     // Four long-face panel coils provide no body-Z magnetic authority in this test setup.
     // Update B_prev
     B_prev = B_now;
-    return m_sat;
+    // Update coil state (simplified hysteresis logic)
+    coil_state = dipoleToCoilCurrents(m_bang_state);
+    coil_currents_out = coil_state;
+    return m_bang_state;
+}
+
+ControllerBDot::Vector4 ControllerBDot::dipoleToCoilCurrents(const Vector3& m_cmd)
+{
+    using namespace Param::Actuators::Coils;
+    // m_cmd is already bang-bang (±m_max or 0), so just decompose by sign.
+    // Layout: [I_Xpos, I_Xneg, I_Ypos, I_Yneg]
+    Scalar signals[4] = {
+         m_cmd(0),
+        -m_cmd(0),
+         m_cmd(1),
+        -m_cmd(1)
+    };
+
+    for (int i = 0; i < 4; ++i) {
+        coil_state(i) = (signals[i] > static_cast<Scalar>(0))
+                        ? I_max
+                        : static_cast<Scalar>(0);
+    }
+    return coil_state;
 }

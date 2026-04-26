@@ -32,6 +32,7 @@ struct SensorData {
 struct AdcsOutput {
     Math::Vec<4> wheel_rpm;    // [RPM] desired wheel speeds (0 in OFF/DETUMBLE)
     Math::Vec<3> mtq_dipole;   // [A·m²] magnetorquer dipole (0 in OFF/MOTOR)
+    Math::Vec<4> mtq_coil_currents; // [A] unipolar: [I_x_pos, I_x_neg, I_y_pos, I_y_neg], zero in OFF/MOTOR
     Math::Vec<4> attitude_est;
     Math::Vec<3> rate_est;
     bool estimator_valid;

@@ -231,7 +231,6 @@ int main() {
             // Mirror ADCSCore reference construction so CSV reflects component behavior.
             reference = Param::Vector10::Zero();
             reference(0) = static_cast<Real>(1.0);
-            reference(3) = states_hat(3);
 
             // Convert ADCSCore wheel RPM commands → torque commands for the plant dynamics.
             // Implements a deadbeat proportional RPM controller clamped to actuator limits,
