@@ -41,8 +41,8 @@ struct SimLogger {
                     << "rw1_est,rw2_est,rw3_est,rw4_est,"
                     // Reference (10)
                     << "q0_ref,q1_ref,q2_ref,q3_ref,wx_ref,wy_ref,wz_ref,ax_ref,ay_ref,az_ref,"
-                    // Inputs (7)
-                    << "tau_w1,tau_w2,tau_w3,tau_w4,m_x,m_y,m_z,"
+                    // Wheel inputs (4)
+                    << "tau_w1,tau_w2,tau_w3,tau_w4,"
                     // Measurements (13)
                     << "meas_ax,meas_ay,meas_az,"
                     << "meas_wx,meas_wy,meas_wz,"
@@ -69,7 +69,7 @@ struct SimLogger {
              const Param::Vector11& true_state,
              const Param::Vector11& est_state,
              const Param::Vector10& ref,
-             const Param::Vector7& input,
+             const Param::Vector4& wheel_input,
              const Param::Vector13& meas,
              const Param::Vector7& model,
              const Param::Vector3& tau_grav,   // NEW
@@ -92,7 +92,7 @@ struct SimLogger {
         write_vec(true_state, 11);
         write_vec(est_state, 11);
         write_vec(ref, 10);
-        write_vec(input, 7);
+        write_vec(wheel_input, 4);
         write_vec(meas, 13);
         write_vec(model, 7);
         write_vec(tau_grav, 3);   // NEW
@@ -178,6 +178,7 @@ int main() {
     Param::Vector11 states_hat = states_true;
     Param::Vector10 reference = Param::Vector10::Zero();
     Param::Vector7 tau_all = Param::Vector7::Zero();
+    Param::Vector4 tau_w_cmd = Param::Vector4::Zero();
     Param::Vector7 states_m = Param::Vector7::Zero();
     Param::Vector13 measurements = Param::Vector13::Zero();
     Param::Vector3 tau_grav = Param::Vector3::Zero();    // NEW
@@ -206,7 +207,7 @@ int main() {
     };
 
     // Initial log
-    logger.log(t, states_true, states_hat, reference, tau_all, measurements, 
+    logger.log(t, states_true, states_hat, reference, tau_w_cmd, measurements, 
                states_m, tau_grav, tau_dist, mtq_face_current, mtq_face_b_ref,
                accel_innov, accel_innov_norm, mag_innov, mag_innov_norm,
                static_cast<int>(ADCS::MissionMode::OFF));
@@ -245,17 +246,26 @@ int main() {
                     tau_cmd(i) = std::max(-PlantParam::Actuators::tau_w_max,
                                  std::min( PlantParam::Actuators::tau_w_max, tau_cmd(i)));
                 }
-                tau_all(0) = tau_cmd(0);
-                tau_all(1) = tau_cmd(1);
-                tau_all(2) = tau_cmd(2);
-                tau_all(3) = tau_cmd(3);
+                tau_w_cmd = tau_cmd;
+                tau_all(0) = tau_w_cmd(0);
+                tau_all(1) = tau_w_cmd(1);
+                tau_all(2) = tau_w_cmd(2);
+                tau_all(3) = tau_w_cmd(3);
             }
-            tau_all(4) = actuators.mtq_dipole(0);
-            tau_all(5) = actuators.mtq_dipole(1);
-            tau_all(6) = actuators.mtq_dipole(2);
 
-            // mtq_face_current, mtq_face_b_ref, and innovation diagnostics are not
-            // provided by this ADCSCore build — leave them as zero for the logger.
+            // Reconstruct body dipole from unipolar face-coil currents.
+            // Layout: [I_Xpos, I_Xneg, I_Ypos, I_Yneg].
+            mtq_face_current = actuators.mtq_coil_currents;
+            const Real m_x = Param::Actuators::Coils::K_coil_x  * mtq_face_current(0)
+                           - Param::Actuators::Coils::K_coil_nx * mtq_face_current(1);
+            const Real m_y = Param::Actuators::Coils::K_coil_y  * mtq_face_current(2)
+                           - Param::Actuators::Coils::K_coil_ny * mtq_face_current(3);
+            tau_all(4) = m_x;
+            tau_all(5) = m_y;
+            tau_all(6) = static_cast<Real>(0.0);
+
+            // mtq_face_b_ref and innovation diagnostics are not provided by this
+            // ADCSCore build — leave them as zero for the logger.
 
             dynamics.update(tau_all);
             t += dt;
@@ -265,7 +275,7 @@ int main() {
         // states_hat = states_true; // For logging equivalence only
         tau_grav = dynamics.getTauGravity();      // NEW
         tau_dist = dynamics.getTauDisturbance();  // NEW
-        logger.log(t, states_true, states_hat, reference, tau_all, measurements, 
+        logger.log(t, states_true, states_hat, reference, tau_w_cmd, measurements, 
                    states_m, tau_grav, tau_dist, mtq_face_current, mtq_face_b_ref,
                    accel_innov, accel_innov_norm, mag_innov, mag_innov_norm,
                    static_cast<int>(active_mode));

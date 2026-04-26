@@ -85,7 +85,7 @@ namespace PlantParam {
         // ANALYSIS: Wheel torque capability ~17 mN·m per axis
         // Max rejectable disturbance: τ = F*r → F = 0.017/0.15 = 0.11 N
         // Using 0.08 N for ~20% margin: τ = 0.08*0.15 = 12 mN·m
-        constexpr Real F_disturbance_max = static_cast<Real>(0.1);  // [N] gentle push
+        constexpr Real F_disturbance_max = static_cast<Real>(0);  // [N] gentle push
         
         // Disturbance timing
         constexpr Real T_disturbance_period = static_cast<Real>(15.0);  // [s] Period of periodic disturbance
@@ -160,7 +160,7 @@ namespace PlantParam {
         q0(0) = static_cast<Real>(1.0); q0(1) = static_cast<Real>(0.0); q0(2) = static_cast<Real>(0.0); q0(3) = static_cast<Real>(0.0);
         Vector3 w0 = Vector3::Zero();
         w0(1) = static_cast<Real>(deg2rad * 0); // 1 deg/s initial spin around Y-axis
-        w0(2) = static_cast<Real>(deg2rad * 0);  // 5 deg/s initial spin around Z-axis
+        w0(2) = static_cast<Real>(deg2rad * 16);  // 5 deg/s initial spin around Z-axis
         Vector4 rw0 = Vector4::Zero();
         return FullState{q0, w0, rw0};
     }();

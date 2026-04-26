@@ -100,7 +100,7 @@ namespace Param {
             constexpr Real K_coil_nx = static_cast<Real>(0.015); // [m²] -X face coil constant
             constexpr Real K_coil_y = static_cast<Real>(0.015);  // [m²] +Y face coil constant
             constexpr Real K_coil_ny = static_cast<Real>(0.015); // [m²] -Y face coil constant
-            constexpr Real I_max = static_cast<Real>(0.5);       // [A] Max per-coil current limit
+            constexpr Real I_max = static_cast<Real>(0.15);       // [A] Max per-coil current limit
             // Mapping: (m_x, m_y) → (I_Xpos, I_Xneg, I_Ypos, I_Yneg)
             // +X coil produces field in +X direction when I > 0
             // -X coil produces field in +X direction when I < 0 (polarity reversed)
