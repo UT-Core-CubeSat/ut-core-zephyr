@@ -228,6 +228,11 @@ int main() {
             states_hat.setSegment(4, actuators.rate_est);
             states_hat.setSegment(7, measurements.segment<4>(9)); // wheel speeds from meas
 
+            // Mirror ADCSCore reference construction so CSV reflects component behavior.
+            reference = Param::Vector10::Zero();
+            reference(0) = static_cast<Real>(1.0);
+            reference(3) = states_hat(3);
+
             // Convert ADCSCore wheel RPM commands → torque commands for the plant dynamics.
             // Implements a deadbeat proportional RPM controller clamped to actuator limits,
             // matching what the embedded motor controller does with the RPM setpoint.

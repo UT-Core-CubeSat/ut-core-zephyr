@@ -93,7 +93,7 @@ SensorsClass::Vector3 SensorsClass::accelerometer(const StateVector& states_dot,
     Quat q_conj;
     q_conj(0) = q(0);
     q_conj.setSegment(1, -q.segment<3>(1));
-    Vector3 g_body = helpers.quatRotate(q_conj, g_inertial);
+    Vector3 g_body = quatRotateLocal(q_conj, g_inertial);
     
     // Accelerometer measures specific force = acceleration - gravity
     // On air bearing with no translation: a = 0, so accel_meas = -g_body = +g_up
@@ -124,7 +124,7 @@ SensorsClass::Vector3 SensorsClass::magnetometer(const StateVector& states) {
     Quat q_conj;
     q_conj(0) = q(0);
     q_conj.setSegment(1, -q.segment<3>(1));
-    Vector3 B_body = helpers.quatRotate(q_conj, magnitude);
+    Vector3 B_body = quatRotateLocal(q_conj, magnitude);
     
     // Add bias and noise
     Vector3 y_B = B_body + beta_mag_state + sigma_mag.cwiseProduct(randn<3>());
@@ -163,6 +163,19 @@ Math::Vec<N> SensorsClass::randn() {
         vec(i) = dist(gen);
     }
     return vec;
+}
+
+SensorsClass::Vector3 SensorsClass::quatRotateLocal(const SensorsClass::Quat& q,
+                                                   const SensorsClass::Vector3& v) const {
+    // Direct rotation formula: v' = v + 2*q_w*(q_v x v) + 2*(q_v x (q_v x v))
+    SensorsClass::Scalar qw = q(0);
+    SensorsClass::Vector3 qv = q.segment<3>(1);
+
+    SensorsClass::Vector3 qv_cross_v = qv.cross(v);
+    SensorsClass::Vector3 qv_cross_qv_cross_v = qv.cross(qv_cross_v);
+
+    return v + static_cast<SensorsClass::Scalar>(2.0) * qw * qv_cross_v
+             + static_cast<SensorsClass::Scalar>(2.0) * qv_cross_qv_cross_v;
 }
 
 // Explicit template instantiations

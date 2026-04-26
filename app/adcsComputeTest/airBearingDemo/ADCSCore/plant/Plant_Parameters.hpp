@@ -18,6 +18,7 @@ namespace PlantParam {
     using Vector17 = Math::Vec17;
     using Vector10 = Math::Vec10;
     using Vector11 = Math::Vec11;
+    using Vector13 = Math::Vec13;
     using Vector29 = Math::Vec29;
     using Matrix2 = Math::Mat2;
     using Matrix3 = Math::Mat3;

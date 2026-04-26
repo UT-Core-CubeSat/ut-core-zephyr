@@ -118,7 +118,7 @@ PlantParam::Vector11 Dynamics::kinetics(const PlantParam::Vector11& states,
     Vector3 m_cmd = fm.moments.segment<3>(4);
     // Get B-Field in body frame 
     Quat q_conj; q_conj(0) = q(0); q_conj.setSegment(1, -q.segment<3>(1));
-    Vector3 B_body = helpers.quatRotate(q_conj, PlantParam::Apparatus::B_helmholtz);
+    Vector3 B_body = quatRotateLocal(q_conj, PlantParam::Apparatus::B_helmholtz);
     Vector3 tau_mtq = m_cmd.cross(B_body);  // Actual torque [Nm]
     Vector3 tau_gravity = fm.tau_gravity;
     Vector3 tau_disturbance = fm.tau_disturbance;
@@ -183,7 +183,7 @@ Dynamics::forceOutput Dynamics::forces_and_moments(const InputVector& inputs,
     Quat q_conj;
     q_conj(0) = q(0);
     q_conj.setSegment(1, -q.segment<3>(1));
-    Vector3 g_body = helpers.quatRotate(q_conj, g_inertial);
+    Vector3 g_body = quatRotateLocal(q_conj, g_inertial);
     
     // Gravity torque: τ_g = r_cg × (m * g_b)
     Vector3 tau_gravity = r_cg_body.cross(m * g_body);
@@ -310,6 +310,18 @@ Dynamics::Vector4 Dynamics::compute_wheel_friction(const Vector4& omega_wheel) c
     return tau_fric;
 }
 
+Dynamics::Vector3 Dynamics::quatRotateLocal(const Dynamics::Quat& q,
+                                            const Dynamics::Vector3& v) const {
+    // Direct rotation formula: v' = v + 2*q_w*(q_v x v) + 2*(q_v x (q_v x v))
+    Dynamics::Scalar qw = q(0);
+    Dynamics::Vector3 qv = q.segment<3>(1);
+
+    Dynamics::Vector3 qv_cross_v = qv.cross(v);
+    Dynamics::Vector3 qv_cross_qv_cross_v = qv.cross(qv_cross_v);
+
+    return v + static_cast<Dynamics::Scalar>(2.0) * qw * qv_cross_v
+             + static_cast<Dynamics::Scalar>(2.0) * qv_cross_qv_cross_v;
+}
 // ============================================================================
 // WHEEL TORQUE RIPPLE MODEL
 // ============================================================================

@@ -2,21 +2,20 @@
 #define SENSORS_HPP
 
 #include "Plant_Parameters.hpp"
-#include "../components/core_HelperFunctions.hpp"
 #include <random>
 
 class SensorsClass {
 public: 
 
     // Type Aliases for readability 
-    using StateVector = Param::Vector11;
-    using Reference = Param::Vector10;
-    using Measurements = Param::Vector13;
-    using Scalar = Param::Real;
-    using TimeReal = Param::TimeReal;
-    using Vector3 = Param::Vector3;
-    using Vector4 = Param::Vector4;
-    using Quat = Param::Vector4;
+    using StateVector = PlantParam::Vector11;
+    using Reference = PlantParam::Vector10;
+    using Measurements = PlantParam::Vector13;
+    using Scalar = PlantParam::Real;
+    using TimeReal = PlantParam::TimeReal;
+    using Vector3 = PlantParam::Vector3;
+    using Vector4 = PlantParam::Vector4;
+    using Quat = PlantParam::Vector4;
 
     // Constructor 
     SensorsClass();
@@ -31,9 +30,9 @@ private:
     Vector3 accelerometer(const StateVector& states_dot, 
                           const StateVector& states);
     Vector3 gyroscope(const StateVector& states);
-    Param::Vector3 magnetometer(const StateVector& states);
+    PlantParam::Vector3 magnetometer(const StateVector& states);
     Vector4 reaction_wheels(const StateVector& states);
-    
+    Vector3 quatRotateLocal(const Quat& q, const Vector3& v) const;
     // Static RNG - seeded once at program start to match MATLAB's rng(42)
     static std::mt19937& get_rng();
     
@@ -42,8 +41,6 @@ private:
 
     // Private Members 
     // time tracking
-
-    HelperFunctions helpers;
     TimeReal epoch_time;      // Unix timestamp at simulation start
     TimeReal current_time;    // Current Unix timestamp (epoch + t)
     Scalar Ts;
@@ -61,8 +58,8 @@ private:
 
     // sun sensor
     Scalar I_max;
-    Param::Vector6 beta_css;
-    Param::Vector6 sigma_css;
+    PlantParam::Vector6 beta_css;
+    PlantParam::Vector6 sigma_css;
 
     // magnetometer
     Vector3 beta_mag;
