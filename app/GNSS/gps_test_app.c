@@ -110,6 +110,9 @@ int main(void)
 
     /* 1. Initialize driver */
     orion_driver_cfg_t cfg = ORION_DRIVER_CFG_DEFAULTS;
+    cfg.uart_dev = DEVICE_DT_GET(DT_NODELABEL(lpuart1));
+
+    int rc = orion_driver_init(&gnss_driver, &cfg);
     /*
      * "UART_1" must match the Zephyr device label for your UART.
      * On ESP32, UART1 becomes "UART_1" thanks to our overlay.
@@ -117,7 +120,6 @@ int main(void)
      * or whatever UART the Orion is wired to.
      */
 
-    int rc = orion_driver_init(&gnss_driver, &cfg);
     if (rc != 0) {
         LOG_ERR("Driver init failed: %d", rc);
         return rc;
