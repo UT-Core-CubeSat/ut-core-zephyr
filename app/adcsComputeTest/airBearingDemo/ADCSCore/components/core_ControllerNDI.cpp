@@ -387,20 +387,54 @@ ControllerNDI::Vector4 ControllerNDI::allocateActuators(const Param::Vector3& ta
     Vector4 tau_nom = S_pseudo * tau_to_wheels;
 
     // Deadband enforcement via null-space (no net body torque).
-    // Null-space direction for this tetrahedral geometry: [+1, +1, -1, -1].
-    // Wheels 0 & 1 are driven to +omega_deadband, wheels 2 & 3 to -omega_deadband.
-    // Implemented as a bilateral proportional speed regulator: error is always
-    // (target − actual), so overshoot is actively braked rather than left to coast.
+    // Build the sign pattern directly from N so it stays consistent with the
+    // active spin matrix. This yields the expected ±omega_deadband hold
+    // (for current geometry: [+,+,-,-] up to global sign).
     Vector4 tau_deadband = Vector4::Zero();
     if (apply_deadband) {
+        Vector4 null_vec = Vector4::Zero();
+        Scalar max_col_norm_sq = static_cast<Scalar>(0);
+        int best_col = -1;
+        for (int col = 0; col < 4; ++col) {
+            Scalar norm_sq = N.col(col).squaredNorm();
+            if (norm_sq > max_col_norm_sq) {
+                max_col_norm_sq = norm_sq;
+                best_col = col;
+            }
+        }
+
+        if (best_col >= 0 && max_col_norm_sq > static_cast<Scalar>(1e-12)) {
+            null_vec = N.col(best_col);
+            null_vec /= null_vec.norm();
+
+            // Fix orientation for deterministic behavior: wheel 0 prefers +deadband.
+            if (null_vec(0) < static_cast<Scalar>(0)) {
+                null_vec = -null_vec;
+            }
+        } else {
+            // Fallback for degenerate projector (should not happen in normal operation).
+            null_vec(0) = static_cast<Scalar>( 1);
+            null_vec(1) = static_cast<Scalar>( 1);
+            null_vec(2) = static_cast<Scalar>(-1);
+            null_vec(3) = static_cast<Scalar>(-1);
+            null_vec /= null_vec.norm();
+        }
+
         Vector4 deadband_sign;
-        deadband_sign(0) = static_cast<Scalar>( 1); deadband_sign(1) = static_cast<Scalar>( 1);
-        deadband_sign(2) = static_cast<Scalar>(-1); deadband_sign(3) = static_cast<Scalar>(-1);
+        for (int i = 0; i < 4; ++i) {
+            deadband_sign(i) = (null_vec(i) >= static_cast<Scalar>(0))
+                ? static_cast<Scalar>(1)
+                : static_cast<Scalar>(-1);
+        }
+
         Vector4 omega_deadband_err;
         for (int i = 0; i < 4; ++i) {
             omega_deadband_err(i) = deadband_sign(i) * omega_deadband - omega_w(i);
         }
+
         tau_deadband = k_deadband * (N * omega_deadband_err);
+        // Keep bias hold subordinate to primary attitude loop.
+        tau_deadband = saturateSymmetric(tau_deadband, static_cast<Scalar>(0.15) * tau_w_max);
     }
 
     // Null-space speed equalization: drives all wheels toward their mean.

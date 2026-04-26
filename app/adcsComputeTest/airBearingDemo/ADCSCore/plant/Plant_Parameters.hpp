@@ -70,7 +70,7 @@ namespace PlantParam {
         // Positive h = CG above pivot (unstable without control)
         // Negative h = CG below pivot (passively stable, pendulum-like)
         // |h| should be small (1-20mm) for challenging but achievable control
-        constexpr Real h_cg = static_cast<Real>(-0.005);  // [m] 5mm below pivot
+        constexpr Real h_cg = static_cast<Real>(-0.005);  // [m] 15mm below pivot
         
         // Distance from pivot to base of cubesat [m]
         constexpr Real P = static_cast<Real>(0.015);
@@ -109,8 +109,8 @@ namespace PlantParam {
         // Magnetic field magnitude in lab frame [T]
         static const Vector3 B_helmholtz = Vector3{
             static_cast<Real>(30e-5),   // 30 µT in X
-            static_cast<Real>(30e-5),     // 30 µT in Y  
-            static_cast<Real>(30e-5)      // 30 µT in Z
+            static_cast<Real>(0.0),     // 30 µT in Y  
+            static_cast<Real>(0.0)      // 30 µT in Z
         };
         
         // Legacy (can remove)
@@ -160,7 +160,7 @@ namespace PlantParam {
         q0(0) = static_cast<Real>(1.0); q0(1) = static_cast<Real>(0.0); q0(2) = static_cast<Real>(0.0); q0(3) = static_cast<Real>(0.0);
         Vector3 w0 = Vector3::Zero();
         w0(1) = static_cast<Real>(deg2rad * 0); // 1 deg/s initial spin around Y-axis
-        w0(2) = static_cast<Real>(deg2rad * 0);  // 5 deg/s initial spin around Z-axis
+        w0(2) = static_cast<Real>(deg2rad * 16);  // 5 deg/s initial spin around Z-axis
         Vector4 rw0 = Vector4::Zero();
         return FullState{q0, w0, rw0};
     }();
@@ -229,7 +229,8 @@ namespace PlantParam {
         constexpr Real I_wheel = static_cast<Real>(1.13e-6);
         constexpr Real omega_w_max = static_cast<Real>(12000.0) * static_cast<Real>(2.0) * PI / static_cast<Real>(60.0);
         constexpr Real omega_w_min = -omega_w_max;
-        constexpr Real tau_w_max = static_cast<Real>(13e-1);
+        // Max wheel torque [N*m]. Keep consistent with controller and motor capability.
+        constexpr Real tau_w_max = static_cast<Real>(13e-3);
         constexpr Real tau_w_min = -tau_w_max;
 
 

@@ -113,7 +113,8 @@ namespace Param {
         constexpr Real RPM_min = -RPM_max;
         constexpr Real omega_w_max = RPM_max * static_cast<Real>(2.0) * PI / static_cast<Real>(60.0);
         constexpr Real omega_w_min = -omega_w_max;
-        constexpr Real tau_w_max = static_cast<Real>(13e-1);
+        // Max wheel torque [N*m]. 13 mN*m matches motor capability order of magnitude.
+        constexpr Real tau_w_max = static_cast<Real>(13e-3);
         constexpr Real tau_w_min = -tau_w_max;
         constexpr Real k_null = static_cast<Real>(2e-7);
 
@@ -122,10 +123,11 @@ namespace Param {
         // At zero speed the full torque is allowed; at omega_w_max only this fraction.
         constexpr Real tau_rev_min_frac = static_cast<Real>(0.10);
 
-        // Deadband: wheels always spin at >= omega_deadband to keep hall sensors active.
-        // Null-space sign convention: wheels 0 & 1 → +deadband, wheels 2 & 3 → −deadband.
-        constexpr Real omega_deadband = static_cast<Real>(0.0) * static_cast<Real>(2.0) * PI / static_cast<Real>(60.0); // [rad/s]
-        constexpr Real k_deadband = static_cast<Real>(3e-7); // [N·m·s/rad]
+        // Deadband target: hold wheels near ±omega_deadband to keep hall sensors active.
+        // For the current wheel geometry this corresponds to [+,+,-,-] up to global sign.
+        constexpr Real omega_deadband = static_cast<Real>(200.0) * static_cast<Real>(2.0) * PI / static_cast<Real>(60.0); // [rad/s]
+        // Keep deadband bias loop slow relative to motor dynamics to avoid chatter/limit cycles.
+        constexpr Real k_deadband = static_cast<Real>(8e-5); // [N·m·s/rad]
 
         // Wheel Geometry
         constexpr Real theta = static_cast<Real>(50.0) * deg2rad;
@@ -162,7 +164,7 @@ namespace Param {
         constexpr Real t_s_model = static_cast<Real>(6);
         constexpr Real zeta_model = static_cast<Real>(0.85);
         constexpr Real lambda_min_model = static_cast<Real>(0.1);
-        
+
         // B-Dot gains (not used for air bearing, but kept for completeness)
         constexpr Real K_Bdot = static_cast<Real>(100000);
         constexpr Real alpha_BDot = static_cast<Real>(0.95);
@@ -194,7 +196,7 @@ namespace Param {
         namespace Knobs {
             // Reference directions for vector-based updates
             inline const Vector3 g_ref = Vector3{static_cast<Real>(0.0), static_cast<Real>(0.0), static_cast<Real>(1.0)};
-            inline const Vector3 B_ref = Vector3{static_cast<Real>(1.0), static_cast<Real>(1.0), static_cast<Real>(1.0)}.normalized();
+            inline const Vector3 B_ref = Vector3{static_cast<Real>(1.0), static_cast<Real>(0.0), static_cast<Real>(0.0)}.normalized();
 
             // Magnetometer fusion master switch. Disable while bench-testing
             // outside a Helmholtz cage — indoor field distortion causes yaw to

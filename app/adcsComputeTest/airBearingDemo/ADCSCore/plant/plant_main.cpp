@@ -198,9 +198,9 @@ int main() {
         if (t < static_cast<Real>(0.5)) {
             cmd.mode = ADCS::MissionMode::OFF;
         } else if (t < static_cast<Real>(60.0)) {
-            cmd.mode = ADCS::MissionMode::BOTH;
+            cmd.mode = ADCS::MissionMode::DETUMBLE;
         } else {
-            cmd.mode = ADCS::MissionMode::BOTH;
+            cmd.mode = ADCS::MissionMode::DETUMBLE;
         }
         return cmd;
     };
