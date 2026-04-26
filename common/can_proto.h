@@ -69,6 +69,12 @@ typedef enum {
      */
     OP_SET_MAG_DIPOLE = 0x51,
     /*
+     * EPS load switch command (CLS_COMMAND):
+     *   p2 = load index (1..12), or 0 for all loads
+     *   p3 = enable flag (0 = disable, nonzero = enable)
+     */
+    OP_SET_EPS_LOAD = 0x52,
+    /*
      * ADCS app telemetry/scaffold opcodes:
      *   OP_ADCS_SOH_ATTITUDE (CLS_HEALTH): qx/qy/qz packed in p2..p7
      *   OP_ADCS_WHEEL_RPM    (CLS_TELEMETRY): wheel1..wheel3 rpm packed in p2..p7

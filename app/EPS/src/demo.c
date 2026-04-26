@@ -5,7 +5,7 @@
 #include <zephyr/logging/log.h>
 #include <string.h>
 
-#include "C:\Users\notbr\Documents\all_coding\ut-core\common\can_proto.h"
+#include "../../../common/can_proto.h"
 
 LOG_MODULE_REGISTER(eps, LOG_LEVEL_INF);
 
@@ -200,13 +200,61 @@ static void handle_heartbeat(const can_packet_t *pkt)
 	LOG_INF("RX heartbeat from 0x%02X", pkt->src);
 }
 
+static void send_simple(uint8_t dst, uint8_t cls, uint8_t op, uint8_t val)
+{
+	struct can_frame f = {0};
+	f.id    = CAN_ID_FULL(PRIO_LOW, NODE_ID, dst, cls);
+	f.flags = CAN_FRAME_IDE;
+	can_fill_payload(&f, NODE_ID, op, val, 0, 0, 0, 0, 0);
+	can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+}
+
+static void handle_command(const can_packet_t *pkt)
+{
+	if (pkt->dlc < 4) {
+		return;
+	}
+
+	const uint8_t op = pkt->data[1];
+	if (op != OP_SET_EPS_LOAD) {
+		LOG_WRN("Unhandled command opcode: 0x%02X from 0x%02X", op, pkt->src);
+		return;
+	}
+
+	const uint8_t load_sel = pkt->data[2];
+	const bool enable = (pkt->data[3] != 0U);
+	int failures = 0;
+
+	if (load_sel == 0U) {
+		for (int i = 1; i <= NUM_LOADS; i++) {
+			int ret = enable ? enable_load(i) : disable_load(i);
+			if (ret) failures++;
+		}
+		LOG_INF("RX EPS load cmd: all -> %s (failures=%d)",
+			enable ? "ON" : "OFF", failures);
+	} else if (load_sel >= 1U && load_sel <= NUM_LOADS) {
+		int ret = enable ? enable_load(load_sel) : disable_load(load_sel);
+		if (ret) failures++;
+		LOG_INF("RX EPS load cmd: load %u -> %s (%s)",
+			load_sel, enable ? "ON" : "OFF", ret ? "ERR" : "OK");
+	} else {
+		LOG_WRN("RX EPS load cmd: invalid load index %u", load_sel);
+		failures = 1;
+	}
+
+	/* ACK: p2=0 means success, nonzero means at least one error. */
+	send_simple(pkt->src, CLS_CMD_RESP, OP_SET_EPS_LOAD, (uint8_t)(failures ? 1 : 0));
+}
+
 static void can_dispatch(const can_packet_t *pkt)
 {
 	switch (pkt->msg_class) {
 	case CLS_HEARTBEAT:
 		handle_heartbeat(pkt);
 		break;
-	/* TODO: CLS_COMMAND handler for load/motor control */
+	case CLS_COMMAND:
+		handle_command(pkt);
+		break;
 	default:
 		LOG_WRN("Unhandled class: %d from 0x%02X", pkt->msg_class, pkt->src);
 		break;
