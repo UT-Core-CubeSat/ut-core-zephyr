@@ -85,7 +85,7 @@ namespace PlantParam {
         // ANALYSIS: Wheel torque capability ~17 mN·m per axis
         // Max rejectable disturbance: τ = F*r → F = 0.017/0.15 = 0.11 N
         // Using 0.08 N for ~20% margin: τ = 0.08*0.15 = 12 mN·m
-        constexpr Real F_disturbance_max = static_cast<Real>(0.00);  // [N] gentle push
+        constexpr Real F_disturbance_max = static_cast<Real>(0.08);  // [N] gentle push
         
         // Disturbance timing
         constexpr Real T_disturbance_period = static_cast<Real>(15.0);  // [s] Period of periodic disturbance
@@ -160,7 +160,7 @@ namespace PlantParam {
         q0(0) = static_cast<Real>(1.0); q0(1) = static_cast<Real>(0.0); q0(2) = static_cast<Real>(0.0); q0(3) = static_cast<Real>(0.0);
         Vector3 w0 = Vector3::Zero();
         w0(1) = static_cast<Real>(deg2rad * 0); // 1 deg/s initial spin around Y-axis
-        w0(2) = static_cast<Real>(deg2rad * 16);  // 5 deg/s initial spin around Z-axis
+        w0(2) = static_cast<Real>(deg2rad * 0);  // 5 deg/s initial spin around Z-axis
         Vector4 rw0 = Vector4::Zero();
         return FullState{q0, w0, rw0};
     }();
@@ -226,11 +226,11 @@ namespace PlantParam {
         constexpr Real m_min = -m_max;
 
         // Reaction Wheels
-        constexpr Real I_wheel = static_cast<Real>(1.13e-4);
+        constexpr Real I_wheel = static_cast<Real>(1.13e-6);
         constexpr Real omega_w_max = static_cast<Real>(12000.0) * static_cast<Real>(2.0) * PI / static_cast<Real>(60.0);
         constexpr Real omega_w_min = -omega_w_max;
         // Max wheel torque [N*m]. Keep consistent with controller and motor capability.
-        constexpr Real tau_w_max = static_cast<Real>(13e-1);
+        constexpr Real tau_w_max = static_cast<Real>(13e-3);
         constexpr Real tau_w_min = -tau_w_max;
 
 
