@@ -265,17 +265,78 @@ static void can_dispatch(const can_packet_t *pkt)
 
 static void handle_cmd_response(const can_packet_t *pkt)
 {
-    LOG_INF("CmdResp from node 0x%x", pkt->src);
+    uint8_t op = pkt->data[1];
+
+    switch (op) {
+    case OP_SET_PWR_STATE: {
+        uint8_t load_num = pkt->data[2];
+        uint8_t state    = pkt->data[3];
+        uint8_t status   = pkt->data[4];  /* 0x00 = success, 0x01 = error */
+        if (status == 0x00) {
+            LOG_INF("EPS confirmed: load %d %s",
+                    load_num, state ? "ENABLED" : "DISABLED");
+        } else {
+            LOG_ERR("EPS rejected: load %d state=%d (error)", load_num, state);
+        }
+        break;
+    }
+    default:
+        LOG_INF("CmdResp from node 0x%x, op=0x%02X", pkt->src, op);
+        break;
+    }
 }
 
 static void handle_telemetry(const can_packet_t *pkt)
 {
+    if (pkt->src == GNSS_ID && pkt->data[1] == 0x02 /* OP_GNSS_POS */) {
+        /* Unpack signed 24-bit big-endian lat/lon (units: 1e-4 degrees) */
+        int32_t lat_1e4 = (int32_t)((uint32_t)pkt->data[2] << 16 |
+                                    (uint32_t)pkt->data[3] << 8  |
+                                    (uint32_t)pkt->data[4]);
+        if (lat_1e4 & 0x800000) lat_1e4 |= 0xFF000000;  /* sign-extend */
+
+        int32_t lon_1e4 = (int32_t)((uint32_t)pkt->data[5] << 16 |
+                                    (uint32_t)pkt->data[6] << 8  |
+                                    (uint32_t)pkt->data[7]);
+        if (lon_1e4 & 0x800000) lon_1e4 |= 0xFF000000;
+
+        gnss_latest.lat_deg_e7  = lat_1e4 * 1000;  /* back to 1e-7 */
+        gnss_latest.lon_deg_e7  = lon_1e4 * 1000;
+        gnss_latest.timestamp_ms = k_uptime_get_32();
+        gnss_latest.valid        = true;
+
+        LOG_INF("GNSS fix: lat=%d lon=%d (1e-7 deg)",
+                gnss_latest.lat_deg_e7, gnss_latest.lon_deg_e7);
+        return;
+    }
+
     LOG_INF("Telemetry from node 0x%x", pkt->src);
 }
 
 static void handle_health(const can_packet_t *pkt)
 {
     LOG_INF("Health from node 0x%x", pkt->src);
+}
+
+/*
+ * send_set_board_pwr() — Tell EPS to enable/disable a specific load switch.
+ *
+ * @load_num: Load number (1..12)
+ * @state:    1 = enable, 0 = disable
+ */
+static void send_set_board_pwr(uint8_t load_num, uint8_t state)
+{
+    struct can_frame f = {0};
+    f.id    = CAN_ID_FULL(PRIO_LOW, NODE_ID, EPS_ID, CLS_COMMAND);
+    f.flags = CAN_FRAME_IDE;
+    can_fill_payload(&f, NODE_ID, OP_SET_PWR_STATE, load_num, state, 0, 0, 0, 0);
+    int ret = can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+    if (ret) {
+        LOG_ERR("Failed to send SET_PWR_STATE (load=%d state=%d): %d",
+                load_num, state, ret);
+    } else {
+        LOG_INF("TX SET_PWR_STATE load=%d state=%d -> EPS", load_num, state);
+    }
 }
 
 static void handle_command(const can_packet_t *pkt)
@@ -295,6 +356,12 @@ static void handle_command(const can_packet_t *pkt)
         case OP_SET_LED:
             LOG_INF("LED command: led2 -> %d", val);
             gpio_pin_set_dt(&led2, val);
+            break;
+
+        case OP_SET_PWR_STATE:
+            LOG_INF("Forwarding SET_PWR_STATE load=%d state=%d to EPS",
+            pkt->data[2], pkt->data[3]);
+            send_set_board_pwr(pkt->data[2], pkt->data[3]);
             break;
 
         default:
@@ -507,8 +574,10 @@ void gnss_thread(void *a, void *b, void *c)
         if (current_mode == MODE_STANDARD ||
             current_mode == MODE_MISSION)
         {
-            /* TODO: Send paramget request to GNSS node over CAN */
-            LOG_INF("GNSS poll - placeholder");
+            /* Request position from GNSS node — it responds with OP_GNSS_POS
+               on CLS_TELEMETRY, which handle_telemetry() parses above */
+            send_simple(GNSS_ID, CLS_COMMAND, 0x61 /* OP_QUERY_POS */, 0);
+            LOG_INF("GNSS position request sent");
         }
 
         k_sleep(K_MSEC(GNSS_POLL_MS));

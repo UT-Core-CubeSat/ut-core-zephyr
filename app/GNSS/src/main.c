@@ -32,8 +32,8 @@ LOG_MODULE_REGISTER(gnss_app, CONFIG_LOG_DEFAULT_LEVEL);
 /* GNSS-specific opcodes */
 #define OP_GNSS_SOH        0x01   /* periodic state-of-health        */
 #define OP_GNSS_POS        0x02   /* position telemetry               */
-#define OP_QUERY_POS       0x60   /* CDH requests current position    */
-#define OP_SET_UPDATE_RATE 0x61   /* CDH sets GNSS update rate        */
+#define OP_QUERY_POS       0x61   /* CDH requests current position    */
+#define OP_SET_UPDATE_RATE 0x62   /* CDH sets GNSS update rate        */
 
 typedef struct {
     uint8_t  priority;

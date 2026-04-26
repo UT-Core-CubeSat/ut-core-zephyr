@@ -18,7 +18,7 @@ LOG_MODULE_REGISTER(eps, LOG_LEVEL_INF);
 #define INA_CHANNELS    3
 #define TOTAL_CHANNELS  (NUM_INA * INA_CHANNELS)
 
-#define TELEMETRY_INTERVAL_MS 1000
+#define TELEMETRY_INTERVAL_MS 5000
 #define LED_BLINK_INTERVAL_MS 500
 #define HEARTBEAT_INTERVAL_MS 1000
 
@@ -200,50 +200,27 @@ static void handle_heartbeat(const can_packet_t *pkt)
 	LOG_INF("RX heartbeat from 0x%02X", pkt->src);
 }
 
-static void send_simple(uint8_t dst, uint8_t cls, uint8_t op, uint8_t val)
+static void handle_set_pwr_state(const can_packet_t *pkt)
 {
-	struct can_frame f = {0};
-	f.id    = CAN_ID_FULL(PRIO_LOW, NODE_ID, dst, cls);
-	f.flags = CAN_FRAME_IDE;
-	can_fill_payload(&f, NODE_ID, op, val, 0, 0, 0, 0, 0);
-	can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
-}
+	uint8_t load_num = pkt->data[2];   /* p2: load number (1..12) */
+	uint8_t state    = pkt->data[3];   /* p3: 1 = enable, 0 = disable */
+	int ret;
 
-static void handle_command(const can_packet_t *pkt)
-{
-	if (pkt->dlc < 4) {
-		return;
-	}
-
-	const uint8_t op = pkt->data[1];
-	if (op != OP_SET_EPS_LOAD) {
-		LOG_WRN("Unhandled command opcode: 0x%02X from 0x%02X", op, pkt->src);
-		return;
-	}
-
-	const uint8_t load_sel = pkt->data[2];
-	const bool enable = (pkt->data[3] != 0U);
-	int failures = 0;
-
-	if (load_sel == 0U) {
-		for (int i = 1; i <= NUM_LOADS; i++) {
-			int ret = enable ? enable_load(i) : disable_load(i);
-			if (ret) failures++;
-		}
-		LOG_INF("RX EPS load cmd: all -> %s (failures=%d)",
-			enable ? "ON" : "OFF", failures);
-	} else if (load_sel >= 1U && load_sel <= NUM_LOADS) {
-		int ret = enable ? enable_load(load_sel) : disable_load(load_sel);
-		if (ret) failures++;
-		LOG_INF("RX EPS load cmd: load %u -> %s (%s)",
-			load_sel, enable ? "ON" : "OFF", ret ? "ERR" : "OK");
+	if (state) {
+		ret = enable_load(load_num);
 	} else {
-		LOG_WRN("RX EPS load cmd: invalid load index %u", load_sel);
-		failures = 1;
+		ret = disable_load(load_num);
 	}
 
-	/* ACK: p2=0 means success, nonzero means at least one error. */
-	send_simple(pkt->src, CLS_CMD_RESP, OP_SET_EPS_LOAD, (uint8_t)(failures ? 1 : 0));
+	LOG_INF("SET_PWR_STATE load=%d state=%d result=%d", load_num, state, ret);
+
+	/* Send command response back to the requester */
+	struct can_frame f = {0};
+	f.id    = CAN_ID_FULL(PRIO_LOW, NODE_ID, pkt->src, CLS_CMD_RESP);
+	f.flags = CAN_FRAME_IDE;
+	uint8_t status = (ret == 0) ? 0x00 : 0x01;  /* 0x00 = success, 0x01 = error */
+	can_fill_payload(&f, NODE_ID, OP_SET_PWR_STATE, load_num, state, status, 0, 0, 0);
+	can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
 }
 
 static void can_dispatch(const can_packet_t *pkt)
@@ -252,9 +229,18 @@ static void can_dispatch(const can_packet_t *pkt)
 	case CLS_HEARTBEAT:
 		handle_heartbeat(pkt);
 		break;
-	case CLS_COMMAND:
-		handle_command(pkt);
+	case CLS_COMMAND: {
+		uint8_t op = pkt->data[1];
+		switch (op) {
+		case OP_SET_PWR_STATE:
+			handle_set_pwr_state(pkt);
+			break;
+		default:
+			LOG_WRN("Unknown command opcode: 0x%02X from 0x%02X", op, pkt->src);
+			break;
+		}
 		break;
+	}
 	default:
 		LOG_WRN("Unhandled class: %d from 0x%02X", pkt->msg_class, pkt->src);
 		break;
