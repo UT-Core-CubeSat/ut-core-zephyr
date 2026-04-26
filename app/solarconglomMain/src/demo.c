@@ -139,7 +139,7 @@ static void send_simple(uint8_t dst, uint8_t cls, uint8_t op, uint8_t val)
  */
 static void send_heartbeat(void)
 {
-    send_simple(CAN_BROADCAST, CLS_HEARTBEAT, 0x01, 0x00);
+    send_simple(CAN_BROADCAST, CLS_HEARTBEAT, 0x30, 0x00);
     LOG_DBG("TX heartbeat");
 }
 
