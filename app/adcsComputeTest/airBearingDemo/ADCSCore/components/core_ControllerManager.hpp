@@ -12,7 +12,7 @@ public:
     struct ControlOutput {
         Param::Vector4 wheel_rpm;   // [RPM] desired wheel speeds (0 in OFF/DETUMBLE)
         Param::Vector3 mtq_dipole;  // [A·m²] magnetorquer dipole (0 in OFF/MOTOR)
-        Param::Vector4 mtq_coil_currents; // [A] unipolar: [I_x_pos, I_x_neg, I_y_pos, I_y_neg], zero in OFF/MOTOR
+        Param::Vector4 mtq_coil_currents; // [-] boolean face enables: [Xpos_en, Xneg_en, Ypos_en, Yneg_en], 0 or 1
     };
 
 

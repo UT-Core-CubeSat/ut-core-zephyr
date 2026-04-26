@@ -24,7 +24,7 @@ set(BASE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../${PROJECT_TYPE}/ADCSCore)
 # COMPILER OPTIONS
 # ============================================================================
 if(MSVC)
-    add_compile_options(/W3)
+    add_compile_options(/W3 /FS)
 else()
     add_compile_options(-Wall -Wextra)
 endif()

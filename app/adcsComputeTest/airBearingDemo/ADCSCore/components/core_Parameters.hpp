@@ -167,7 +167,7 @@ namespace Param {
 
         // B-Dot gains (not used for air bearing, but kept for completeness)
         constexpr Real K_Bdot = static_cast<Real>(100000);
-        constexpr Real alpha_BDot = static_cast<Real>(0.95);
+        constexpr Real alpha_BDot = static_cast<Real>(0.98);
         constexpr Real beta_fuse = static_cast<Real>(0.1);
 
         // Priority MTQ desaturation scheduler for BEARING mode

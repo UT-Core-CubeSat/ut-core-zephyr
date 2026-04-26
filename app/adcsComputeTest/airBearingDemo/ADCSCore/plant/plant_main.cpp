@@ -53,8 +53,8 @@ struct SimLogger {
                     // Disturbance Torques (6) - NEW
                     << "tau_grav_x,tau_grav_y,tau_grav_z,"
                     << "tau_dist_x,tau_dist_y,tau_dist_z,"
-                    // Per-Face MTQ Data (8): currents (A) and reference fields (T)
-                    << "I_Xpos,I_Xneg,I_Ypos,I_Yneg,"
+                    // Per-Face MTQ Data (8): enable flags (0/1) and reference fields (T)
+                    << "EN_Xpos,EN_Xneg,EN_Ypos,EN_Yneg,"
                     << "B_Xpos_ref,B_Xneg_ref,B_Ypos_ref,B_Yneg_ref,"
                     // Innovation Diagnostics (8): accel and mag residuals
                     << "accel_innov_x,accel_innov_y,accel_innov_z,accel_innov_norm,"
@@ -253,13 +253,19 @@ int main() {
                 tau_all(3) = tau_w_cmd(3);
             }
 
-            // Reconstruct body dipole from unipolar face-coil currents.
-            // Layout: [I_Xpos, I_Xneg, I_Ypos, I_Yneg].
+            // Reconstruct body dipole from boolean face enables.
+            // Layout: [Xpos_en, Xneg_en, Ypos_en, Yneg_en].
+            // Convert enable flags to physical current before dipole mapping.
             mtq_face_current = actuators.mtq_coil_currents;
-            const Real m_x = Param::Actuators::Coils::K_coil_x  * mtq_face_current(0)
-                           - Param::Actuators::Coils::K_coil_nx * mtq_face_current(1);
-            const Real m_y = Param::Actuators::Coils::K_coil_y  * mtq_face_current(2)
-                           - Param::Actuators::Coils::K_coil_ny * mtq_face_current(3);
+            const Real i_x_pos = mtq_face_current(0) * Param::Actuators::Coils::I_max;
+            const Real i_x_neg = mtq_face_current(1) * Param::Actuators::Coils::I_max;
+            const Real i_y_pos = mtq_face_current(2) * Param::Actuators::Coils::I_max;
+            const Real i_y_neg = mtq_face_current(3) * Param::Actuators::Coils::I_max;
+
+            const Real m_x = Param::Actuators::Coils::K_coil_x  * i_x_pos
+                           - Param::Actuators::Coils::K_coil_nx * i_x_neg;
+            const Real m_y = Param::Actuators::Coils::K_coil_y  * i_y_pos
+                           - Param::Actuators::Coils::K_coil_ny * i_y_neg;
             tau_all(4) = m_x;
             tau_all(5) = m_y;
             tau_all(6) = static_cast<Real>(0.0);

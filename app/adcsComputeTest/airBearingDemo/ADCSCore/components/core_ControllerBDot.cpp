@@ -62,6 +62,16 @@ ControllerBDot::Vector3 ControllerBDot::update(const Measurements& measurements,
     const Scalar thresh_on = static_cast<Scalar>(0.10) * m_max;
     const Scalar thresh_off = static_cast<Scalar>(0.03) * m_max; 
 
+    const Scalar omega_norm = omega_meas.norm();
+    const Scalar omega_gate = static_cast<Scalar>(0.5) * Param::deg2rad; // ~0.5 deg/s
+    
+    if (omega_norm < omega_gate) {
+        m_bang_state = Vector3::Zero();
+        coil_currents_out = Vector4::Zero();
+        coil_state = Vector4::Zero();
+        B_prev = B_now;
+        return m_bang_state;
+    }
     for (int i = 0; i < 3; ++i) {
         Scalar cmd = m_tilde(i);
         Scalar current = m_bang_state(i);
@@ -87,9 +97,8 @@ ControllerBDot::Vector3 ControllerBDot::update(const Measurements& measurements,
 
 ControllerBDot::Vector4 ControllerBDot::dipoleToCoilCurrents(const Vector3& m_cmd)
 {
-    using namespace Param::Actuators::Coils;
     // m_cmd is already bang-bang (±m_max or 0), so just decompose by sign.
-    // Layout: [I_Xpos, I_Xneg, I_Ypos, I_Yneg]
+    // Layout: [Xpos_en, Xneg_en, Ypos_en, Yneg_en]
     Scalar signals[4] = {
          m_cmd(0),
         -m_cmd(0),
@@ -99,7 +108,7 @@ ControllerBDot::Vector4 ControllerBDot::dipoleToCoilCurrents(const Vector3& m_cm
 
     for (int i = 0; i < 4; ++i) {
         coil_state(i) = (signals[i] > static_cast<Scalar>(0))
-                        ? I_max
+                        ? static_cast<Scalar>(1)
                         : static_cast<Scalar>(0);
     }
     return coil_state;

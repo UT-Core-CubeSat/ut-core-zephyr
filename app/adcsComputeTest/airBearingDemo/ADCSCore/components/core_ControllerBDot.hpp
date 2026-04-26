@@ -35,7 +35,7 @@ private:
 
     Vector4 dipoleToCoilCurrents(const Vector3& m_cmd);
 
-    // Hysteresis state for coil activation (unipolar, so 4 channels)
+    // Hysteresis state for coil face enables (unipolar, 4 channels, values in {0,1})
     Vector4 coil_state; // init to Zero() in constructor 
 };
 #endif // CORE_CONTROLLERBDOT_HPP
