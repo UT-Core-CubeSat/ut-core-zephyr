@@ -108,26 +108,26 @@ namespace Param {
         }
 
         // Reaction Wheels
-        constexpr Real I_wheel = static_cast<Real>(1.13e-6);
+        constexpr Real I_wheel = static_cast<Real>(1.13e-4);
         constexpr Real RPM_max = static_cast<Real>(12000.0);
         constexpr Real RPM_min = -RPM_max;
         constexpr Real omega_w_max = RPM_max * static_cast<Real>(2.0) * PI / static_cast<Real>(60.0);
         constexpr Real omega_w_min = -omega_w_max;
         // Max wheel torque [N*m]. 13 mN*m matches motor capability order of magnitude.
-        constexpr Real tau_w_max = static_cast<Real>(13e-3);
+        constexpr Real tau_w_max = static_cast<Real>(13e-1);
         constexpr Real tau_w_min = -tau_w_max;
         constexpr Real k_null = static_cast<Real>(2e-7);
 
         // Back-EMF reversal protection: minimum fraction of tau_w_max allowed when
         // the commanded torque opposes wheel spin direction.
         // At zero speed the full torque is allowed; at omega_w_max only this fraction.
-        constexpr Real tau_rev_min_frac = static_cast<Real>(0.10);
+        constexpr Real tau_rev_min_frac = static_cast<Real>(1.0);
 
         // Deadband target: hold wheels near ±omega_deadband to keep hall sensors active.
         // For the current wheel geometry this corresponds to [+,+,-,-] up to global sign.
-        constexpr Real omega_deadband = static_cast<Real>(200.0) * static_cast<Real>(2.0) * PI / static_cast<Real>(60.0); // [rad/s]
+        constexpr Real omega_deadband = static_cast<Real>(0.0) * static_cast<Real>(2.0) * PI / static_cast<Real>(60.0); // [rad/s]
         // Keep deadband bias loop slow relative to motor dynamics to avoid chatter/limit cycles.
-        constexpr Real k_deadband = static_cast<Real>(8e-5); // [N·m·s/rad]
+        constexpr Real k_deadband = static_cast<Real>(8e-8); // [N·m·s/rad] 8e-5
 
         // Wheel Geometry
         constexpr Real theta = static_cast<Real>(50.0) * deg2rad;

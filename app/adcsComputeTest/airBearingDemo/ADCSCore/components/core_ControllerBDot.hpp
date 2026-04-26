@@ -32,6 +32,7 @@ private:
     Scalar alpha_Bdot;
     Vector3 Bdot_num_filt;
     Scalar beta_fuse;
+    bool rate_gate_open;
 
     Vector4 dipoleToCoilCurrents(const Vector3& m_cmd);
 

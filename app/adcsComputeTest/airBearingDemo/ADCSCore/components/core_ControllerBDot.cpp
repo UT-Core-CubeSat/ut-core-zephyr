@@ -13,7 +13,8 @@ ControllerBDot::ControllerBDot()
     Bdot_num_filt(Vector3::Zero()),
     beta_fuse(Param::Controller::beta_fuse),
     coil_state(Vector4::Zero()),
-    m_bang_state(Vector3::Zero())
+    m_bang_state(Vector3::Zero()),
+    rate_gate_open(false)
 {
 
 }
@@ -63,9 +64,16 @@ ControllerBDot::Vector3 ControllerBDot::update(const Measurements& measurements,
     const Scalar thresh_off = static_cast<Scalar>(0.03) * m_max; 
 
     const Scalar omega_norm = omega_meas.norm();
-    const Scalar omega_gate = static_cast<Scalar>(0.5) * Param::deg2rad; // ~0.5 deg/s
-    
-    if (omega_norm < omega_gate) {
+    const Scalar omega_gate_on  = static_cast<Scalar>(1.0) * Param::deg2rad;
+    const Scalar omega_gate_off = static_cast<Scalar>(0.3) * Param::deg2rad;
+
+    if (rate_gate_open && omega_norm < omega_gate_off) {
+        rate_gate_open = false;
+    } else if (!rate_gate_open && omega_norm >= omega_gate_on) {
+        rate_gate_open = true;
+    }
+
+    if (!rate_gate_open) {
         m_bang_state = Vector3::Zero();
         coil_currents_out = Vector4::Zero();
         coil_state = Vector4::Zero();
