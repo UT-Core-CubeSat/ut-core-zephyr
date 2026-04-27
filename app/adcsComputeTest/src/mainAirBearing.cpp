@@ -214,9 +214,18 @@ static const float MAG_CAL_SCALE[3][3] = {
  * sensor's axes to the helmholtz/body frame, identified by sin/cos
  * demodulation in AirBearingCalibration('mag', ...). */
 static const float MAG_ALIGN[3][3][3] = {
-	{ {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f} },
-	{ {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f} },
-	{ {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f} },
+    /* sensor 0 */
+    { {+0.268283f, +0.963232f, +0.014448f},
+      {+0.986300f, +0.164773f, +0.007835f},
+      {+0.058155f, +0.146699f, +0.987470f} },
+    /* sensor 1 */
+    { {+0.269730f, +0.962921f, +0.005324f},
+      {+0.986200f, +0.165359f, +0.008164f},
+      {+0.068165f, +0.172492f, +0.982649f} },
+    /* sensor 2 */
+    { {+0.262030f, +0.965039f, +0.006230f},
+      {+0.984783f, +0.173571f, +0.008664f},
+      {+0.086555f, +0.053610f, +0.994804f} },
 };
 
 /* Raw-CSV emit mode for AirBearingCalibration.m capture. When ON, suppresses
@@ -585,21 +594,24 @@ static void adcs_loop(void *, void *, void *)
 
 		ADCS::SensorData sd;
 		sd.unix_time = (double)k_uptime_get() / 1000.0;
-		/* Frame rotation R = [0,1,0; -1,0,0; 0,0,1]: x'=y, y'=-x, z'=z */
+		/* Body-frame remap, identified by air-bearing test:
+		 *   accel: x = +ay, y = -ax, z = -az  (X axis flipped vs. prior)
+		 *   gyro : x = -gy, y = +gx, z = -gz  (Y axis flipped vs. prior)
+		 *   mag  : identity on mag_avg (helmholtz +X/+Y/+Z reads +X/+Y/+Z)
+		 * Per-sensor cross-stack alignment for the mag is in MAG_ALIGN. */
 #if AIR_BEARING_ACCEL_AS_GRAVITY_NEGATE
-		sd.accelerometer = Math::Vec<3>{-accel_avg[1], accel_avg[0], -accel_avg[2]};
+		sd.accelerometer = Math::Vec<3>{accel_avg[1], accel_avg[0], -accel_avg[2]};
 #else
-		sd.accelerometer = Math::Vec<3>{-accel_avg[1], -accel_avg[0], -accel_avg[2]};
+		sd.accelerometer = Math::Vec<3>{accel_avg[1], -accel_avg[0], -accel_avg[2]};
 #endif
-		sd.gyro = Math::Vec<3>{-gyro_avg[1], -gyro_avg[0], -gyro_avg[2]};
+		sd.gyro = Math::Vec<3>{-gyro_avg[1], gyro_avg[0], -gyro_avg[2]};
 
 		/* Track worst-case gyro norm since last telemetry print, for motion-gate diagnosis. */
 		float gn = sqrtf(gyro_avg[0]*gyro_avg[0] +
 		                 gyro_avg[1]*gyro_avg[1] +
 		                 gyro_avg[2]*gyro_avg[2]);
 		if (gn > gyro_norm_max_window) gyro_norm_max_window = gn;
-		/* Frame rotation R = [0,-1,0; -1,0,0; 0,0,-1]: x'=-y, y'=-x, z'=-z */
-		sd.magnetometer  = Math::Vec<3>{mag_avg[1], -mag_avg[0], mag_avg[2]};
+		sd.magnetometer  = Math::Vec<3>{mag_avg[0], mag_avg[1], mag_avg[2]};
 		sd.wheel_speeds  = Math::Vec<4>::Zero();
 
 		ADCS::Command adcs_cmd;
