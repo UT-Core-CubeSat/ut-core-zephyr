@@ -182,6 +182,268 @@ class TelemetryTab(QtWidgets.QWidget):
 
 
 # ---------------------------------------------------------------------------
+# Motor Speeds tab
+# ---------------------------------------------------------------------------
+class MotorSpeedsTab(QtWidgets.QWidget):
+    RPM_MAX = 12000
+
+    def __init__(self):
+        super().__init__()
+
+        self._rpm_labels: dict[int, QtWidgets.QLabel] = {}
+        self._age_labels: dict[int, QtWidgets.QLabel] = {}
+        self._bars: dict[int, QtWidgets.QProgressBar] = {}
+        self._last_seen: dict[int, float] = {}
+        self._rpm: dict[int, int] = {}
+
+        title = QtWidgets.QLabel("Live MOTOR telemetry (OP_SET_WHEEL_RPM)")
+        title_font = title.font()
+        title_font.setPointSize(12)
+        title_font.setBold(True)
+        title.setFont(title_font)
+
+        table = QtWidgets.QGridLayout()
+        table.addWidget(QtWidgets.QLabel("Motor"), 0, 0)
+        table.addWidget(QtWidgets.QLabel("Speed (rpm)"), 0, 1)
+        table.addWidget(QtWidgets.QLabel("RPM Bar (-12000 .. +12000)"), 0, 2)
+        table.addWidget(QtWidgets.QLabel("Last update"), 0, 3)
+
+        for row, motor_idx in enumerate(range(1, 5), start=1):
+            motor_name = QtWidgets.QLabel(f"M{motor_idx}")
+            motor_name.setAlignment(QtCore.Qt.AlignCenter)
+
+            rpm_val = QtWidgets.QLabel("--")
+            rpm_font = rpm_val.font()
+            rpm_font.setPointSize(20)
+            rpm_font.setBold(True)
+            rpm_val.setFont(rpm_font)
+            rpm_val.setAlignment(QtCore.Qt.AlignCenter)
+
+            bar = QtWidgets.QProgressBar()
+            bar.setRange(-self.RPM_MAX, self.RPM_MAX)
+            bar.setValue(0)
+            bar.setFormat("%v rpm")
+            bar.setAlignment(QtCore.Qt.AlignCenter)
+            bar.setMinimumWidth(420)
+
+            age_val = QtWidgets.QLabel("never")
+            age_val.setAlignment(QtCore.Qt.AlignCenter)
+
+            table.addWidget(motor_name, row, 0)
+            table.addWidget(rpm_val, row, 1)
+            table.addWidget(bar, row, 2)
+            table.addWidget(age_val, row, 3)
+
+            self._rpm_labels[motor_idx] = rpm_val
+            self._age_labels[motor_idx] = age_val
+            self._bars[motor_idx] = bar
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.addWidget(title)
+        layout.addLayout(table)
+        layout.addStretch()
+
+    @staticmethod
+    def _decode_signed_i16(msb: int, lsb: int) -> int:
+        value = ((msb & 0xFF) << 8) | (lsb & 0xFF)
+        if value & 0x8000:
+            value -= 0x10000
+        return value
+
+    @staticmethod
+    def _bar_chunk_color_for_rpm(rpm: int, rpm_max: int) -> str:
+        # Color maps magnitude only: green (slow) -> orange -> red (fast).
+        ratio = min(abs(rpm) / float(rpm_max), 1.0)
+        if ratio <= 0.5:
+            # green(76,175,80) to orange(255,152,0)
+            t = ratio / 0.5
+            r = int(76 + (255 - 76) * t)
+            g = int(175 + (152 - 175) * t)
+            b = int(80 + (0 - 80) * t)
+        else:
+            # orange(255,152,0) to red(229,57,53)
+            t = (ratio - 0.5) / 0.5
+            r = int(255 + (229 - 255) * t)
+            g = int(152 + (57 - 152) * t)
+            b = int(0 + (53 - 0) * t)
+        return f"rgb({r}, {g}, {b})"
+
+    def _apply_bar_style(self, motor_idx: int, rpm: int) -> None:
+        color = self._bar_chunk_color_for_rpm(rpm, self.RPM_MAX)
+        bar = self._bars[motor_idx]
+        bar.setStyleSheet(
+            "QProgressBar {"
+            " border: 1px solid #777;"
+            " border-radius: 4px;"
+            " text-align: center;"
+            " background-color: #f2f2f2;"
+            "}"
+            f"QProgressBar::chunk {{ background-color: {color}; }}"
+        )
+
+    def on_frame(self, f: Frame) -> None:
+        if f.src != can_proto.MOTOR_ID:
+            return
+        if f.cls != can_proto.CLS_TELEMETRY or f.opcode != can_proto.OP_SET_WHEEL_RPM:
+            return
+
+        motor_idx = int(f.p2)
+        if motor_idx not in self._rpm_labels:
+            return
+
+        rpm = self._decode_signed_i16(f.p3, f.p4)
+        self._rpm[motor_idx] = rpm
+        self._last_seen[motor_idx] = f.rx_wall_time
+
+    def refresh(self) -> None:
+        now = time.time()
+        for motor_idx in self._rpm_labels:
+            rpm = self._rpm.get(motor_idx)
+            last = self._last_seen.get(motor_idx)
+            self._rpm_labels[motor_idx].setText("--" if rpm is None else f"{rpm}")
+            bar_rpm = 0 if rpm is None else max(-self.RPM_MAX, min(self.RPM_MAX, rpm))
+            self._bars[motor_idx].setValue(bar_rpm)
+            self._apply_bar_style(motor_idx, bar_rpm)
+            if last is None:
+                self._age_labels[motor_idx].setText("never")
+            else:
+                self._age_labels[motor_idx].setText(f"{now - last:0.1f} s ago")
+
+
+# ---------------------------------------------------------------------------
+# CDH Temperature tab
+# ---------------------------------------------------------------------------
+class TemperatureTab(QtWidgets.QWidget):
+    TEMP_ADDRESSES = [0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D]
+    ERROR_SENTINEL = -128
+    COLD_C = 15.0
+    HOT_C = 40.0
+
+    def __init__(self):
+        super().__init__()
+        self._cards: dict[int, QtWidgets.QFrame] = {}
+        self._value_labels: dict[int, QtWidgets.QLabel] = {}
+        self._age_labels: dict[int, QtWidgets.QLabel] = {}
+        self._last_seen: dict[int, float] = {}
+        self._temp_c: dict[int, int | None] = {}
+
+        title = QtWidgets.QLabel("Live CDH board temperatures")
+        title_font = title.font()
+        title_font.setPointSize(12)
+        title_font.setBold(True)
+        title.setFont(title_font)
+
+        subtitle = QtWidgets.QLabel("Blue <= 15 C   ->   Red >= 40 C")
+        subtitle.setAlignment(QtCore.Qt.AlignCenter)
+
+        grid = QtWidgets.QGridLayout()
+        grid.setSpacing(12)
+
+        for idx, addr in enumerate(self.TEMP_ADDRESSES):
+            card = QtWidgets.QFrame()
+            card.setFrameShape(QtWidgets.QFrame.Box)
+            card.setLineWidth(2)
+            card.setMinimumSize(240, 140)
+            card_layout = QtWidgets.QVBoxLayout(card)
+
+            sensor_name = QtWidgets.QLabel(f"T{idx + 1}  (0x{addr:02X})")
+            sensor_font = sensor_name.font()
+            sensor_font.setPointSize(13)
+            sensor_font.setBold(True)
+            sensor_name.setFont(sensor_font)
+            sensor_name.setAlignment(QtCore.Qt.AlignCenter)
+
+            temp_label = QtWidgets.QLabel("-- C")
+            temp_label.setAlignment(QtCore.Qt.AlignCenter)
+            temp_font = temp_label.font()
+            temp_font.setPointSize(22)
+            temp_font.setBold(True)
+            temp_label.setFont(temp_font)
+
+            age_label = QtWidgets.QLabel("never")
+            age_label.setAlignment(QtCore.Qt.AlignCenter)
+            age_font = age_label.font()
+            age_font.setPointSize(11)
+            age_label.setFont(age_font)
+
+            card_layout.addWidget(sensor_name)
+            card_layout.addWidget(temp_label)
+            card_layout.addWidget(age_label)
+
+            row = idx // 3
+            col = idx % 3
+            grid.addWidget(card, row, col)
+
+            self._cards[addr] = card
+            self._value_labels[addr] = temp_label
+            self._age_labels[addr] = age_label
+            self._set_card_style(card, "#d0d0d0")
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.addWidget(title)
+        layout.addWidget(subtitle)
+        layout.addLayout(grid)
+        layout.addStretch()
+
+    @staticmethod
+    def _to_signed(byte_val: int) -> int:
+        return byte_val - 256 if byte_val >= 128 else byte_val
+
+    @staticmethod
+    def _set_card_style(card: QtWidgets.QFrame, bg_color: str) -> None:
+        card.setStyleSheet(
+            "QFrame {"
+            f" background-color: {bg_color};"
+            " border: 2px solid #555;"
+            " border-radius: 8px;"
+            "}"
+        )
+
+    @classmethod
+    def _temp_to_color(cls, temp_c: int | None) -> str:
+        if temp_c is None:
+            return "#b5b5b5"
+        if temp_c <= cls.COLD_C:
+            t = 0.0
+        elif temp_c >= cls.HOT_C:
+            t = 1.0
+        else:
+            t = (temp_c - cls.COLD_C) / (cls.HOT_C - cls.COLD_C)
+
+        # Blue (cold) -> Red (hot)
+        r = int(60 + (230 - 60) * t)
+        g = int(150 + (70 - 150) * t)
+        b = int(235 + (60 - 235) * t)
+        return f"rgb({r}, {g}, {b})"
+
+    def on_frame(self, f: Frame) -> None:
+        if f.src != can_proto.CDH_ID:
+            return
+        if f.cls != can_proto.CLS_TELEMETRY or f.opcode != can_proto.OP_CDH_TEMP_TELEM:
+            return
+
+        values = [f.p2, f.p3, f.p4, f.p5, f.p6, f.p7]
+        now = f.rx_wall_time
+        for addr, raw in zip(self.TEMP_ADDRESSES, values):
+            temp_c = self._to_signed(raw)
+            self._temp_c[addr] = None if temp_c == self.ERROR_SENTINEL else temp_c
+            self._last_seen[addr] = now
+
+    def refresh(self) -> None:
+        now = time.time()
+        for addr in self.TEMP_ADDRESSES:
+            temp_c = self._temp_c.get(addr)
+            last = self._last_seen.get(addr)
+
+            self._value_labels[addr].setText("ERR" if temp_c is None else f"{temp_c} C")
+            self._set_card_style(self._cards[addr], self._temp_to_color(temp_c))
+            if last is None:
+                self._age_labels[addr].setText("never")
+            else:
+                self._age_labels[addr].setText(f"{now - last:0.1f} s ago")
+
+
+# ---------------------------------------------------------------------------
 # Frame Log tab
 # ---------------------------------------------------------------------------
 class FrameLogTab(QtWidgets.QWidget):
@@ -266,11 +528,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.health_tab = NodeHealthTab()
         self.plots_tab = TelemetryTab()
+        self.motor_tab = MotorSpeedsTab()
+        self.temp_tab = TemperatureTab()
         self.log_tab = FrameLogTab()
 
         tabs = QtWidgets.QTabWidget()
         tabs.addTab(self.health_tab, "Node Health")
         tabs.addTab(self.plots_tab,  "Telemetry Plots")
+        tabs.addTab(self.motor_tab,  "Motor Speeds")
+        tabs.addTab(self.temp_tab,   "Temp")
         tabs.addTab(self.log_tab,    "Frame Log")
         self.setCentralWidget(tabs)
 
@@ -308,12 +574,16 @@ class MainWindow(QtWidgets.QMainWindow):
             self.logger.on_frame(f)
             self.health_tab.on_frame(f)
             self.plots_tab.on_frame(f)
+            self.motor_tab.on_frame(f)
+            self.temp_tab.on_frame(f)
             self.log_tab.on_frame(f)
 
         self._rx_count += drained
 
         self.health_tab.refresh()
         self.plots_tab.refresh()
+        self.motor_tab.refresh()
+        self.temp_tab.refresh()
         self.log_tab.refresh()
 
         now = time.time()

@@ -25,9 +25,9 @@
 /* Per-motor: false = PWM/enables off (bench one motor at a time). */
 static const bool motor_enable[] = {
 	true,  /* M1 — PI speed control */
-	false,  /* M2 — PI speed control */
-	false,  /* M3 — PI speed control */
-	false,  /* M4 — PI speed control */
+	true,  /* M2 — PI speed control */
+	true,  /* M3 — PI speed control */
+	true,  /* M4 — PI speed control */
 };
 
 BUILD_ASSERT(ARRAY_SIZE(motor_enable) == NMOTORS, "motor_enable vs NMOTORS");

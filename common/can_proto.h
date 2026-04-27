@@ -83,6 +83,12 @@ typedef enum {
     OP_ADCS_SOH_ATTITUDE = 0x70,
     OP_ADCS_WHEEL_RPM    = 0x71,
     OP_ADCS_MTQ_DIPOLE   = 0x72,
+    /*
+     * CDH temperature telemetry (CLS_TELEMETRY):
+     *   p2..p7 = sensor temps at 0x48..0x4D, signed int8 in degC.
+     *            0x80 means sensor read error/unavailable.
+     */
+    OP_CDH_TEMP_TELEM    = 0x73,
 } can_op_t;
 
 /* 8-byte app payload */

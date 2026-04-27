@@ -103,6 +103,14 @@ typedef struct {
 
 static gnss_data_t gnss_latest = {0};
 
+typedef struct {
+    bool valid;
+    int8_t temp_c[NUM_TEMP_SENSORS]; /* 0x48..0x4D, signed degC, -128 on error */
+} cdh_temp_snapshot_t;
+
+static cdh_temp_snapshot_t cdh_temp_latest = {0};
+K_MUTEX_DEFINE(cdh_temp_lock);
+
 /* ================= MODE STATE MACHINE ================= */
 
 typedef enum {
@@ -140,6 +148,8 @@ static void handle_cmd_response(const can_packet_t *pkt);
 static void handle_telemetry(const can_packet_t *pkt);
 static void handle_health(const can_packet_t *pkt);
 static void can_dispatch(const can_packet_t *pkt);
+static int8_t q4_to_int8_c(int16_t t_q4);
+static void send_cdh_temp_telemetry(void);
 
 /* ===================================================== */
 /* ================= UTILITY FUNCTIONS ================== */
@@ -257,6 +267,39 @@ static void can_dispatch(const can_packet_t *pkt)
             LOG_WRN("Unhandled class: %d", pkt->msg_class);
             break;
     }
+}
+
+static int8_t q4_to_int8_c(int16_t t_q4)
+{
+    int32_t temp_c = (t_q4 + 8) / 16; /* rounded integer degC */
+    if (temp_c > 127) {
+        temp_c = 127;
+    } else if (temp_c < -127) {
+        temp_c = -127;
+    }
+    return (int8_t)temp_c;
+}
+
+static void send_cdh_temp_telemetry(void)
+{
+    cdh_temp_snapshot_t snap = {0};
+
+    k_mutex_lock(&cdh_temp_lock, K_FOREVER);
+    snap = cdh_temp_latest;
+    k_mutex_unlock(&cdh_temp_lock);
+
+    if (!snap.valid) {
+        return;
+    }
+
+    struct can_frame f = {0};
+    f.id = CAN_ID_FULL(PRIO_LOW, NODE_ID, CAN_BROADCAST, CLS_TELEMETRY);
+    f.flags = CAN_FRAME_IDE;
+    can_fill_payload(&f, NODE_ID, OP_CDH_TEMP_TELEM,
+                     (uint8_t)snap.temp_c[0], (uint8_t)snap.temp_c[1],
+                     (uint8_t)snap.temp_c[2], (uint8_t)snap.temp_c[3],
+                     (uint8_t)snap.temp_c[4], (uint8_t)snap.temp_c[5]);
+    can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
 }
 
 /* ===================================================== */
@@ -478,6 +521,20 @@ void soh_thread(void *a, void *b, void *c)
             struct temp_telemetry telem;
             temp_telemetry_read_all(i2c_bus, &telem);
             temp_telemetry_print(&telem);
+
+            cdh_temp_snapshot_t snap = {.valid = true};
+            for (int i = 0; i < NUM_TEMP_SENSORS; i++) {
+                if (telem.s[i].status == 0) {
+                    snap.temp_c[i] = q4_to_int8_c(telem.s[i].temp_q4);
+                } else {
+                    snap.temp_c[i] = INT8_MIN; /* sensor error sentinel */
+                }
+            }
+
+            k_mutex_lock(&cdh_temp_lock, K_FOREVER);
+            cdh_temp_latest = snap;
+            k_mutex_unlock(&cdh_temp_lock);
+
             check_node_timeouts();
         }
 
@@ -523,8 +580,7 @@ void telemetry_thread(void *a, void *b, void *c)
         if (current_mode == MODE_STANDARD ||
             current_mode == MODE_MISSION)
         {
-            /* TODO: Collect SOH, check thresholds, downlink if window open */
-            LOG_INF("telemetry check - placeholder");
+            send_cdh_temp_telemetry();
         }
 
         k_sleep(K_MSEC(TELEMETRY_CHECK_MS));
