@@ -169,6 +169,33 @@ static const uint8_t mlx90393_addrs[] = {
 	MLX90393_ADDR_A, MLX90393_ADDR_B, MLX90393_ADDR_C
 };
 
+/* ===================================================================
+ *  CALIBRATION CONSTANTS — paste output of AirBearingCalibration.m here.
+ *
+ *  Build with -DCAL_EMIT=ON to dump raw CSV instead of normal telemetry:
+ *    west build -p always -b ut_core ut-core/app/adcsComputeTest \
+ *               -- -DAIR_BEARING=ON -DCAL_EMIT=ON
+ *  In MATLAB:
+ *    AirBearingCalibration('gyro',  "COM5")
+ *    AirBearingCalibration('accel', "COM5", 'gravity', [0 0 -9.80665])
+ *    AirBearingCalibration('mag',   "COM5", 'freq', 0.5, 'duration', 30)
+ *  Paste the printed constants below, rebuild without -DCAL_EMIT.
+ * =================================================================== */
+
+/* Gyro bias [rad/s], applied AFTER GYRO_CORR_* scale correction.
+ * Subtract from each per-sensor gyro vector. */
+static constexpr float GYRO_BIAS_LSM0[3] = {-0.003214f, -0.003900f, -0.003059f};
+static constexpr float GYRO_BIAS_LSM1[3] = {+0.003477f, -0.002018f, +0.001290f};
+static constexpr float GYRO_BIAS_I3G0[3] = {-0.008273f, -0.001145f, -0.016675f};
+static constexpr float GYRO_BIAS_I3G1[3] = {+0.003940f, -0.000403f, -0.008821f};
+
+/* Accelerometer bias [m/s^2], in raw sensor frame, BEFORE the body remap.
+ * Computed as mean(reading) - expected_gravity_vector. */
+static constexpr float ACCEL_BIAS_LSM0[3] = {+0.101313f, -0.237740f, +0.269004f};
+    // raw mean = [+0.1013 -0.2377 -9.5376]  bias = mean - g_expected
+static constexpr float ACCEL_BIAS_LSM1[3] = {+0.155542f, -0.213896f, +0.056810f};
+    // raw mean = [+0.1555 -0.2139 -9.7498]  bias = mean - g_expected
+
 /* Magnetometer hard-iron bias and diagonal scale from magCalTest. */
 static const float MAG_BIAS[3][3] = {
 	{-396.500f, 2064.500f, 1274.500f},
@@ -181,6 +208,22 @@ static const float MAG_CAL_SCALE[3][3] = {
 	{0.923704f, 0.989683f, 1.102564f},
 	{0.887704f, 0.950533f, 1.217349f},
 };
+
+/* Per-sensor mag alignment 3x3 (row-major).  Applied AFTER bias+scale.
+ * Identity = no alignment correction; replace with rotation that maps each
+ * sensor's axes to the helmholtz/body frame, identified by sin/cos
+ * demodulation in AirBearingCalibration('mag', ...). */
+static const float MAG_ALIGN[3][3][3] = {
+	{ {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f} },
+	{ {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f} },
+	{ {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f} },
+};
+
+/* Raw-CSV emit mode for AirBearingCalibration.m capture. When ON, suppresses
+ * verbose dumps and ADCS telemetry so the serial stream is clean CSV. */
+#ifndef CAL_EMIT
+#define CAL_EMIT 0
+#endif
 
 static int mlx90393_cmd(uint8_t addr, uint8_t cmd, uint8_t *status_out)
 {
@@ -242,9 +285,15 @@ static int mlx90393_collect(uint8_t addr, int16_t mag[3], uint16_t *temp)
 
 static void mag_apply_calibration(size_t sensor_idx, const int16_t raw[3], float cal[3])
 {
+	float scaled[3];
 	for (int ax = 0; ax < 3; ax++) {
 		float centered = (float)raw[ax] - MAG_BIAS[sensor_idx][ax];
-		cal[ax] = centered * MAG_CAL_SCALE[sensor_idx][ax];
+		scaled[ax] = centered * MAG_CAL_SCALE[sensor_idx][ax];
+	}
+	for (int i = 0; i < 3; i++) {
+		cal[i] = MAG_ALIGN[sensor_idx][i][0] * scaled[0]
+		       + MAG_ALIGN[sensor_idx][i][1] * scaled[1]
+		       + MAG_ALIGN[sensor_idx][i][2] * scaled[2];
 	}
 }
 
@@ -330,9 +379,13 @@ static void adcs_loop(void *, void *, void *)
 		bool verbose = (cycle % VERBOSE_EVERY == 0);
 		bool telemetry = (cycle % TELEMETRY_EVERY == 0);
 
+#if !CAL_EMIT
 		if (verbose || telemetry) {
 			printk("--- cycle %d  (loop dt %lld ms) ---\n", cycle, loop_dt_ms);
 		}
+#else
+		(void)loop_dt_ms; (void)verbose; (void)telemetry;
+#endif
 
 		/* Read IMU + gyro (fast I2C, ~1ms each) */
 		int16_t imu_accel[2][3], imu_gyro[2][3];
@@ -370,6 +423,34 @@ static void adcs_loop(void *, void *, void *)
 			}
 		}
 
+#if CAL_EMIT
+		{
+			int64_t t_ms = k_uptime_get();
+			for (int i = 0; i < 2; i++) {
+				if (imu_ok[i]) {
+					printk("IMUCSV,%lld,%d,%d,%d,%d,%d,%d,%d\n",
+					       t_ms, i,
+					       imu_accel[i][0], imu_accel[i][1], imu_accel[i][2],
+					       imu_gyro[i][0], imu_gyro[i][1], imu_gyro[i][2]);
+				}
+			}
+			for (int i = 0; i < 2; i++) {
+				if (gyr_ok[i]) {
+					printk("GYRCSV,%lld,%d,%d,%d,%d\n",
+					       t_ms, i,
+					       gyr_raw[i][0], gyr_raw[i][1], gyr_raw[i][2]);
+				}
+			}
+			for (int i = 0; i < 3; i++) {
+				if (mag_ok[i]) {
+					printk("MAGCSV,%lld,%d,0x%02X,%d,%d,%d,%u,0\n",
+					       t_ms, i, mlx90393_addrs[i],
+					       mag_raw[i][0], mag_raw[i][1], mag_raw[i][2],
+					       mag_temp[i]);
+				}
+			}
+		}
+#else
 		if (verbose) {
 			for (int i = 0; i < 2; i++) {
 				if (imu_ok[i])
@@ -389,14 +470,16 @@ static void adcs_loop(void *, void *, void *)
 					       mag_temp[i]);
 			}
 		}
+#endif
 
 		/* Convert raw readings to physical units & average */
 		float accel_avg[3] = {0.0f, 0.0f, 0.0f};
 		int accel_count = 0;
 		for (int i = 0; i < 2; i++) {
 			if (imu_ok[i]) {
+				const float *abias = (i == 0) ? ACCEL_BIAS_LSM0 : ACCEL_BIAS_LSM1;
 				for (int ax = 0; ax < 3; ax++)
-					accel_avg[ax] += (float)imu_accel[i][ax] * ACCEL_SCALE;
+					accel_avg[ax] += (float)imu_accel[i][ax] * ACCEL_SCALE - abias[ax];
 				accel_count++;
 			}
 		}
@@ -426,44 +509,52 @@ static void adcs_loop(void *, void *, void *)
 		float lsm_gyro_rps[2][3] = {{0,0,0},{0,0,0}};
 		float i3g_gyro_rps[2][3] = {{0,0,0},{0,0,0}};
 
+		auto debias = [](float v[3], const float bias[3]) {
+			for (int ax = 0; ax < 3; ax++) v[ax] -= bias[ax];
+		};
+
 		float gyro_avg[3] = {0.0f, 0.0f, 0.0f};
 		int gyro_count = 0;
 #if GYRO_FUSE_LSM
 		if (imu_ok[0] && gyro_sane_perdev(imu_gyro[0], GYRO_CORR_LSM0)) {
 			apply_perdev(lsm_gyro_rps[0], imu_gyro[0], GYRO_CORR_LSM0);
+			debias(lsm_gyro_rps[0], GYRO_BIAS_LSM0);
 			for (int ax = 0; ax < 3; ax++) gyro_avg[ax] += lsm_gyro_rps[0][ax];
 			gyro_count++;
 		}
 		if (imu_ok[1] && gyro_sane_perdev(imu_gyro[1], GYRO_CORR_LSM1)) {
 			apply_perdev(lsm_gyro_rps[1], imu_gyro[1], GYRO_CORR_LSM1);
+			debias(lsm_gyro_rps[1], GYRO_BIAS_LSM1);
 			for (int ax = 0; ax < 3; ax++) gyro_avg[ax] += lsm_gyro_rps[1][ax];
 			gyro_count++;
 		}
 #else
-		if (imu_ok[0] && gyro_sane_perdev(imu_gyro[0], GYRO_CORR_LSM0)) apply_perdev(lsm_gyro_rps[0], imu_gyro[0], GYRO_CORR_LSM0);
-		if (imu_ok[1] && gyro_sane_perdev(imu_gyro[1], GYRO_CORR_LSM1)) apply_perdev(lsm_gyro_rps[1], imu_gyro[1], GYRO_CORR_LSM1);
+		if (imu_ok[0] && gyro_sane_perdev(imu_gyro[0], GYRO_CORR_LSM0)) { apply_perdev(lsm_gyro_rps[0], imu_gyro[0], GYRO_CORR_LSM0); debias(lsm_gyro_rps[0], GYRO_BIAS_LSM0); }
+		if (imu_ok[1] && gyro_sane_perdev(imu_gyro[1], GYRO_CORR_LSM1)) { apply_perdev(lsm_gyro_rps[1], imu_gyro[1], GYRO_CORR_LSM1); debias(lsm_gyro_rps[1], GYRO_BIAS_LSM1); }
 #endif
 #if GYRO_FUSE_I3G
 		if (gyr_ok[0] && gyro_sane_perdev(gyr_raw[0], GYRO_CORR_I3G0)) {
 			apply_perdev(i3g_gyro_rps[0], gyr_raw[0], GYRO_CORR_I3G0);
+			debias(i3g_gyro_rps[0], GYRO_BIAS_I3G0);
 			for (int ax = 0; ax < 3; ax++) gyro_avg[ax] += i3g_gyro_rps[0][ax];
 			gyro_count++;
 		}
 		if (gyr_ok[1] && gyro_sane_perdev(gyr_raw[1], GYRO_CORR_I3G1)) {
 			apply_perdev(i3g_gyro_rps[1], gyr_raw[1], GYRO_CORR_I3G1);
+			debias(i3g_gyro_rps[1], GYRO_BIAS_I3G1);
 			for (int ax = 0; ax < 3; ax++) gyro_avg[ax] += i3g_gyro_rps[1][ax];
 			gyro_count++;
 		}
 #else
-		if (gyr_ok[0] && gyro_sane_perdev(gyr_raw[0], GYRO_CORR_I3G0)) apply_perdev(i3g_gyro_rps[0], gyr_raw[0], GYRO_CORR_I3G0);
-		if (gyr_ok[1] && gyro_sane_perdev(gyr_raw[1], GYRO_CORR_I3G1)) apply_perdev(i3g_gyro_rps[1], gyr_raw[1], GYRO_CORR_I3G1);
+		if (gyr_ok[0] && gyro_sane_perdev(gyr_raw[0], GYRO_CORR_I3G0)) { apply_perdev(i3g_gyro_rps[0], gyr_raw[0], GYRO_CORR_I3G0); debias(i3g_gyro_rps[0], GYRO_BIAS_I3G0); }
+		if (gyr_ok[1] && gyro_sane_perdev(gyr_raw[1], GYRO_CORR_I3G1)) { apply_perdev(i3g_gyro_rps[1], gyr_raw[1], GYRO_CORR_I3G1); debias(i3g_gyro_rps[1], GYRO_BIAS_I3G1); }
 #endif
 		if (gyro_count > 0) {
 			for (int ax = 0; ax < 3; ax++)
 				gyro_avg[ax] /= (float)gyro_count;
 		}
 
-#if GYRO_DIAG_EVERY > 0
+#if GYRO_DIAG_EVERY > 0 && !CAL_EMIT
 		if ((cycle % GYRO_DIAG_EVERY) == 0) {
 			printk("GYRO [rad/s] LSM0:%+6.3f %+6.3f %+6.3f | LSM1:%+6.3f %+6.3f %+6.3f | "
 			       "I3G0:%+6.3f %+6.3f %+6.3f | I3G1:%+6.3f %+6.3f %+6.3f | FUSED:%+6.3f %+6.3f %+6.3f\n",
@@ -498,9 +589,9 @@ static void adcs_loop(void *, void *, void *)
 #if AIR_BEARING_ACCEL_AS_GRAVITY_NEGATE
 		sd.accelerometer = Math::Vec<3>{-accel_avg[1], accel_avg[0], -accel_avg[2]};
 #else
-		sd.accelerometer = Math::Vec<3>{accel_avg[1], -accel_avg[0], accel_avg[2]};
+		sd.accelerometer = Math::Vec<3>{-accel_avg[1], -accel_avg[0], -accel_avg[2]};
 #endif
-		sd.gyro = Math::Vec<3>{gyro_avg[1], -gyro_avg[0], gyro_avg[2]};
+		sd.gyro = Math::Vec<3>{-gyro_avg[1], -gyro_avg[0], -gyro_avg[2]};
 
 		/* Track worst-case gyro norm since last telemetry print, for motion-gate diagnosis. */
 		float gn = sqrtf(gyro_avg[0]*gyro_avg[0] +
@@ -508,7 +599,7 @@ static void adcs_loop(void *, void *, void *)
 		                 gyro_avg[2]*gyro_avg[2]);
 		if (gn > gyro_norm_max_window) gyro_norm_max_window = gn;
 		/* Frame rotation R = [0,-1,0; -1,0,0; 0,0,-1]: x'=-y, y'=-x, z'=-z */
-		sd.magnetometer  = Math::Vec<3>{-mag_avg[1], -mag_avg[0], -mag_avg[2]};
+		sd.magnetometer  = Math::Vec<3>{mag_avg[1], -mag_avg[0], mag_avg[2]};
 		sd.wheel_speeds  = Math::Vec<4>::Zero();
 
 		ADCS::Command adcs_cmd;
@@ -517,6 +608,7 @@ static void adcs_loop(void *, void *, void *)
 #endif
 		ADCS::AdcsOutput out = adcs_core.update(sd, adcs_cmd);
 
+#if !CAL_EMIT
 		if (telemetry) {
 			const char *mode = "?";
 			switch (out.current_mode) {
@@ -565,6 +657,9 @@ static void adcs_loop(void *, void *, void *)
 			       (double)out.mtq_dipole(0), (double)out.mtq_dipole(1),
 			       (double)out.mtq_dipole(2));
 		}
+#else
+		(void)out;
+#endif
 
 		gpio_pin_toggle_dt(&led0);
 		if (cycle % 2 == 0) gpio_pin_toggle_dt(&led1);

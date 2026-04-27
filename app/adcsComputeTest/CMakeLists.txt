@@ -10,6 +10,12 @@ project(adcsComputeTest)
 #   -DAIR_BEARING=OFF  ->  Orbit Flight SW   (forOrbit ADCSCore)  [default]
 # ============================================================================
 option(AIR_BEARING "Build for air bearing demo instead of orbit" OFF)
+option(CAL_EMIT "Emit raw IMU/GYR/MAG CSV for AirBearingCalibration.m capture" OFF)
+
+if(CAL_EMIT)
+    message(STATUS ">>> CAL_EMIT enabled: raw CSV stream, telemetry suppressed <<<")
+    target_compile_definitions(app PRIVATE CAL_EMIT=1)
+endif()
 
 if(AIR_BEARING)
     message(STATUS ">>> Building: Air Bearing Demo <<<")
