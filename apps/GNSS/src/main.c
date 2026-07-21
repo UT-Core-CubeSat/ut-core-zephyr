@@ -14,7 +14,7 @@
 #include "orion_b16_driver.h"
 #include "orion_b16_protocol.h"
 #include "orion_b16_messages.h"
-#include "can_proto.h"
+#include "common/can_proto.h"
 
 LOG_MODULE_REGISTER(gnss_app, CONFIG_LOG_DEFAULT_LEVEL);
 

@@ -10,65 +10,65 @@
 #include <zephyr/dt-bindings/pinctrl/stm32-pinctrl.h>
 
 / {
-	pins {
-		compatible = "gpio-leds";
+    pins {
+        compatible = "gpio-leds";
 
-		led0: led_0 {
-			gpios = <&gpioc 13 GPIO_ACTIVE_HIGH>;
-			label = "LED0_PC13";
-		};
+        led0: led_0 {
+            gpios = <&gpioc 13 GPIO_ACTIVE_HIGH>;
+            label = "LED0_PC13";
+        };
 
-		led1: led_1 {
-			gpios = <&gpioc 14 GPIO_ACTIVE_HIGH>;
-			label = "LED1_PC14";
-		};
+        led1: led_1 {
+            gpios = <&gpioc 14 GPIO_ACTIVE_HIGH>;
+            label = "LED1_PC14";
+        };
 
-		led2: led_2 {
-			gpios = <&gpioc 15 GPIO_ACTIVE_HIGH>;
-			label = "LED2_PC15";
-		};
+        led2: led_2 {
+            gpios = <&gpioc 15 GPIO_ACTIVE_HIGH>;
+            label = "LED2_PC15";
+        };
 
-		pb10: pb10 {
-			gpios = <&gpiob 10 GPIO_ACTIVE_HIGH>;
-			label = "pb10";
-		};
+        pb10: pb10 {
+            gpios = <&gpiob 10 GPIO_ACTIVE_HIGH>;
+            label = "pb10";
+        };
 
-		pb2: pb2 {
-			gpios = <&gpiob 2 GPIO_ACTIVE_HIGH>;
-			label = "pb2";
-		};
+        pb2: pb2 {
+            gpios = <&gpiob 2 GPIO_ACTIVE_HIGH>;
+            label = "pb2";
+        };
 
-		pd2: pd2 {
-			gpios = <&gpiod 2 GPIO_ACTIVE_HIGH>;
-			label = "pd2";
-		};
+        pd2: pd2 {
+            gpios = <&gpiod 2 GPIO_ACTIVE_HIGH>;
+            label = "pd2";
+        };
 
-		pa7: pa7 {
-			gpios = <&gpioa 7 GPIO_ACTIVE_HIGH>;
-			label = "pa7";
-		};
+        pa7: pa7 {
+            gpios = <&gpioa 7 GPIO_ACTIVE_HIGH>;
+            label = "pa7";
+        };
 
-		mcu_select_pin: mcu_select_pin {
-    			gpios = <&gpioa 6 GPIO_ACTIVE_HIGH>;
-    			label = "MCU_SELECT_PIN";
-  		};
+        mcu_select_pin: mcu_select_pin {
+                gpios = <&gpioa 6 GPIO_ACTIVE_HIGH>;
+                label = "MCU_SELECT_PIN";
+          };
 
-		canengpio: canengpio {
-    			gpios = <&gpioa 10 GPIO_ACTIVE_HIGH>; /* PA10 */
-    			label = "CAN_TRANSCEIVER_EN";
-  		};
+        canengpio: canengpio {
+                gpios = <&gpioa 10 GPIO_ACTIVE_HIGH>; /* PA10 */
+                label = "CAN_TRANSCEIVER_EN";
+          };
 
-		canstbgpio: canstbgpio {
-    			gpios = <&gpioa 9 GPIO_ACTIVE_HIGH>; /* PA9 */
-    			label = "CAN_STB";
-		};
+        canstbgpio: canstbgpio {
+                gpios = <&gpioa 9 GPIO_ACTIVE_HIGH>; /* PA9 */
+                label = "CAN_STB";
+        };
 
-	};
+    };
 };
 
 /* Internal 48 MHz oscillator (safe; useful later for USB) */
 &clk_hsi48 {
-	status = "disabled";
+    status = "disabled";
 };
 
 &clk_hsi {
@@ -79,24 +79,24 @@
 &clk_hse { status = "disabled"; };
 
 &clk_lse {
-	status = "okay";
-	clock-frequency = <32768>;
-	driving-capability = <1>;
+    status = "okay";
+    clock-frequency = <32768>;
+    driving-capability = <1>;
 };
 
 &rtc {
-	status = "okay";
-	clocks = <&rcc STM32_CLOCK(APB3, 21)>,
-	         <&rcc STM32_SRC_LSE RTC_SEL(1)>;
+    status = "okay";
+    clocks = <&rcc STM32_CLOCK(APB3, 21)>,
+             <&rcc STM32_SRC_LSE RTC_SEL(1)>;
 
-	/* optional, but nice to expose backup regs */
-	backup_regs {
-		status = "okay";
-	};
+    /* optional, but nice to expose backup regs */
+    backup_regs {
+        status = "okay";
+    };
 };
 
 &clk_msis {
-	status = "okay";
+    status = "okay";
 };
 
 // &rcc {
@@ -114,15 +114,15 @@
 // };
 
 &gpioa {
-	status = "okay";
+    status = "okay";
 };
 
 &gpiob {
-	status = "okay";
+    status = "okay";
 };
 
 &gpioc {
-	status = "okay";
+    status = "okay";
 };
 
 &gpiod {

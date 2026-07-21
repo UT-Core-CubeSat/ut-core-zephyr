@@ -1,0 +1,154 @@
+// UT-CORE STM32U5A5 platform description
+// CPU: Cortex-M33 @ 160MHz
+// Console: USART3 @ 0x40004800
+
+cpu0: CPU.CortexM @ sysbus
+    cpuType: "cortex-m33"
+    nvic: nvic
+
+nvic: IRQControllers.NVIC @ sysbus 0xE000E000
+    systickFrequency: 160000000
+    IRQ -> cpu0@0
+
+flash0: Memory.MappedMemory @ sysbus 0x08000000
+    size: 0x00400000
+
+sram0: Memory.MappedMemory @ sysbus 0x20000000
+    size: 0x00270000
+
+sram1: Memory.MappedMemory @ sysbus 0x28000000
+    size: 0x00004000
+
+gpioPortA: GPIOPort.STM32_GPIOPort @ sysbus <0x42020000, +0x400>
+gpioPortB: GPIOPort.STM32_GPIOPort @ sysbus <0x42020400, +0x400>
+gpioPortC: GPIOPort.STM32_GPIOPort @ sysbus <0x42020800, +0x400>
+gpioPortD: GPIOPort.STM32_GPIOPort @ sysbus <0x42020C00, +0x400>
+gpioPortE: GPIOPort.STM32_GPIOPort @ sysbus <0x42021000, +0x400>
+gpioPortF: GPIOPort.STM32_GPIOPort @ sysbus <0x42021400, +0x400>
+gpioPortG: GPIOPort.STM32_GPIOPort @ sysbus <0x42021800, +0x400>
+gpioPortH: GPIOPort.STM32_GPIOPort @ sysbus <0x42021C00, +0x400>
+gpioPortI: GPIOPort.STM32_GPIOPort @ sysbus <0x42022000, +0x400>
+gpioPortJ: GPIOPort.STM32_GPIOPort @ sysbus <0x42022400, +0x400>
+
+usart3: UART.STM32F7_USART @ sysbus 0x40004800
+    frequency: 160000000
+    IRQ -> nvic@63
+
+lpuart1: UART.STM32F7_USART @ sysbus 0x46002400
+    frequency: 160000000
+    IRQ -> nvic@66
+
+rcc: Python.PythonPeripheral @ sysbus 0x46020C00
+    size: 0x400
+    initable: true
+    filename: "scripts/pydev/flipflop.py"
+
+// rcc: Miscellaneous.STM32L5_RCC @ sysbus 0x46020C00
+
+// rcc: Python.PythonPeripheral @ sysbus 0x46020C00
+//     size: 0x400
+//     initable: true
+//     filename: "/home/user/share/utahtech/cubesat/github/ut-core-zephyr/boards/arm/ut_core/scripts/pydev/rcc_ready.py"
+
+flashController: Python.PythonPeripheral @ sysbus 0x40022000
+    size: 0x400
+    initable: true
+    filename: "scripts/pydev/flipflop.py"
+
+pwr: Python.PythonPeripheral @ sysbus 0x46020800
+    size: 0x400
+    initable: true
+    filename: "scripts/pydev/flipflop.py"
+
+
+// stubs
+
+i2c1: Python.PythonPeripheral @ sysbus 0x40005400
+    size: 0x400
+    initable: true
+    filename: "scripts/pydev/flipflop.py"
+
+spi2: Python.PythonPeripheral @ sysbus 0x40003800
+    size: 0x400
+    initable: true
+    filename: "scripts/pydev/flipflop.py"
+
+    
+
+// fdcan1: Python.PythonPeripheral @ sysbus 0x4000A400
+//     size: 0x800
+//     initable: true
+//     filename: "scripts/pydev/flipflop.py"
+
+// fdcan1: CAN.STMCAN @ sysbus <0x4000A400, +0x800>
+
+// fdcan1: CAN.STMCAN @ sysbus <0x40006400, +0x400>
+//     Line0 -> nvic@21
+//     Line1 -> nvic@22
+//     messageRAM: canMessageRAM
+// 
+// canMessageRAM: Memory.ArrayMemory @ sysbus <0x4000B400, +0x350>
+
+// canMessageRAM: Memory.ArrayMemory @ sysbus 0x4000B400
+//     size: 0x2800
+// 
+// fdcan1: CAN.MCAN @ sysbus 0x4000A400
+//     messageRAM: canMessageRAM
+//     Line0 -> nvic@21
+//     Line1 -> nvic@22
+
+// // Size 0x1000 covers 0x4000A400 to 0x4000B3FF (including the 0x4000AC00 filter space)
+// fdcan1: CAN.MCAN @ sysbus <0x4000A400, +0x1000>
+//     messageRAM: canMessageRAM
+//     Line0 -> nvic@21
+//     Line1 -> nvic@22
+
+// // Shifted up to avoid the collision
+// canMessageRAM: Memory.ArrayMemory @ sysbus 0x4000C400
+//     size: 0x2800
+
+// fdcan1: CAN.MCAN @ sysbus <0x4000A400, +0x800>
+//     messageRAM: canMessageRAM
+//     Line0 -> nvic@21
+//     Line1 -> nvic@22
+
+fdcan1: CAN.MCAN @ sysbus <0x4000A400, +0x800>
+    messageRAM: canMessageRAM
+    Line0 -> nvic@39
+    Line1 -> nvic@40
+
+canMessageRAM: Memory.ArrayMemory @ sysbus 0x4000AC00
+    size: 0xC00
+
+
+gpdma1: Python.PythonPeripheral @ sysbus 0x40020000
+    size: 0x400
+    initable: true
+    filename: "scripts/pydev/flipflop.py"
+
+rtc: Python.PythonPeripheral @ sysbus 0x46007800
+    size: 0x400
+    initable: true
+    filename: "scripts/pydev/flipflop.py"
+
+icache: Python.PythonPeripheral @ sysbus 0x40030400
+    size: 0x400
+    initable: true
+    filename: "scripts/pydev/flipflop.py"
+
+otp: Memory.MappedMemory @ sysbus 0x0BFA0000
+    size: 0x2000
+
+
+
+
+// Mock the STM32U5 Data Cache (DCACHE1)
+dcache1: Memory.MappedMemory @ sysbus 0x40031400
+    size: 0x400
+
+// Mock Timer 1 and Timer 2 registers
+tim1_mock: Memory.MappedMemory @ sysbus 0x40012C00
+    size: 0x400
+
+tim2_mock: Memory.MappedMemory @ sysbus 0x40000400
+    size: 0x400

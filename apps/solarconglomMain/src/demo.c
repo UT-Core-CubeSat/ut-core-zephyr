@@ -7,8 +7,8 @@
 #include <zephyr/sys/printk.h>
 #include <zephyr/logging/log.h>
 #include <string.h>
-#include "..\..\..\common\can_proto.h"
-#include "..\..\..\common\temp_telemetry.h"
+#include "common/can_proto.h"
+#include "common/temp_telemetry.h"
 
 #include <stm32_ll_tim.h>
 

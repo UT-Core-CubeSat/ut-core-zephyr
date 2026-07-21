@@ -5,7 +5,7 @@
 #include <zephyr/logging/log.h>
 #include <string.h>
 
-#include "../../../common/can_proto.h"
+#include "common/can_proto.h"
 
 LOG_MODULE_REGISTER(eps, LOG_LEVEL_INF);
 

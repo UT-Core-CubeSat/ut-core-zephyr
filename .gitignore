@@ -1,0 +1,30 @@
+# # Build artifacts
+# /build/
+# *.elf
+# *.bin
+# *.hex
+# *.map
+# *.o
+# *.a
+# 
+# # Python
+# .venv/
+# __pycache__/
+# *.pyc
+# 
+# # Large files
+# *.pptx
+# *.stl
+# *.csv
+# *.log
+# 
+# # West managed dirs
+# /zephyr/
+# /modules/
+# /bootloader/
+# 
+# # Zephyr SDK
+# zephyr-sdk*/
+# 
+# # Other
+# /old/

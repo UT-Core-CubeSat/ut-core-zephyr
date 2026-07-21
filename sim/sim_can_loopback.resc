@@ -1,0 +1,13 @@
+mach create "can1"
+machine LoadPlatformDescription @boards/arm/ut_core/ut_core.repl
+machine StartGdbServer 3330
+showAnalyzer lpuart1
+sysbus LoadELF @build/apps/test/CANloop/zephyr/zephyr.elf
+
+
+emulation CreateCANHub "canHub"
+
+mach set "can1"
+connector Connect sysbus.fdcan1 canHub
+
+# start

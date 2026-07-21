@@ -23,13 +23,13 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/logging/log.h>
-#include <stm32u5xx.h>
+//#include <stm32u5xx.h>
 #include <stdbool.h>
 #include <string.h>
 
 #include "board_config.h"
-#include "../../../common/can_proto.h"
-#include "../../../common/temp_telemetry.h"
+#include "common/can_proto.h"
+#include "common/temp_telemetry.h"
 
 LOG_MODULE_REGISTER(cdh, LOG_LEVEL_INF);
 

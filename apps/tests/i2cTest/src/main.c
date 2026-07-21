@@ -39,9 +39,9 @@ static const uint8_t temp_addrs[] = { 0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D };
 
 // Single temperature sample from one sensor.
 struct temp_sample {
-	uint8_t addr;     // I2C 7-bit address we read from (for logging/debug) 
-	int16_t temp_q4;  // Temperature in Q4 format (see below); 0 if read failed
-	int status;       // 0 = read OK, non-zero = I2C error code (e.g. -EIO)
+    uint8_t addr;     // I2C 7-bit address we read from (for logging/debug) 
+    int16_t temp_q4;  // Temperature in Q4 format (see below); 0 if read failed
+    int status;       // 0 = read OK, non-zero = I2C error code (e.g. -EIO)
 };
 
 // Q4 FORMAT (what the fuck is Q4?)
@@ -54,8 +54,8 @@ struct temp_sample {
 
 // Full telemetry snapshot: timestamp + one sample per sensor.
 struct temp_telemetry {
-	uint32_t t_ms;                 	    // Time of sample: kernel uptime in milliseconds (probably going to change to RTC time? idk yet)
-	struct temp_sample s[NUM_SENSORS];  // One entry per sensor, same order as temp_addrs[]
+    uint32_t t_ms;                 	    // Time of sample: kernel uptime in milliseconds (probably going to change to RTC time? idk yet)
+    struct temp_sample s[NUM_SENSORS];  // One entry per sensor, same order as temp_addrs[]
 };
 
 // ===================== Small Helpers ===================== 
@@ -63,8 +63,8 @@ struct temp_telemetry {
 // Print a Q4 temperature as an integer degC (rounded).
 // Q4 -> degC: divide by 16; +8 before /16 gives rounding to nearest integer.
 static void print_temp_q4(int16_t t_q4) {
-	int32_t temp_c = (t_q4 + 8) / 16;  // +8 for rounding
-	printk("%ld", (long)temp_c);
+    int32_t temp_c = (t_q4 + 8) / 16;  // +8 for rounding
+    printk("%ld", (long)temp_c);
 }
 
 // ===================== Read-all-temps: the main function =====================
@@ -127,92 +127,92 @@ static void print_temp_q4(int16_t t_q4) {
 //       design should ensure that).
 //
 static int temp_telemetry_read_all(const struct device *bus, struct temp_telemetry *out) {
-	// Guard: don’t dereference null; return 0 successful reads
-	if (out == NULL || bus == NULL) {
-		return 0;
-	}
+    // Guard: don’t dereference null; return 0 successful reads
+    if (out == NULL || bus == NULL) {
+        return 0;
+    }
 
-	// When did we take this snapshot? (for ground station / logs)
-	out->t_ms = (uint32_t)k_uptime_get_32();
+    // When did we take this snapshot? (for ground station / logs)
+    out->t_ms = (uint32_t)k_uptime_get_32();
 
-	int ok = 0;  // Init count of sensors that read successfully to 0 at first
+    int ok = 0;  // Init count of sensors that read successfully to 0 at first
 
-	for (uint8_t i = 0; i < NUM_SENSORS; i++) {
-		uint8_t reg = TEMP_REG;   // Register 0x00 = temperature 
-		uint8_t buf[2] = {0};     // MSB, LSB from sensor 
+    for (uint8_t i = 0; i < NUM_SENSORS; i++) {
+        uint8_t reg = TEMP_REG;   // Register 0x00 = temperature 
+        uint8_t buf[2] = {0};     // MSB, LSB from sensor 
 
-		// Remember which address we’re polling (for debugging / labels)
-		// out->s[i].addr means: pointer out -> struct member s -> element [i] -> field addr
-		out->s[i].addr = temp_addrs[i];
+        // Remember which address we’re polling (for debugging / labels)
+        // out->s[i].addr means: pointer out -> struct member s -> element [i] -> field addr
+        out->s[i].addr = temp_addrs[i];
 
-		// Single I2C transaction: write 1 byte (reg address), then read 2 bytes.
-		// Device uses 7-bit address temp_addrs[i]; we get back the temp register.
-		int ret = i2c_write_read(bus, temp_addrs[i], &reg, 1, buf, 2);
-		out->s[i].status = ret;
+        // Single I2C transaction: write 1 byte (reg address), then read 2 bytes.
+        // Device uses 7-bit address temp_addrs[i]; we get back the temp register.
+        int ret = i2c_write_read(bus, temp_addrs[i], &reg, 1, buf, 2);
+        out->s[i].status = ret;
 
-		if (ret == 0) {
-			// Sensor format: 12-bit signed temp, left-justified in 16 bits.
-			// Big-endian: buf[0]=MSB, buf[1]=LSB. Cast to int16_t for sign.
-			// Right-shift by 4 gives Q4 (value = degC * 16). This is the only
-			// place that’s sensor-specific; different chip => change this block.
+        if (ret == 0) {
+            // Sensor format: 12-bit signed temp, left-justified in 16 bits.
+            // Big-endian: buf[0]=MSB, buf[1]=LSB. Cast to int16_t for sign.
+            // Right-shift by 4 gives Q4 (value = degC * 16). This is the only
+            // place that’s sensor-specific; different chip => change this block.
 
-			// << 8 = shift left 8 bits (put first byte in high half). | = combine with second byte.
-			// So: raw = [buf[0]][buf[1]] as one 16-bit number (big-endian). int16_t = signed.
-			int16_t raw = (int16_t)((buf[0] << 8) | buf[1]);
+            // << 8 = shift left 8 bits (put first byte in high half). | = combine with second byte.
+            // So: raw = [buf[0]][buf[1]] as one 16-bit number (big-endian). int16_t = signed.
+            int16_t raw = (int16_t)((buf[0] << 8) | buf[1]);
 
-			// >> 4 = shift right 4 bits. Sensor puts 12-bit temp in top bits; bottom 4 are fraction we drop.
-			// Result is already Q4 (degC * 16). Example: 25.5 C -> raw 0x1980 -> 0x198 -> 408 = 25.5*16.
-			out->s[i].temp_q4 = (int16_t)(raw >> 4);
-			ok++;
-		} else {
-			// Read failed: leave temp at 0 so downstream knows we have no data
-			out->s[i].temp_q4 = 0;
-		}
-	}
+            // >> 4 = shift right 4 bits. Sensor puts 12-bit temp in top bits; bottom 4 are fraction we drop.
+            // Result is already Q4 (degC * 16). Example: 25.5 C -> raw 0x1980 -> 0x198 -> 408 = 25.5*16.
+            out->s[i].temp_q4 = (int16_t)(raw >> 4);
+            ok++;
+        } else {
+            // Read failed: leave temp at 0 so downstream knows we have no data
+            out->s[i].temp_q4 = 0;
+        }
+    }
 
-	return ok;
+    return ok;
 }
 
 
 // Print one telemetry snapshot to console: timestamp then each sensor as
 // "0x48:25C  0x49:26C  ..." or "0x48:ERR(-5)" on I2C failure.
 static void temp_telemetry_print(const struct temp_telemetry *t) {
-	printk("t=%lu ms | ", (unsigned long)t->t_ms);
+    printk("t=%lu ms | ", (unsigned long)t->t_ms);
 
-	for (uint8_t i = 0; i < NUM_SENSORS; i++) {
-		printk("0x%02X:", t->s[i].addr);
+    for (uint8_t i = 0; i < NUM_SENSORS; i++) {
+        printk("0x%02X:", t->s[i].addr);
 
-		if (t->s[i].status == 0) {
-			print_temp_q4(t->s[i].temp_q4);
-			printk("C");
-		} else {
-			printk("ERR(%d)", t->s[i].status);
-		}
+        if (t->s[i].status == 0) {
+            print_temp_q4(t->s[i].temp_q4);
+            printk("C");
+        } else {
+            printk("ERR(%d)", t->s[i].status);
+        }
 
-		if (i + 1 < NUM_SENSORS) {
-			printk("  ");
-		}
-	}
+        if (i + 1 < NUM_SENSORS) {
+            printk("  ");
+        }
+    }
 
-	printk("\n");
+    printk("\n");
 }
 
 // ===================== Main =====================
 int main(void) {
-	if (!device_is_ready(i2c_bus)) {
-		printk("I2C bus not ready\n");
-		return 0;
-	}
+    if (!device_is_ready(i2c_bus)) {
+        printk("I2C bus not ready\n");
+        return 0;
+    }
 
-	printk("Temp poller: reading %d sensors on i2c1 (0x48..0x4D)\n", NUM_SENSORS);
+    printk("Temp poller: reading %d sensors on i2c1 (0x48..0x4D)\n", NUM_SENSORS);
 
-	struct temp_telemetry telem;
+    struct temp_telemetry telem;
 
-	while (1) {
-		(void)temp_telemetry_read_all(i2c_bus, &telem);
-		temp_telemetry_print(&telem);
-		k_msleep(500);
-	}
+    while (1) {
+        (void)temp_telemetry_read_all(i2c_bus, &telem);
+        temp_telemetry_print(&telem);
+        k_msleep(500);
+    }
 
-	return 0;
+    return 0;
 }
