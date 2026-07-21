@@ -1,3 +1,5 @@
+**Replaced with [ut-core-zephyr](https://github.com/UT-Core-CubeSat/ut-core-zephyr) due to git bloat**
+
 UT CubeSat - Zephyr RTOS Development
 
 Custom STM32U5A5RJTXQ6Q board firmware for our CubeSat project using Zephyr RTOS.
