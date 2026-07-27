@@ -52,6 +52,27 @@ apps/<appname>/             Application directory
 (Only tested on Debian)
 
 
+### Install dependancies (Windows)
+
+First, install these programs (skip if using `choco`):
+
+1. Install [CMake](https://cmake.org/)
+2. Install [Python](https://www.python.org/)
+3. Install [Devicetree Compiler](https://www.devicetree.org/)
+
+Next, install these dependancies
+
+```cmd
+# With winget
+winget install Kitware.CMake Ninja-build.Ninja oss-winget.gperf Python.Python.3.12 Git.Git oss-winget.dtc wget 7zip.7zip
+
+# OR with choco
+choco install cmake ninja make python3 git wget 7zip gperf dtc-msys2 openocd gcc-arm-embedded -y
+```
+
+If any problems arise, consult Zephyr's documentation for [Getting Started](https://docs.zephyrproject.org/latest/develop/getting_started/index.html).
+
+
 ### Install dependancies (Debian/Ubuntu)
 
 ```bash
@@ -173,87 +194,3 @@ https://docs.zephyrproject.org/latest/develop/getting_started/index.html
 Zephyr docs
 https://docs.zephyrproject.org/latest/index.html
 
-
-
-<!--
-------------------------------------
-# Old README past this point
-------------------------------------
-
-
-Initial Setup
-1. Follow the Official Zephyr Getting Started Guide
-
-Follow the complete Zephyr Getting Started Guide for Windows:
-
-https://docs.zephyrproject.org/latest/develop/getting_started/index.html
-
-Complete ALL steps in the guide including:
-
-    Installing dependencies
-    Creating virtual environment
-    Running west init zephyr-workspace
-    Running west update
-    Installing Python dependencies
-    Installing Zephyr SDK
-
-2. Clone Our Repository Into the Workspace
-
-After completing the official guide, clone our custom board and apps:
-cmd
-
-    cd %HOMEPATH%\zephyr-workspace
-    git clone https://github.com/braydonphillips/ut-core-zephyr.git ut-core
-
-3. Set Board Root (Required for Our Custom Board)
-
-This tells Zephyr where to find our ut_core board:
-cmd
-
-    setx BOARD_ROOT %HOMEPATH%\zephyr-workspace\ut-core
-
-Important: Close and reopen CMD, then reactivate the virtual environment:
-cmd
-
-    cd %HOMEPATH%\zephyr-workspace
-    .venv\Scripts\activate.bat
-
-Building Applications
-Build an Application
-
-From the zephyr-workspace directory with .venv activated:
-cmd
-
-    west build -p always -b ut_core ut-core\app\<app-name>
-
-Example apps:
-
-    i2cTest - I2C peripheral test
-    spiTest - SPI peripheral test
-
-Flash to Board
-cmd
-
-    west flash
-
-Daily Workflow
-
-Every time you open CMD:
-Navigate to workspace and activate virtual environment:
-
-cmd
-
-    cd %HOMEPATH%\zephyr-workspace
-    .venv\Scripts\activate.bat
-
-Build/flash as needed
-
-Troubleshooting
-Board Not Found
-
-If you get No board named 'ut_core' found:
-
-    Make sure BOARD_ROOT is set by running the setx command in step 5
-    Close and reopen CMD after setting it
-
--->

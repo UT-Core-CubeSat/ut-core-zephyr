@@ -13,16 +13,27 @@ WEST_BFLAGS :=
 CMAKE_BFLAGS :=
 
 
+ifeq ($(OS),Windows_NT)
+SYS_PYTHON := python
+PYBIN := .venv/Scripts
+PYTHON := .venv/Scripts/python.exe
+PIP    := .venv/Scripts/pip.exe
+WEST   := .venv/Scripts/west.exe
+RM     := rmdir /S /Q
+else
+SYS_PYTHON := python3
+PYBIN := .venv/bin
 PYTHON := .venv/bin/python
 PIP    := .venv/bin/pip
 WEST   := .venv/bin/west
-
-
-ifeq ($(OS),Windows_NT)
-SYS_PYTHON := python
-else
-SYS_PYTHON := python3
+RM     := rm -rf
 endif
+
+
+GNU       := $(ZEPHYR_SDK_INSTALL_DIR)/gnu/arm-zephyr-eabi/bin
+HOSTTOOLS := $(ZEPHYR_SDK_INSTALL_DIR)/hosttools/openocd/bin
+GDB       := $(GNU)/arm-zephyr-eabi-gdb
+OPENOCD   := $(HOSTTOOLS)/openocd/bin/openocd
 
 
 # Require APP variable be defined to run build
@@ -92,12 +103,18 @@ update:
 
 
 setup:
-	$(SYS_PYTHON) -m venv .venv				# setup virtual environment
-	$(PYTHON) -m pip install --upgrade pip 	# ensure pip is in the venv
-	$(PIP) install west						# install west
-	$(WEST) update							# download zephyr
-	$(WEST) packages pip --install			# install west dependancies in the virtual en
-	cd $(ZEPHYR_BASE)						# install the zephyr sdk
+	@: # setup virtual environment
+	$(SYS_PYTHON) -m venv .venv
+	@: # ensure pip is in the venv
+	$(PYTHON) -m pip install --upgrade pip
+	@: # install west
+	$(PIP) install west
+	@: # download zephyr
+	$(WEST) update
+	@: # install west dependancies in the virtual en
+	$(WEST) packages pip --install
+	@: # install the zephyr sdk
+	cd $(ZEPHYR_BASE)
 	$(WEST) sdk install -t arm-zephyr-eabi -d $(ZEPHYR_SDK_INSTALL_DIR) --version $(ZEPHYR_VERSION)
 	cd $(CURDIR)
 
@@ -126,11 +143,11 @@ simulate:
 
 
 gdb:
-	gdb-multiarch $(BUILD)/zephyr/zephyr.elf -ex "target remote :3333"
+	$(GDB) $(BUILD)/zephyr/zephyr.elf -ex "target remote :3333"
 
 
 debug:
-	openocd -f tools/openocd_semihost.cfg
+	$(OPENOCD) -f tools/openocd_semihost.cfg
 
 listen:
 	telnet localhost 9090
@@ -142,20 +159,20 @@ flash:
 
 
 clean:
-	rm -rf build
+	$(RM) build
 
 
 clean-purge:
-	rm -rf build
-	rm -rf zephyr
-	rm -rf modules
-	rm -rf bootloader
-	rm -rf .venv
+	$(RM) build
+	$(RM) zephyr
+	$(RM) modules
+	$(RM) bootloader
+	$(RM) .venv
 
 readme:
 	gh markdown-preview --disable-reload
 
 .PHONY: setup update
-.PHONY: build build-all build-can-tests flash
+.PHONY: build build-full build-can-tests flash
 .PHONY: debug simulate simulate-full gdb listen
 .PHONY: clean clean-purge readme
