@@ -37,9 +37,9 @@ jobs:
 
       - name: Build docs
         run: |
-          make -C master-checkout   || echo "::warning::master failed to build! (remove this later)"
-          make -C unstable-checkout || echo "::warning::unstable failed to build!"
-          make -C doctest-checkout  || echo "::warning::doctest failed to build!"
+          make -C master-checkout   docs || echo "::warning::master failed to build! (remove this later)"
+          make -C unstable-checkout docs || echo "::warning::unstable failed to build!"
+          make -C doctest-checkout  docs || echo "::warning::doctest failed to build!"
 
       - name: Assemble combined site
         run: |
