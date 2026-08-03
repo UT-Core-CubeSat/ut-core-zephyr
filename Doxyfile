@@ -1,0 +1,109 @@
+#---------------------------------------------------------------------------
+# Project settings
+#---------------------------------------------------------------------------
+PROJECT_NAME           = "UT Core CubeSat Firmware"
+PROJECT_BRIEF          = "Firmware documentation for all onboard subsystems"
+OUTPUT_DIRECTORY       = ./build/docs
+CREATE_SUBDIRS         = NO
+OUTPUT_LANGUAGE        = English
+
+#---------------------------------------------------------------------------
+# Input
+#---------------------------------------------------------------------------
+INPUT                   = .
+RECURSIVE               = YES
+FILE_PATTERNS           = *.c *.h *.cpp *.hpp *.md
+EXCLUDE_PATTERNS        = */build/* */.venv/* */__pycache__/* */zephyr/* */modules/* */bootloader/* \
+                          */zephyr-sdk/* */old/* *.old
+EXCLUDE                 = ./docs/doxygen-awesome-css
+USE_MDFILE_AS_MAINPAGE  = ./docs/mainpage.md
+LAYOUT_FILE             = ./docs/DoxygenLayout.xml
+
+#---------------------------------------------------------------------------
+# Extraction — pull in everything, even undocumented/static items
+#---------------------------------------------------------------------------
+EXTRACT_ALL             = YES
+EXTRACT_STATIC          = YES
+EXTRACT_PRIVATE         = YES
+EXTRACT_LOCAL_METHODS   = YES
+EXTRACT_ANON_NSPACES    = YES
+HIDE_UNDOC_MEMBERS      = NO
+HIDE_UNDOC_CLASSES      = NO
+
+#---------------------------------------------------------------------------
+# Warnings — helps you catch config problems (files not found, etc.)
+#---------------------------------------------------------------------------
+QUIET                   = NO
+WARNINGS                = YES
+WARN_IF_UNDOCUMENTED    = YES
+WARN_IF_DOC_ERROR       = YES
+WARN_NO_PARAMDOC        = NO
+
+#---------------------------------------------------------------------------
+# Grouping — lets you organize by "app" via @defgroup / @ingroup
+#---------------------------------------------------------------------------
+DISTRIBUTE_GROUP_DOC    = YES
+
+#---------------------------------------------------------------------------
+# Namespaces / classes — suppress C++-oriented sections not relevant to C
+#---------------------------------------------------------------------------
+SHOW_NAMESPACES         = NO
+SHOW_FILES              = YES
+GENERATE_TESTLIST       = YES
+GENERATE_BUGLIST        = YES
+GENERATE_DEPRECATEDLIST = YES
+GENERATE_TODOLIST       = YES
+
+#---------------------------------------------------------------------------
+# HTML output
+#---------------------------------------------------------------------------
+GENERATE_HTML           = YES
+GENERATE_LATEX          = NO
+GENERATE_TREEVIEW       = YES
+HTML_OUTPUT             = html
+DISABLE_INDEX           = NO
+FULL_SIDEBAR            = NO
+SORT_MEMBER_DOCS        = YES
+SORT_BRIEF_DOCS         = YES
+
+#---------------------------------------------------------------------------
+# Custom Styling
+#---------------------------------------------------------------------------
+HTML_HEADER           = docs/src/header.html
+HTML_FOOTER           = docs/src/footer.html
+HTML_COLORSTYLE       = DARK
+HTML_EXTRA_STYLESHEET = docs/doxygen-awesome-css/doxygen-awesome.css \
+                        docs/doxygen-awesome-css/doxygen-awesome-sidebar-only.css \
+                        docs/doxygen-awesome-css/doxygen-awesome-sidebar-only-darkmode-toggle.css
+HTML_EXTRA_FILES      = docs/doxygen-awesome-css/doxygen-awesome-darkmode-toggle.js \
+                        docs/doxygen-awesome-css/doxygen-awesome-fragment-copy-button.js
+
+#---------------------------------------------------------------------------
+# Graphs — off by default; flip to YES + install graphviz if you want them
+#---------------------------------------------------------------------------
+HAVE_DOT                = NO
+# CALL_GRAPH            = YES
+# CALLER_GRAPH          = YES
+# CLASS_GRAPH           = YES
+# INCLUDE_GRAPH         = YES
+# INCLUDED_BY_GRAPH     = YES
+# DOT_IMAGE_FORMAT      = svg
+
+#---------------------------------------------------------------------------
+# Preprocessing (usually fine as-is for embedded C)
+#---------------------------------------------------------------------------
+ENABLE_PREPROCESSING    = YES
+MACRO_EXPANSION         = NO
+SEARCH_INCLUDES         = YES
+
+#---------------------------------------------------------------------------
+# Performance / build settings
+#---------------------------------------------------------------------------
+NUM_PROC_THREADS = 0
+
+
+SHOW_GROUPED_MEMB_INC  = YES
+DISTRIBUTE_GROUP_DOC   = YES
+JAVADOC_AUTOBRIEF      = NO
+HTML_COPY_CLIPBOARD    = NO
+SOURCE_BROWSER         = YES

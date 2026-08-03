@@ -1,4 +1,14 @@
-/*
+/**
+ * @defgroup cdh CDH
+ * @ingroup apps
+ * @brief Command and Data Handling firmware
+ */
+
+/**
+ * @file main.c
+ * @ingroup cdh
+ * @brief Entry point for CDH firmware
+ *
  * UT-CORE CDH — Threaded Flight Architecture
  *
  * Hardware: STM32U5 microcontroller, Zephyr RTOS.
@@ -34,6 +44,12 @@
 LOG_MODULE_REGISTER(cdh, LOG_LEVEL_INF);
 
 /* ================= DEVICE HANDLES ================= */
+/**
+ * @name Device Handles
+ * @brief Zephyr device/GPIO handles for the CAN controller, GPIO port,
+ *        I2C bus, and status LEDs, bound at compile time via devicetree.
+ * @{
+ */
 
 static const struct device          *can_dev  = DEVICE_DT_GET(CAN_NODE);
 static const struct device          *gpioa    = DEVICE_DT_GET(GPIOA_NODE);
@@ -42,15 +58,21 @@ static const struct gpio_dt_spec     led0     = GPIO_DT_SPEC_GET(LED0_NODE, gpio
 static const struct gpio_dt_spec     led1     = GPIO_DT_SPEC_GET(LED1_NODE, gpios);
 static const struct gpio_dt_spec     led2     = GPIO_DT_SPEC_GET(LED2_NODE, gpios);
 
-/* Hardware-backed CAN RX queue — the driver ISR deposits frames here. */
+/** Hardware-backed CAN RX queue — the driver ISR deposits frames here. */
 CAN_MSGQ_DEFINE(rxq, 16);
 
-/* SW queue between can_rx_thread and can_process_thread. */
+/** SW queue between can_rx_thread and can_process_thread. */
 K_MSGQ_DEFINE(can_proc_q, sizeof(struct can_frame), CAN_PROC_Q_LEN, 4);
 
-/* ================= DATA STRUCTURES ================= */
+/** @} */
 
-/*
+/* ================= DATA STRUCTURES ================= */
+/**
+ * @name Data Structures
+ * @{
+ */
+
+/**
  * node_status_t — liveness record for one remote satellite subsystem.
  * Written by handle_heartbeat(), read by check_node_timeouts().
  */
@@ -70,9 +92,10 @@ typedef struct {
     node_status_t solar;
 } node_heartbeat_t;
 
+/** @brief Liveness table for every remote satellite subsystem, indexed by node. */
 static node_heartbeat_t node_alive = {0};
 
-/*
+/**
  * can_packet_t — decoded CAN frame with routing fields unpacked from the ID.
  *
  * 29-bit ID layout (see can_proto.h):
@@ -88,10 +111,10 @@ typedef struct {
     uint8_t  dlc;
 } can_packet_t;
 
-/*
+/**
  * gnss_data_t — latest position fix received from the GNSS node.
  *
- * TODO: populate fields once the GNSS CAN telemetry format is defined.
+ * @todo TODO: populate fields once the GNSS CAN telemetry format is defined.
  */
 typedef struct {
     int32_t  lat_deg_e7;
@@ -101,10 +124,26 @@ typedef struct {
     bool     valid;
 } gnss_data_t;
 
+/**
+ * @brief Most recently received GNSS fix.
+ * @todo Populate/verify all fields once the GNSS CAN telemetry format is
+ *       finalized.
+ */
 static gnss_data_t gnss_latest = {0};
 
-/* ================= MODE STATE MACHINE ================= */
+/** @} */
 
+/* ================= MODE STATE MACHINE ================= */
+/**
+ * @name Mode State Machine
+ * @brief Top-level operating mode for the CDH, gating which threads are
+ *        actively doing work vs. idling.
+ * @{
+ */
+
+/**
+ * @brief Current CDH operating mode.
+ */
 typedef enum {
     MODE_SETUP,
     MODE_STANDARD,
@@ -112,9 +151,19 @@ typedef enum {
     MODE_ERROR
 } cdh_mode_t;
 
+    MODE_SETUP,
+
 volatile cdh_mode_t current_mode = MODE_SETUP;
 
+/** @} */
+
 /* ================= THREAD STACKS ================= */
+/**
+ * @name Thread Stacks
+ * @brief Static stack allocations and k_thread control blocks for every
+ *        CDH thread.
+ * @{
+ */
 
 K_THREAD_STACK_DEFINE(watchdog_stack,  STACK_SIZE);
 K_THREAD_STACK_DEFINE(can_stack,       STACK_SIZE);
@@ -132,6 +181,8 @@ static struct k_thread can_proc_thread_data;
 static struct k_thread gnss_thread_data;
 static struct k_thread telemetry_thread_data;
 
+/** @} */
+
 /* ================= FORWARD DECLARATIONS ================= */
 
 static void handle_heartbeat(const can_packet_t *pkt);
@@ -144,7 +195,20 @@ static void can_dispatch(const can_packet_t *pkt);
 /* ===================================================== */
 /* ================= UTILITY FUNCTIONS ================== */
 /* ===================================================== */
+/**
+ * @name Utility Functions
+ * @brief Small helpers for UID reading, LED control, and node lookup.
+ * @{
+ */
 
+/**
+ * @brief Read this MCU's 96-bit factory UID from the flash info area.
+ * @param uid Output array of 3 words (96 bits total).
+ * @warning Relies on UID_BASE, which normally comes from
+ *          <stm32u5xx.h> — that include is currently commented out
+ *          in this file. Confirm UID_BASE is still defined somewhere,
+ *          or this either fails to compile or silently uses a stale value.
+ */
 static void read_uid(uint32_t uid[3])
 {
     LOG_INF("reading UID...");
@@ -153,6 +217,9 @@ static void read_uid(uint32_t uid[3])
     uid[2] = *(uint32_t *)(UID_BASE + 0x8);
 }
 
+/**
+ * @brief Briefly pulse led0 to indicate a CAN frame was received.
+ */
 static inline void led_can_activity(void)
 {
     gpio_pin_set_dt(&led0, 1);
@@ -160,6 +227,9 @@ static inline void led_can_activity(void)
     gpio_pin_set_dt(&led0, 0);
 }
 
+/**
+ * @brief Configure all three status LED GPIOs as outputs, initially off.
+ */
 static void leds_init(void)
 {
     gpio_pin_configure_dt(&led0, GPIO_OUTPUT_INACTIVE);
@@ -167,6 +237,11 @@ static void leds_init(void)
     gpio_pin_configure_dt(&led2, GPIO_OUTPUT_INACTIVE);
 }
 
+/**
+ * @brief Look up the liveness record for a given CAN node ID.
+ * @param node_id Source node ID from a decoded CAN packet.
+ * @return Pointer to the matching node_status_t, or NULL if unrecognized.
+ */
 static node_status_t *get_node_status(uint8_t node_id)
 {
     switch (node_id) {
@@ -182,10 +257,25 @@ static node_status_t *get_node_status(uint8_t node_id)
     }
 }
 
+/** @} */
+
 /* ===================================================== */
 /* ================= CAN FUNCTIONS ====================== */
 /* ===================================================== */
+/**
+ * @name CAN Functions
+ * @brief Low-level CAN setup, frame construction, encoding/decoding, and
+ *        message dispatch.
+ * @{
+ */
 
+/**
+ * @brief Build and send a single-opcode CAN frame with one data byte.
+ * @param dst Destination node ID (or CAN_BROADCAST).
+ * @param cls Message class.
+ * @param op  Opcode.
+ * @param val Single data byte payload.
+ */
 static void send_simple(uint8_t dst, uint8_t cls, uint8_t op, uint8_t val)
 {
     struct can_frame f = {0};
@@ -195,6 +285,9 @@ static void send_simple(uint8_t dst, uint8_t cls, uint8_t op, uint8_t val)
     can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
 }
 
+/**
+ * @brief Bring the TCAN3403 transceiver out of shutdown/silent mode.
+ */
 static void tcan3403_wakeup(void)
 {
     gpio_pin_configure(gpioa, PIN_SHDN,   GPIO_OUTPUT_INACTIVE);
@@ -203,6 +296,10 @@ static void tcan3403_wakeup(void)
     LOG_INF("TCAN3403 Awake");
 }
 
+/**
+ * @brief Configure bitrate/mode, start the CAN controller, and install
+ *        RX filters for this node's address and broadcast.
+ */
 static void can_setup(void)
 {
     if (!device_is_ready(can_dev)) {
@@ -234,6 +331,11 @@ static void can_setup(void)
     LOG_INF("CAN Initialized (29-bit extended)");
 }
 
+/**
+ * @brief Unpack a raw CAN frame's 29-bit ID and payload into a can_packet_t.
+ * @param f   Raw CAN frame as received from the driver.
+ * @param pkt Output decoded packet.
+ */
 static void can_decode(const struct can_frame *f, can_packet_t *pkt)
 {
     uint32_t id   = f->id;
@@ -245,6 +347,10 @@ static void can_decode(const struct can_frame *f, can_packet_t *pkt)
     memcpy(pkt->data, f->data, f->dlc);
 }
 
+/**
+ * @brief Route a decoded packet to its message-class handler.
+ * @param pkt Decoded CAN packet.
+ */
 static void can_dispatch(const can_packet_t *pkt)
 {
     switch (pkt->msg_class) {
@@ -259,10 +365,23 @@ static void can_dispatch(const can_packet_t *pkt)
     }
 }
 
+/** @} */
+
 /* ===================================================== */
 /* ================= MESSAGE HANDLERS =================== */
 /* ===================================================== */
+/**
+ * @name Message Handlers
+ * @brief Per-message-class handlers invoked by can_dispatch(), plus
+ *        heartbeat timeout tracking.
+ * @{
+ */
 
+/**
+ * @brief Handle a CLS_CMD_RESP frame — currently only logs/confirms EPS
+ *        power-state acknowledgements.
+ * @param pkt Decoded CAN packet.
+ */
 static void handle_cmd_response(const can_packet_t *pkt)
 {
     uint8_t op = pkt->data[1];
@@ -286,6 +405,11 @@ static void handle_cmd_response(const can_packet_t *pkt)
     }
 }
 
+/**
+ * @brief Handle a CLS_TELEMETRY frame; parses GNSS position reports and
+ *        logs anything else.
+ * @param pkt Decoded CAN packet.
+ */
 static void handle_telemetry(const can_packet_t *pkt)
 {
     if (pkt->src == GNSS_ID && pkt->data[1] == 0x02 /* OP_GNSS_POS */) {
@@ -313,16 +437,19 @@ static void handle_telemetry(const can_packet_t *pkt)
     LOG_INF("Telemetry from node 0x%x", pkt->src);
 }
 
+/**
+ * @brief Handle a CLS_HEALTH frame.
+ * @param pkt Decoded CAN packet.
+ */
 static void handle_health(const can_packet_t *pkt)
 {
     LOG_INF("Health from node 0x%x", pkt->src);
 }
 
-/*
- * send_set_board_pwr() — Tell EPS to enable/disable a specific load switch.
- *
- * @load_num: Load number (1..12)
- * @state:    1 = enable, 0 = disable
+/**
+ * @brief Tell EPS to enable/disable a specific load switch.
+ * @param load_num Load number (1..12).
+ * @param state    1 = enable, 0 = disable.
  */
 static void send_set_board_pwr(uint8_t load_num, uint8_t state)
 {
@@ -339,6 +466,18 @@ static void send_set_board_pwr(uint8_t load_num, uint8_t state)
     }
 }
 
+/**
+ * @brief Handle an incoming ground/CAN command and act on its opcode.
+ * @param pkt Decoded CAN packet; data[1] is the opcode, data[2..] are args.
+ * @bug OP_SET_MODE assigns the raw uint8_t payload directly to
+ *      current_mode with no bounds check. cdh_mode_t only defines 4
+ *      valid values — an out-of-range byte from the network puts
+ *      current_mode into undefined enum territory, and every thread's
+ *      `current_mode == MODE_STANDARD || current_mode == MODE_MISSION`
+ *      check would silently fail closed. Validate val before assigning.
+ * @todo OP_REBOOT is currently a no-op (NVIC_SystemReset() is commented
+ *       out), pending watchdog kick-sequencing being confirmed safe.
+ */
 static void handle_command(const can_packet_t *pkt)
 {
     uint8_t opcode = pkt->data[1];
@@ -370,6 +509,10 @@ static void handle_command(const can_packet_t *pkt)
     }
 }
 
+/**
+ * @brief Mark a node alive and record its last-seen timestamp.
+ * @param pkt Decoded CAN packet from CLS_HEARTBEAT.
+ */
 static void handle_heartbeat(const can_packet_t *pkt)
 {
     node_status_t *node = get_node_status(pkt->src);
@@ -385,11 +528,10 @@ static void handle_heartbeat(const can_packet_t *pkt)
     LOG_INF("Heartbeat from 0x%02X - alive", pkt->src);
 }
 
-/*
- * check_node_timeouts() — Warn about nodes that have gone silent.
- *
- * NOTE: SOLAR entry uses SOLAR_ID (not STAR_ID — this fixes the bug
- * from the original code).
+/**
+ * @brief Warn about nodes that have gone silent.
+ * @note NOTE: SOLAR entry uses SOLAR_ID (not STAR_ID — this fixes the bug
+ *       from the original code).
  */
 static void check_node_timeouts(void)
 {
@@ -423,10 +565,23 @@ static void check_node_timeouts(void)
     }
 }
 
+/** @} */
+
 /* ===================================================== */
 /* ================= SETUP MODE ========================= */
 /* ===================================================== */
+/**
+ * @name Setup Mode
+ * @brief One-time boot-time initialization run before entering
+ *        MODE_STANDARD.
+ * @{
+ */
 
+/**
+ * @brief One-time boot sequence: read/verify UID against the role strap,
+ *        wake the CAN transceiver, bring up CAN, then transition to
+ *        MODE_STANDARD.
+ */
 static void setup_mode_init(void)
 {
     LOG_INF("Entering SETUP MODE");
@@ -466,10 +621,21 @@ static void setup_mode_init(void)
     current_mode = MODE_STANDARD;
 }
 
+/** @} */
+
 /* ===================================================== */
 /* ================= THREADS ============================ */
 /* ===================================================== */
+/**
+ * @name Threads
+ * @brief Entry functions for every CDH thread, spawned from main().
+ * @{
+ */
 
+/**
+ * @brief Drains the hardware CAN RX FIFO into the software processing
+ *        queue while in MODE_STANDARD/MODE_MISSION.
+ */
 void can_rx_thread(void *a, void *b, void *c)
 {
     LOG_INF("can_rx_thread started");
@@ -493,6 +659,9 @@ void can_rx_thread(void *a, void *b, void *c)
     }
 }
 
+/**
+ * @brief Decodes and dispatches frames handed off from can_rx_thread.
+ */
 void can_process_thread(void *a, void *b, void *c)
 {
     LOG_INF("can_process_thread started");
@@ -513,6 +682,9 @@ void can_process_thread(void *a, void *b, void *c)
     }
 }
 
+/**
+ * @brief Broadcasts a heartbeat once per second while active.
+ */
 void scheduler_thread(void *a, void *b, void *c)
 {
     LOG_INF("scheduler_thread started");
@@ -534,6 +706,10 @@ void scheduler_thread(void *a, void *b, void *c)
     }
 }
 
+/**
+ * @brief Periodically reads onboard temperature sensors and checks for
+ *        timed-out remote nodes.
+ */
 void soh_thread(void *a, void *b, void *c)
 {
     LOG_INF("soh_thread started");
@@ -552,12 +728,16 @@ void soh_thread(void *a, void *b, void *c)
     }
 }
 
+/**
+ * @brief Highest-priority thread; kicks the hardware watchdog on a fixed
+ *        interval so it must never be starved by other threads.
+ */
 void watchdog_thread(void *a, void *b, void *c)
 {
     LOG_INF("watchdog_thread started");
 
     while (1) {
-        /* TODO: Replace with correct kick sequence for your watchdog IC */
+        /** @todo TODO: Replace with correct kick sequence for your watchdog IC */
         /* gpio_pin_toggle(gpioa, WATCHDOG_PIN); */
 
         LOG_DBG("watchdog kick");
@@ -566,6 +746,12 @@ void watchdog_thread(void *a, void *b, void *c)
     }
 }
 
+/**
+ * @brief Periodically requests a position fix from the GNSS node.
+ * @todo Uses a magic opcode literal (0x61, commented as OP_QUERY_POS)
+ *       instead of a named constant. If OP_QUERY_POS is defined in
+ *       can_proto.h, swap in the macro here for consistency.
+ */
 void gnss_thread(void *a, void *b, void *c)
 {
     LOG_INF("gnss_thread started");
@@ -584,6 +770,12 @@ void gnss_thread(void *a, void *b, void *c)
     }
 }
 
+/**
+ * @brief Periodically assembles and downlinks telemetry (currently a
+ *        placeholder).
+ * @todo Implement actual SOH collection, threshold checks, and
+ *       downlink-window gating — body is currently just a log line.
+ */
 void telemetry_thread(void *a, void *b, void *c)
 {
     LOG_INF("telemetry_thread started");
@@ -592,7 +784,7 @@ void telemetry_thread(void *a, void *b, void *c)
         if (current_mode == MODE_STANDARD ||
             current_mode == MODE_MISSION)
         {
-            /* TODO: Collect SOH, check thresholds, downlink if window open */
+            /** @todo TODO: Collect SOH, check thresholds, downlink if window open */
             LOG_INF("telemetry check - placeholder");
         }
 
@@ -600,10 +792,17 @@ void telemetry_thread(void *a, void *b, void *c)
     }
 }
 
+/** @} */
+
 /* ===================================================== */
 /* ================= MAIN =============================== */
 /* ===================================================== */
 
+/**
+ * @brief Entry point: initializes LEDs, spawns all threads, then runs
+ *        setup_mode_init() before idling forever.
+ * @return Does not return under normal operation.
+ */
 int main(void)
 {
     LOG_INF("UT-CORE CDH Booting...");

@@ -28,3 +28,6 @@ zephyr-sdk*/
 
 # Other
 /old/
+*.old
+*deleteme*
+*.ignore*

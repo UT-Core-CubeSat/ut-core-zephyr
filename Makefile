@@ -14,26 +14,26 @@ CMAKE_BFLAGS :=
 
 
 ifeq ($(OS),Windows_NT)
-SYS_PYTHON := python
-PYBIN := .venv/Scripts
-PYTHON := .venv/Scripts/python.exe
-PIP    := .venv/Scripts/pip.exe
-WEST   := .venv/Scripts/west.exe
-RM     := rmdir /S /Q
+SYS_PYTHON	:= python
+PYBIN		:= .venv/Scripts
+RM			:= rmdir /S /Q
+OPENOCD		:= $(ZEPHYR_SDK_INSTALL_DIR)/hosttools/openocd/bin/openocd.exe
+MKDIR		:= mkdir
 else
-SYS_PYTHON := python3
-PYBIN := .venv/bin
-PYTHON := .venv/bin/python
-PIP    := .venv/bin/pip
-WEST   := .venv/bin/west
-RM     := rm -rf
+SYS_PYTHON	:= python3
+PYBIN		:= .venv/bin
+RM			:= rm -rf
+OPENOCD		:= $(ZEPHYR_SDK_INSTALL_DIR)/hosttools/sysroots/x86_64-pokysdk-linux/usr/bin/openocd
+MKDIR		:= mkdir -p
 endif
 
 
-GNU       := $(ZEPHYR_SDK_INSTALL_DIR)/gnu/arm-zephyr-eabi/bin
-HOSTTOOLS := $(ZEPHYR_SDK_INSTALL_DIR)/hosttools/openocd/bin
-GDB       := $(GNU)/arm-zephyr-eabi-gdb
-OPENOCD   := $(HOSTTOOLS)/openocd/bin/openocd
+GNU		:= $(ZEPHYR_SDK_INSTALL_DIR)/gnu/arm-zephyr-eabi
+
+PYTHON 	:= $(PYBIN)/python
+PIP    	:= $(PYBIN)/pip
+WEST	:= $(PYBIN)/west
+GDB		:= $(GNU)/bin/arm-zephyr-eabi-gdb
 
 
 # Require APP variable be defined to run build
@@ -161,18 +161,24 @@ flash:
 clean:
 	$(RM) build
 
-
 clean-purge:
-	$(RM) build
-	$(RM) zephyr
-	$(RM) modules
-	$(RM) bootloader
-	$(RM) .venv
+	-$(RM) build
+	-$(RM) zephyr
+	-$(RM) modules
+	-$(RM) bootloader
+	-$(RM) .venv
 
 readme:
 	gh markdown-preview --disable-reload
 
+docs:
+	-@$(MKDIR) build
+	doxygen
+
+host:
+	$(SYS_PYTHON) -m http.server 8080 --directory build/docs/html
+
 .PHONY: setup update
 .PHONY: build build-full build-can-tests flash
 .PHONY: debug simulate simulate-full gdb listen
-.PHONY: clean clean-purge readme
+.PHONY: clean clean-purge readme host docs
