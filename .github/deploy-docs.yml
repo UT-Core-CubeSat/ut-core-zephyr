@@ -1,0 +1,166 @@
+name: Deploy Doxygen Docs
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Doxygen and Graphviz
+        run: sudo apt-get update && sudo apt-get install -y doxygen graphviz
+
+      - name: Build docs
+        run: doxygen Doxyfile
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/docs/html
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+
+
+
+
+name: Deploy Doxygen Docs (multi-branch)
+on:
+  push:
+    branches: [main, master, unstable, revise, docs]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: main-checkout
+
+      - name: Checkout develop
+        uses: actions/checkout@v4
+        with:
+          ref: develop
+          path: develop-checkout
+
+      - run: sudo apt-get update && sudo apt-get install -y doxygen graphviz
+
+      - name: Build main docs
+        working-directory: main-checkout
+        run: doxygen Doxyfile
+
+      - name: Build develop docs
+        working-directory: develop-checkout
+        run: doxygen Doxyfile
+
+      - name: Assemble combined site
+        run: |
+          mkdir -p combined-site/main combined-site/develop
+          cp -r main-checkout/build/docs/html/* combined-site/main/
+          cp -r develop-checkout/build/docs/html/* combined-site/develop/
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: combined-site
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+
+
+
+name: Deploy Doxygen Docs (multi-branch)
+on:
+  push:
+    branches: [master, unstable, doctest]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          path: master-checkout
+
+      - name: Checkout unstable
+        uses: actions/checkout@v4
+        with:
+          ref: unstable
+          path: unstable-checkout
+
+      - name: Checkout doctest
+        uses: actions/checkout@v4
+        with:
+          ref: doctest
+          path: doctest-checkout
+
+      - name: Install Doxygen
+        run: sudo apt-get update && sudo apt-get install -y doxygen make
+
+      - name: Build docs
+        run: |
+          make -C master-checkout   || echo "::warning::master failed to build!"
+          make -C unstable-checkout || echo "::warning::unstable failed to build!"
+          make -C doctest-checkout  || echo "::warning::doctest failed to build!"
+
+      - name: Assemble combined site
+        run: |
+          mkdir -p combined/
+          cp -r master-checkout/build/docs/html/*   combined/stable/
+          cp -r unstable-checkout/build/docs/html/* combined/unstable/
+          cp -r doctest-checkout/build/docs/html/*  combined/test/
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: combined
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
