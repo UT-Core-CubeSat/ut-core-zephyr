@@ -44,11 +44,11 @@ jobs:
       - name: Assemble combined site
         run: |
           mkdir -p combined/
-          cp -r master-checkout/build/docs/html/*   combined/stable/ ||
+          mv master-checkout/build/docs/html   combined/stable/ ||
                 echo "::warning::master failed to copy! (remove this later)"
-          cp -r unstable-checkout/build/docs/html/* combined/unstable/ ||
+          mv unstable-checkout/build/docs/html combined/unstable/ ||
                 echo "::warning::unstable failed to copy!"
-          cp -r doctest-checkout/build/docs/html/*  combined/test/ ||
+          mv doctest-checkout/build/docs/html  combined/test/ ||
                 echo "::warning::doctest failed to copy!"
 
       - uses: actions/upload-pages-artifact@v3
