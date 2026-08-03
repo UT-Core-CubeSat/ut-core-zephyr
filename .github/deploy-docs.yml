@@ -140,16 +140,19 @@ jobs:
 
       - name: Build docs
         run: |
-          make -C master-checkout   || echo "::warning::master failed to build!"
+          make -C master-checkout   || echo "::warning::master failed to build! (remove this later)"
           make -C unstable-checkout || echo "::warning::unstable failed to build!"
           make -C doctest-checkout  || echo "::warning::doctest failed to build!"
 
       - name: Assemble combined site
         run: |
           mkdir -p combined/
-          cp -r master-checkout/build/docs/html/*   combined/stable/
-          cp -r unstable-checkout/build/docs/html/* combined/unstable/
-          cp -r doctest-checkout/build/docs/html/*  combined/test/
+          cp -r master-checkout/build/docs/html/*   combined/stable/ ||
+                echo "::warning::master failed to copy! (remove this later)"
+          cp -r unstable-checkout/build/docs/html/* combined/unstable/ ||
+                echo "::warning::unstable failed to copy!"
+          cp -r doctest-checkout/build/docs/html/*  combined/test/ ||
+                echo "::warning::doctest failed to copy!"
 
       - uses: actions/upload-pages-artifact@v3
         with:
