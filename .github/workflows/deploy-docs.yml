@@ -1,7 +1,5 @@
 name: Deploy Doxygen Docs
 on:
-name: Deploy Doxygen Docs (multi-branch)
-on:
   push:
     branches: [master, unstable, doctest]
   workflow_dispatch:
