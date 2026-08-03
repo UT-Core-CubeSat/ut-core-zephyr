@@ -1,3 +1,5 @@
+<!-- \page motor_readme MOTOR Readme -->
+
 # BLDC Hall Commutation with ST L6234
 
 ## Hardware Setup

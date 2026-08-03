@@ -33,7 +33,7 @@ HIDE_UNDOC_CLASSES      = NO
 #---------------------------------------------------------------------------
 # Warnings — helps you catch config problems (files not found, etc.)
 #---------------------------------------------------------------------------
-QUIET                   = NO
+QUIET                   = YES
 WARNINGS                = YES
 WARN_IF_UNDOCUMENTED    = YES
 WARN_IF_DOC_ERROR       = YES
@@ -107,3 +107,4 @@ DISTRIBUTE_GROUP_DOC   = YES
 JAVADOC_AUTOBRIEF      = NO
 HTML_COPY_CLIPBOARD    = NO
 SOURCE_BROWSER         = YES
+IMPLICIT_DIR_DOCS      = YES

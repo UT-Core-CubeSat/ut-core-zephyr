@@ -1,3 +1,5 @@
+<!-- \\page git_contrib GIT Contributing Readme -->
+
 # Contributing to ut-core-zephyr
 
 This document details the requirements and conventions neccessary to keep the project usable and easy to maintain for future contributures. For onboarding, please see the [Onboarding]() page on the [UT Core Cubesat Website](https://ut-core-cubesat.github.io/ut-core-docs/)

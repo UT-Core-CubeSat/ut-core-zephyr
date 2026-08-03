@@ -1,3 +1,5 @@
+<!-- \\page git_readme GIT Readme -->
+
 # UT CubeSat - Zephyr RTOS Development
 
 Custom STM32U5A5RJTXQ6Q board firmware for our CubeSat project using Zephyr RTOS.

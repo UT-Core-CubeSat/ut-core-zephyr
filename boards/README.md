@@ -1,3 +1,5 @@
+<!-- \page boards_readme Boards Readme -->
+
 Ideally this should link to resources that explain how to configure or create new boards
 
 

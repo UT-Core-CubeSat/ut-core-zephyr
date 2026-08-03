@@ -1,3 +1,7 @@
+<!-- \page blcd_hall_readme BLCD Hall Readme -->
+
+(This is just a copy of the MOTOR app)
+
 # BLDC Hall Commutation with ST L6234
 
 ## Hardware Setup
