@@ -1,6 +1,21 @@
 /**
- * @file gps_test_app.c
+ * @defgroup gnss GNSS
+ * @ingroup apps
+ * @brief Global Navigation Satellite System
+ * @include{doc} ./apps/GNSS/README.md
+ */
+
+/**
+ * @file main.c
+ * @ingroup gnss
  * @brief Orion B16 GNSS driver + CAN telemetry for UT-CORE bus.
+ *
+ * Initializes the Orion B16 GNSS receiver over UART and a CAN transceiver,
+ * then runs a loop broadcasting heartbeats and periodic GNSS state-of-health
+ * and position telemetry, while a separate thread handles incoming CAN
+ * commands (position queries, update-rate changes) from CDH.
+ *
+ * @todo move CAN code shared between apps into the `common/` directory at git root.
  */
 
 #include <zephyr/kernel.h>
@@ -16,11 +31,18 @@
 #include "orion_b16_messages.h"
 #include "common/can_proto.h"
 
+/** @cond */ /* Hidden from Doxygen, or it will mistake this as a function */
 LOG_MODULE_REGISTER(gnss_app, CONFIG_LOG_DEFAULT_LEVEL);
+/** @endcond */
 
 /* ===================================================== */
 /* ================= CAN PROTOCOL ====================== */
 /* ===================================================== */
+/*
+ * @name CAN Protocol
+ * @brief Node IDs, priorities, and GNSS-specific opcodes used on the bus.
+ * @{
+ */
 
 #define NODE_ID       GNSS_ID   /* 0x06 */
 #define NODE_CDH      CDH_ID    /* 0x01 */
@@ -35,6 +57,9 @@ LOG_MODULE_REGISTER(gnss_app, CONFIG_LOG_DEFAULT_LEVEL);
 #define OP_QUERY_POS       0x61   /* CDH requests current position    */
 #define OP_SET_UPDATE_RATE 0x62   /* CDH sets GNSS update rate        */
 
+/**
+ * @brief Decoded CAN frame with routing fields unpacked from the 29-bit ID.
+ */
 typedef struct {
     uint8_t  priority;
     uint8_t  src;
@@ -44,9 +69,17 @@ typedef struct {
     uint8_t  data[8];
 } can_packet_t;
 
+/* @} */
+
 /* ===================================================== */
 /* ================= HW DEVICES ======================== */
 /* ===================================================== */
+/*
+ * @name Hardware Devices
+ * @brief GPIO/CAN device handles, transceiver pins, GNSS driver instance,
+ *        and the CAN RX message queue.
+ * @{
+ */
 
 static const struct device *const gpioa  = DEVICE_DT_GET(DT_NODELABEL(gpioa));
 static const struct device *const can_dev = DEVICE_DT_GET(DT_NODELABEL(fdcan1));
@@ -58,13 +91,30 @@ static const struct device *const can_dev = DEVICE_DT_GET(DT_NODELABEL(fdcan1));
 /* GNSS driver instance */
 static orion_driver_t gnss_driver;
 
+/** @cond */ /* Hidden from Doxygen, or it will mistake this as a function */
 /* CAN RX queue */
 CAN_MSGQ_DEFINE(rxq, 16);
+/** @endcond */
+
+/* @} */
 
 /* ===================================================== */
 /* ================= CAN TX ============================ */
 /* ===================================================== */
+/*
+ * @name CAN TX
+ * @brief Outbound CAN frame construction: heartbeat, state-of-health, and
+ *        position telemetry.
+ * @{
+ */
 
+/**
+ * @brief Build and send a single-opcode CAN frame with one data byte.
+ * @param dst Destination node ID (or CAN_BROADCAST).
+ * @param cls Message class.
+ * @param op  Opcode.
+ * @param val Single data byte payload.
+ */
 static void send_simple(uint8_t dst, uint8_t cls, uint8_t op, uint8_t val)
 {
     struct can_frame f = {0};
@@ -74,14 +124,23 @@ static void send_simple(uint8_t dst, uint8_t cls, uint8_t op, uint8_t val)
     can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
 }
 
+/**
+ * @brief Broadcast a CLS_HEARTBEAT frame announcing this node is alive.
+ *
+ * Sent periodically from main()'s loop at HEARTBEAT_INTERVAL_MS.
+ */
 static void send_heartbeat(void)
 {
     send_simple(CAN_BROADCAST, CLS_HEARTBEAT, OP_HEARTBEAT, 0x00);
     LOG_INF("TX heartbeat");
 }
 
-/*
- * send_gnss_soh() - State-of-health: fix status + SV count.
+/**
+ * @brief Send a state-of-health frame: fix status, SV count, and DOP.
+ *
+ * Packs fix mode, satellite count, HDOP/PDOP (scaled by 10 and clamped to
+ * 255), configured update rate, and a driver-running status flag into an
+ * 8-byte CLS_HEALTH frame addressed to CDH.
  *
  * Payload:
  *   [0] src
@@ -92,6 +151,13 @@ static void send_heartbeat(void)
  *   [5] PDOP * 10  (clamped to 255)
  *   [6] update_rate_hz
  *   [7] status flags (bit0 = driver running)
+ *
+ * @todo hdop/pdop are divided by 10 under a comment claiming the source
+ *       value is already ×100 ("we want *10"), but the resulting math
+ *       (÷10 on a ×100 value) yields ×10 scale only if that premise is
+ *       correct — worth double-checking against orion_nav_data_t's actual
+ *       documented units to confirm hdop/pdop aren't ×1000 or similar,
+ *       since a silent scale error here wouldn't be caught by the clamp.
  */
 static void send_gnss_soh(void)
 {
@@ -123,8 +189,14 @@ static void send_gnss_soh(void)
             nav.fix_mode, nav.sv_count, (unsigned)hdop10, (unsigned)pdop10);
 }
 
-/*
- * send_gnss_position() - Position telemetry.
+/**
+ * @brief Send a position telemetry frame with lat/lon packed as scaled
+ *        24-bit integers.
+ *
+ * Converts nav.latitude_1e7/longitude_1e7 (1e-7 degree units) down to
+ * 1e-4 degree resolution (~11m) and packs each as a signed 24-bit
+ * big-endian value into an 8-byte CLS_TELEMETRY frame addressed to CDH.
+ * Does nothing if the current nav fix is not valid.
  *
  * Packs lat/lon as scaled int24 for decent resolution in 8 bytes:
  *   [0] src
@@ -167,10 +239,23 @@ static void send_gnss_position(void)
     LOG_INF("TX POS  lat=%.6f lon=%.6f", lat, lon);
 }
 
+/* @} */
+
 /* ===================================================== */
 /* ================= CAN RX ============================ */
 /* ===================================================== */
+/*
+ * @name CAN RX
+ * @brief Inbound CAN frame decoding and message dispatch.
+ * @{
+ */
 
+/**
+ * @brief Unpack a raw CAN frame's 29-bit extended ID and payload into a
+ *        can_packet_t.
+ * @param f   Raw CAN frame as received from the driver.
+ * @param pkt Output decoded packet.
+ */
 static void can_decode(const struct can_frame *f, can_packet_t *pkt)
 {
     uint32_t id    = f->id;
@@ -182,6 +267,20 @@ static void can_decode(const struct can_frame *f, can_packet_t *pkt)
     memcpy(pkt->data, f->data, f->dlc);
 }
 
+/**
+ * @brief Handle an incoming CLS_COMMAND frame from CDH.
+ * @param pkt Decoded CAN packet; data[1] is the opcode.
+ *
+ * OP_QUERY_POS replies immediately with the current position plus a
+ * command-response ack. OP_SET_UPDATE_RATE (data[2] = requested rate in
+ * Hz) attempts to apply the new rate via the GNSS driver and replies with
+ * the accepted rate on success or 0x00 on failure. Unknown opcodes are
+ * logged and dropped.
+ *
+ * @bug handle_command() reads pkt->data[1]/[2] without checking pkt->dlc
+ *      first — a malformed or truncated command frame could read past
+ *      the valid portion of the payload.
+ */
 static void handle_command(const can_packet_t *pkt)
 {
     uint8_t opcode = pkt->data[1];
@@ -210,11 +309,25 @@ static void handle_command(const can_packet_t *pkt)
     }
 }
 
+/**
+ * @brief Handle a received CLS_HEARTBEAT frame.
+ * @param pkt Decoded CAN packet.
+ *
+ * Currently only logs the sender; no liveness table is maintained here.
+ */
 static void handle_heartbeat(const can_packet_t *pkt)
 {
     LOG_INF("RX heartbeat from 0x%02X", pkt->src);
 }
 
+/**
+ * @brief Route a decoded CAN packet to its message-class handler.
+ * @param pkt Decoded CAN packet.
+ *
+ * Dispatches CLS_HEARTBEAT to handle_heartbeat() and CLS_COMMAND to
+ * handle_command(). Unrecognized classes are logged as warnings and
+ * dropped.
+ */
 static void can_dispatch(const can_packet_t *pkt)
 {
     switch (pkt->msg_class) {
@@ -226,10 +339,23 @@ static void can_dispatch(const can_packet_t *pkt)
     }
 }
 
+/* @} */
+
 /* ===================================================== */
 /* ================= CAN SETUP ========================= */
 /* ===================================================== */
+/*
+ * @name CAN Setup
+ * @brief Transceiver wakeup and CAN controller/filter initialization.
+ * @{
+ */
 
+/**
+ * @brief Bring the TCAN3403 transceiver out of shutdown/silent mode.
+ *
+ * Drives PIN_SHDN and PIN_SILENT inactive, then waits 1 ms for the
+ * transceiver to become active.
+ */
 static void tcan3403_wakeup(void)
 {
     gpio_pin_configure(gpioa, PIN_SHDN,   GPIO_OUTPUT_INACTIVE);
@@ -238,6 +364,14 @@ static void tcan3403_wakeup(void)
     LOG_INF("TCAN3403 Awake");
 }
 
+/**
+ * @brief Configure bitrate/mode, start the CAN controller, and install RX
+ *        filters for this node's address and broadcast.
+ *
+ * Sets 500 kbit/s normal mode, then adds two extended-ID filters routing
+ * matching frames into rxq: one for frames addressed to NODE_ID, one for
+ * CAN_BROADCAST.
+ */
 static void can_setup(void)
 {
     if (!device_is_ready(can_dev)) {
@@ -265,13 +399,28 @@ static void can_setup(void)
     LOG_INF("CAN initialized (29-bit extended)");
 }
 
+/* @} */
+
 /* ===================================================== */
 /* ================= CAN RX THREAD ===================== */
 /* ===================================================== */
+/*
+ * @name CAN RX Thread
+ * @brief Dedicated thread draining the CAN RX queue and dispatching
+ *        received frames.
+ * @{
+ */
 
 #define CAN_RX_STACK_SIZE  1024
 #define CAN_RX_PRIORITY    5
 
+/**
+ * @brief Thread entry point: blocks on the CAN RX queue, decoding and
+ *        dispatching each frame as it arrives.
+ * @param a Unused thread argument.
+ * @param b Unused thread argument.
+ * @param c Unused thread argument.
+ */
 static void can_rx_thread(void *a, void *b, void *c)
 {
     struct can_frame frame;
@@ -285,14 +434,32 @@ static void can_rx_thread(void *a, void *b, void *c)
     }
 }
 
+/** @cond */ /* Hidden from Doxygen, or it will mistake this as a function */
 K_THREAD_DEFINE(can_rx_tid, CAN_RX_STACK_SIZE,
     can_rx_thread, NULL, NULL, NULL,
     CAN_RX_PRIORITY, 0, 0);
+/** @endcond */
+
+/* @} */
 
 /* ===================================================== */
 /* ============== GNSS NAV CALLBACK ==================== */
 /* ===================================================== */
+/*
+ * @name GNSS Nav Callback
+ * @brief Callback invoked by the Orion driver whenever a new nav fix is
+ *        available.
+ * @{
+ */
 
+/**
+ * @brief Nav-update callback registered with the Orion driver.
+ * @param nav  Latest nav fix data from the GNSS driver.
+ * @param user Unused user-data pointer (registered as NULL).
+ *
+ * Logs fix mode, position, altitude, and satellite count when the fix is
+ * valid; logs a warning and returns early otherwise.
+ */
 static void on_nav_update(const orion_nav_data_t *nav, void *user)
 {
     (void)user;
@@ -318,9 +485,16 @@ static void on_nav_update(const orion_nav_data_t *nav, void *user)
             fix_str, lat, lon, alt, nav->sv_count);
 }
 
+/* @} */
+
 /* ===================================================== */
 /* ================= MAIN ============================== */
 /* ===================================================== */
+/*
+ * @name Main
+ * @brief Application entry point.
+ * @{
+ */
 
 /* Forward declaration for config recipe */
 extern int orion_config_cubesat_default(orion_driver_t *drv, uint8_t rate_hz, bool save);
@@ -329,6 +503,22 @@ extern int orion_config_cubesat_default(orion_driver_t *drv, uint8_t rate_hz, bo
 #define SOH_INTERVAL_MS         5000
 #define POS_INTERVAL_MS         5000
 
+/**
+ * @brief Entry point: initializes the GNSS driver and CAN bus, then runs
+ *        the main loop broadcasting heartbeats and periodic telemetry.
+ *
+ * Boot sequence: verify GPIOA is ready, initialize and start the Orion
+ * B16 GNSS driver over UART with a nav-update callback registered, apply
+ * the default CubeSat GNSS config, then wake the CAN transceiver and
+ * bring up the bus. The main loop sends a heartbeat every
+ * HEARTBEAT_INTERVAL_MS, a state-of-health frame every SOH_INTERVAL_MS,
+ * and position telemetry plus a detailed nav/stats log line every
+ * POS_INTERVAL_MS.
+ *
+ * @return Returns the driver init/start error code early on failure, or 0
+ *         if GPIOA isn't ready; otherwise does not return under normal
+ *         operation.
+ */
 int main(void)
 {
     LOG_INF("=== Orion B16 GNSS + CAN Application ===");
@@ -371,7 +561,7 @@ int main(void)
     int64_t last_soh = k_uptime_get();
     int64_t last_pos = k_uptime_get();
 
-while (1) {
+    while (1) {
         int64_t now = k_uptime_get();
 
         if ((now - last_hb) >= HEARTBEAT_INTERVAL_MS) {
@@ -413,3 +603,5 @@ while (1) {
 
     return 0;
 }
+
+/* @} */

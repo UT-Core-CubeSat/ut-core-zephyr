@@ -1,3 +1,9 @@
+/**
+ * @file mainAirBearing.cpp
+ * @ingroup adcs
+ * @brief mainAirBearing.cpp currently not documented.
+ */
+
 #include <cmath>
 #include <cstring>
 
@@ -10,7 +16,7 @@
 #include <zephyr/logging/log.h>
 
 #include "ADCSCore.hpp"
-#include "../../../common/can_proto.h"
+#include "common/can_proto.h"
 
 LOG_MODULE_REGISTER(adcs_air_bearing, LOG_LEVEL_INF);
  

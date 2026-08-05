@@ -1,5 +1,6 @@
 /**
  * @file orion_b16_driver.c
+ * @ingroup gnss
  * @brief ZephyrRTOS driver implementation for the Orion B16 GNSS receiver.
  *
  * HOW THIS WORKS (the big picture):

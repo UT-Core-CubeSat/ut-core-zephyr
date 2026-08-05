@@ -1,6 +1,5 @@
 /**
  * @file board_config.h
- * @ingroup solar
  * @brief Solar Conglomerate (Magnetorquer Controller) board pin and
  *        parameter definitions.
  *

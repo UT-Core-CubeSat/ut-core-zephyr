@@ -113,6 +113,9 @@ make build
 make build APP=apps/<appname>
 ```
 
+> [!IMPORTANT]  
+> Keep in mind UART vs RTT as a logging backend! If you don't see logs outputs when listening to your board such as with `make listen`, then you may be using the wrong logging backend. Change the backend in the app's `prj.conf`, or specify `LOG_UART=1` or `LOG_RTT=1` to force the logging backend in the Makefile.
+
 
 ## How to Flash
 
@@ -170,7 +173,8 @@ make gdb BUILD=build/<appname>
 
 ## How to simulate boards
 
-**CAUTION** - Full simulation is not implemented!
+> [!WARNING] 
+> Full simulation is not implemented!
 
 Only one board at a time can be simulated. As of writing this, most peripherals are not implemented in the simulation. For a complete and reliable test of software, run tests on the hardware.
 

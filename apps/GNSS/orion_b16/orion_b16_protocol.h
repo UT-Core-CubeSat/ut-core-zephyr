@@ -1,5 +1,6 @@
 /**
  * @file orion_b16_protocol.h
+ * @ingroup gnss
  * @brief SkyTraq Binary Protocol constants and frame definitions for the Orion B16 GNSS.
  *
  * Frame format (per vendor manual):

@@ -1,5 +1,6 @@
 /**
  * @file orion_b16_parser.c
+ * @ingroup gnss
  * @brief State-machine parser and message decoder for the SkyTraq Binary Protocol.
  */
 

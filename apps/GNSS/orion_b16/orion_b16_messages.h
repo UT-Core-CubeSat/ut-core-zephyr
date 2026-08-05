@@ -1,5 +1,6 @@
 /**
  * @file orion_b16_messages.h
+ * @ingroup gnss
  * @brief Decoded message structures for all supported Orion B16 response types.
  *
  * Every struct here represents a *decoded* response message with native types,

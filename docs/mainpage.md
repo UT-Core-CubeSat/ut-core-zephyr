@@ -1,21 +1,14 @@
-<!--
-@defgroup common Common
-@brief Shared utilities and libraries used across apps
+# Contents
 
-@defgroup apps Apps
-@brief All onboard firmware applications
-
-@defgroup boards Boards
-@brief
-
-@defgroup sim Sim
-@brief
-
-@defgroup tools Tools
-@brief
-
-@defgroup zephyr Zephyr
-@brief
--->
-
-# Hello World
+- @ref getting-started
+    - @ref building
+    - @ref contributing
+    - @ref onboarding
+    - @ref zephyr
+- @ref apps
+    - @ref adcs
+    - @ref cdh
+    - @ref eps
+    - @ref gnss
+    - @ref motor
+    - @ref solar

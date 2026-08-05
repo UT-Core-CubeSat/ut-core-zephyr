@@ -1,5 +1,9 @@
 #pragma once
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /*
  * UT-CORE Shared Temperature Telemetry
  *
@@ -120,3 +124,7 @@ static inline void temp_telemetry_print(const struct temp_telemetry *t)
 
     printk("\n");
 }
+
+#ifdef __cplusplus
+}
+#endif

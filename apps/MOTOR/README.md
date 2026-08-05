@@ -100,8 +100,12 @@ This creates a rotating magnetic field that keeps the rotor spinning.
   table entries. Swap two phases or rotate the table by one step.
 - **Direction** — to reverse, invert the hall-to-phase mapping.
 
-## Build
+<!-- ## Build -->
+<!--  -->
+<!-- ``` -->
+<!-- west build -p always -b ut_core ut-core\app\bldcHallL6234 -->
+<!-- ``` -->
 
-```
-west build -p always -b ut_core ut-core\app\bldcHallL6234
-```
+
+
+@todo many of the source files have shared code that should be moved to the common.c and common.h source file.

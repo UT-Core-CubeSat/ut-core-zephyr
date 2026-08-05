@@ -1,5 +1,6 @@
 /**
  * @file gps_test_app.c
+ * @ingroup gnss
  * @brief Test application demonstrating full Orion B16 GNSS driver usage.
  *
  * This is the "main()" of your Zephyr firmware — the entry point.
@@ -11,10 +12,10 @@
  *   4. Sits in a loop, printing the latest position every 5 seconds
  *
  * WHAT YOU'LL SEE on the serial console (UART0 / USB):
- *   [00:00:01.234] <inf> gnss_app: === Orion B16 GNSS Test Application ===
- *   [00:00:02.456] <inf> gnss_app: No valid fix yet.
+ *   [00:00:01.234] \<inf> gnss_app: === Orion B16 GNSS Test Application ===
+ *   [00:00:02.456] \<inf> gnss_app: No valid fix yet.
  *   ... (until the Orion gets satellite lock) ...
- *   [00:00:32.789] <inf> gnss_app: FIX 3D | lat=30.267200 lon=-97.743100 alt=408.00m
+ *   [00:00:32.789] \<inf> gnss_app: FIX 3D | lat=30.267200 lon=-97.743100 alt=408.00m
  *
  * If you don't have the Orion B16 connected, you'll just see
  * "No valid fix yet" forever — that's expected and means the driver

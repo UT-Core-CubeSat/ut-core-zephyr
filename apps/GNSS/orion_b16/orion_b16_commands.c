@@ -1,5 +1,6 @@
 /**
  * @file orion_b16_commands.c
+ * @ingroup gnss
  * @brief Command builder implementations for Host → Orion B16 messages.
  */
 

@@ -1,3 +1,17 @@
+/**
+ * @defgroup adcs ADCS
+ * @ingroup apps
+ * @brief ADCS currently not documented.
+ *
+ * @include{doc} ./apps/ADCS/README.md
+ */
+
+/**
+ * @file mainOrbit.cpp
+ * @ingroup adcs
+ * @brief mainOrbit.cpp currently not documented.
+ */
+
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/drivers/gpio.h>

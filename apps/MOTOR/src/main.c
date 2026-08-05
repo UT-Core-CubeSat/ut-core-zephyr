@@ -1,3 +1,30 @@
+/**
+ * @defgroup motor MOTOR
+ * @ingroup apps
+ * @brief Motor control.
+ *
+ * @include{doc} ./apps/MOTOR/README.md
+ */
+
+/**
+ * @file main.c
+ * @ingroup motor
+ * @brief Multi-motor six-step BLDC commutation firmware with CAN-driven
+ *        RPM control for up to 4 reaction wheel motors.
+ *
+ * Drives up to 4 BLDC motors via PWM + enable GPIOs using hall-sensor
+ * commutation (interrupt-driven for M1/M2, polled for M3/M4 due to a
+ * shared EXTI line conflict). Motors with speed control enabled run a
+ * PI loop closing on hall-edge-derived RPM, with setpoints received over
+ * CAN from ADCS. Reports heartbeat, state-of-health, and per-motor RPM
+ * telemetry over CAN.
+ *
+ * - @todo move CAN code shared between apps into the `common/` directory at git root.
+ *
+ * - @todo `static void all_motors_off(void)` and `static void send_soh_frame (void)`
+           is not making it into the docs for some reason. find a fix to this.
+ */
+
 #include <zephyr/kernel.h>
 #include <zephyr/sys_clock.h>
 #include <math.h>
@@ -9,7 +36,7 @@
 #include <zephyr/sys/printk.h>
 #include <zephyr/sys/atomic.h>
 #include <errno.h>
-#include "../../../common/can_proto.h"
+#include "common/can_proto.h"
 
 #define USER_NODE DT_PATH(zephyr_user)
 #define CAN_STB_NODE DT_ALIAS(canstb)
@@ -22,19 +49,26 @@
 #define M3_IDX  2U
 #define M4_IDX  3U
 
-/* Per-motor: false = PWM/enables off (bench one motor at a time). */
+/** Per-motor: false = PWM/enables off (bench one motor at a time). */
 static const bool motor_enable[] = {
-	true,  /* M1 — PI speed control */
-	false,  /* M2 — PI speed control */
-	false,  /* M3 — PI speed control */
-	false,  /* M4 — PI speed control */
+    true,   /**< M1 — PI speed control */
+    false,  /**< M2 — PI speed control */
+    false,  /**< M3 — PI speed control */
+    false,  /**< M4 — PI speed control */
 };
 
+/** @cond */ /* Hidden from Doxygen, or it will mistake this as a function */
 BUILD_ASSERT(ARRAY_SIZE(motor_enable) == NMOTORS, "motor_enable vs NMOTORS");
+/** @endcond */
 
+/**
+ * @brief Check whether a motor index is valid and enabled for this build.
+ * @param mi Motor index (0-based).
+ * @return true if mi is in range and motor_enable[mi] is true.
+ */
 static inline bool motor_is_active(unsigned mi)
 {
-	return (mi < NMOTORS) && motor_enable[mi];
+    return (mi < NMOTORS) && motor_enable[mi];
 }
 
 #define PWM_PERIOD_NS PWM_HZ(20000)
@@ -43,8 +77,10 @@ static inline bool motor_is_active(unsigned mi)
 #define M1_MAGNETIC_POLES 8U
 #define POLE_PAIRS (M1_MAGNETIC_POLES / 2U)
 
+/** @cond */ /* Hidden from Doxygen, or it will mistake this as a function */
 BUILD_ASSERT((M1_MAGNETIC_POLES % 2U) == 0U && M1_MAGNETIC_POLES >= 2U,
-	     "M1_MAGNETIC_POLES must be an even pole count");
+         "M1_MAGNETIC_POLES must be an even pole count");
+/** @endcond */
 
 /*
  * If hall-derived RPM reads backward vs how you define “forward”, flip this
@@ -92,10 +128,10 @@ BUILD_ASSERT((M1_MAGNETIC_POLES % 2U) == 0U && M1_MAGNETIC_POLES >= 2U,
 #define M4_SPEED_RPM_PER_DUTY_PCT 125.416687f
 #define M4_OPEN_LOOP_REVERSE  0 /* 1 = reverse commutation table */
 
-/* Drop duty to zero until measured speed is small before flipping direction. */
+/** Drop duty to zero until measured speed is small before flipping direction. */
 #define MOTOR_DIR_SWITCH_RPM 200.f
 
-/* Hall sequence for +rpm (tune order if your wiring differs). */
+/** Hall sequence for +rpm (tune order if your wiring differs). */
 static const uint8_t hall_ring_fwd[6] = {1, 5, 4, 6, 2, 3};
 
 #define TELEMETRY_MS       500U
@@ -110,7 +146,7 @@ static const uint8_t hall_ring_fwd[6] = {1, 5, 4, 6, 2, 3};
 #define SOH_THREAD_PRIO 6
 #define APP_THREAD_STACK_SIZE 2048
 
-/* Consecutive invalid hall samples (0/7) before latching m_run=false. */
+/** Consecutive invalid hall samples (0/7) before latching m_run=false. */
 #define HALL_INVALID_DEBOUNCE 8U
 
 /* Motor 1 — TIM4 CH1..3 → phases A,B,C */
@@ -163,12 +199,17 @@ static const struct gpio_dt_spec m4_en_a   = GPIO_DT_SPEC_GET(USER_NODE, m4_en_a
 static const struct gpio_dt_spec m4_en_b   = GPIO_DT_SPEC_GET(USER_NODE, m4_en_b_gpios);
 static const struct gpio_dt_spec m4_en_c   = GPIO_DT_SPEC_GET(USER_NODE, m4_en_c_gpios);
 
+/**
+ * @brief Static hardware description for one motor: PWM device, timer
+ *        channel mapping, hall/enable GPIO specs, and which GPIO port
+ *        its hall lines live on.
+ */
 typedef struct {
-	const struct device *pwm;
-	uint32_t tim_ch[3];
-	const struct gpio_dt_spec *hall[3];
-	const struct gpio_dt_spec *en[3];
-	bool halls_on_gpiod;
+    const struct device *pwm;
+    uint32_t tim_ch[3];
+    const struct gpio_dt_spec *hall[3];
+    const struct gpio_dt_spec *en[3];
+    bool halls_on_gpiod;
 } motor_desc_t;
 
 static const uint32_t m1_ch[3] = { M1_CH_A, M1_CH_B, M1_CH_C };
@@ -187,77 +228,101 @@ static const uint32_t m4_ch[3] = { M4_CH_A, M4_CH_B, M4_CH_C };
 static const struct gpio_dt_spec *const m4_hall[3] = { &m4_hall_a, &m4_hall_b, &m4_hall_c };
 static const struct gpio_dt_spec *const m4_en[3]  = { &m4_en_a, &m4_en_b, &m4_en_c };
 
+/**
+ * @brief Per-motor hardware descriptors for all 4 motors, indexed 0-3
+ *        (M1-M4). Populated from the individual m1_ch/m1_hall/m1_en
+ *        (and m2/m3/m4 equivalent) arrays defined above.
+ */
 static const motor_desc_t motor_desc[] = {
-	{
-		.pwm = DEVICE_DT_GET(DT_NODELABEL(pwm4)),
-		.tim_ch = { m1_ch[0], m1_ch[1], m1_ch[2] },
-		.hall = { m1_hall[0], m1_hall[1], m1_hall[2] },
-		.en = { m1_en[0], m1_en[1], m1_en[2] },
-		.halls_on_gpiod = true,
-	},
-	{
-		.pwm = DEVICE_DT_GET(DT_NODELABEL(pwm3)),
-		.tim_ch = { m2_ch[0], m2_ch[1], m2_ch[2] },
-		.hall = { m2_hall[0], m2_hall[1], m2_hall[2] },
-		.en = { m2_en[0], m2_en[1], m2_en[2] },
-		.halls_on_gpiod = true,
-	},
-	{
-		.pwm = DEVICE_DT_GET(DT_NODELABEL(pwm8)),
-		.tim_ch = { m3_ch[0], m3_ch[1], m3_ch[2] },
-		.hall = { m3_hall[0], m3_hall[1], m3_hall[2] },
-		.en = { m3_en[0], m3_en[1], m3_en[2] },
-		.halls_on_gpiod = true,
-	},
-	{
-		.pwm = DEVICE_DT_GET(DT_NODELABEL(pwm1)),
-		.tim_ch = { m4_ch[0], m4_ch[1], m4_ch[2] },
-		.hall = { m4_hall[0], m4_hall[1], m4_hall[2] },
-		.en = { m4_en[0], m4_en[1], m4_en[2] },
-		.halls_on_gpiod = false,
-	},
+    {
+        .pwm = DEVICE_DT_GET(DT_NODELABEL(pwm4)),
+        .tim_ch = { m1_ch[0], m1_ch[1], m1_ch[2] },
+        .hall = { m1_hall[0], m1_hall[1], m1_hall[2] },
+        .en = { m1_en[0], m1_en[1], m1_en[2] },
+        .halls_on_gpiod = true,
+    },
+    {
+        .pwm = DEVICE_DT_GET(DT_NODELABEL(pwm3)),
+        .tim_ch = { m2_ch[0], m2_ch[1], m2_ch[2] },
+        .hall = { m2_hall[0], m2_hall[1], m2_hall[2] },
+        .en = { m2_en[0], m2_en[1], m2_en[2] },
+        .halls_on_gpiod = true,
+    },
+    {
+        .pwm = DEVICE_DT_GET(DT_NODELABEL(pwm8)),
+        .tim_ch = { m3_ch[0], m3_ch[1], m3_ch[2] },
+        .hall = { m3_hall[0], m3_hall[1], m3_hall[2] },
+        .en = { m3_en[0], m3_en[1], m3_en[2] },
+        .halls_on_gpiod = true,
+    },
+    {
+        .pwm = DEVICE_DT_GET(DT_NODELABEL(pwm1)),
+        .tim_ch = { m4_ch[0], m4_ch[1], m4_ch[2] },
+        .hall = { m4_hall[0], m4_hall[1], m4_hall[2] },
+        .en = { m4_en[0], m4_en[1], m4_en[2] },
+        .halls_on_gpiod = false,
+    },
 };
 
+/** @cond */ /* Hidden from Doxygen, or it will mistake this as a function */
 BUILD_ASSERT(ARRAY_SIZE(motor_desc) == NMOTORS, "motor_desc count");
+/** @endcond */
 
+/**
+ * @brief One commutation step: which phase is driven high (PWM) and which
+ *        is driven low, with the third phase left floating.
+ *
+ * hi/lo are phase indices (0=A, 1=B, 2=C), or -1 for an invalid/unused
+ * step (hall codes 0 and 7).
+ */
 struct comm_step {
-	int8_t hi;
-	int8_t lo;
+    int8_t hi;
+    int8_t lo;
 };
 
+/**
+ * @brief Hall-code → commutation-step lookup table for forward rotation.
+ *
+ * Indexed directly by the 3-bit hall reading. Entries 0 and 7 are
+ * invalid and marked {-1, -1}.
+ */
 static const struct comm_step fwd_table[8] = {
-	[0] = {-1, -1},
-	[1] = {0, 2},
-	[2] = {1, 0},
-	[3] = {1, 2},
-	[4] = {2, 1},
-	[5] = {0, 1},
-	[6] = {2, 0},
-	[7] = {-1, -1},
+    [0] = {-1, -1},
+    [1] = {0, 2},
+    [2] = {1, 0},
+    [3] = {1, 2},
+    [4] = {2, 1},
+    [5] = {0, 1},
+    [6] = {2, 0},
+    [7] = {-1, -1},
 };
 
-/* Reverse = swap hi/lo vs forward for each valid hall. */
+/**
+ * @brief Hall-code → commutation-step lookup table for reverse rotation.
+ *
+ * Mirrors fwd_table with hi/lo swapped per valid hall code.
+ */
 static const struct comm_step rev_table[8] = {
-	[0] = {-1, -1},
-	[1] = {2, 0},
-	[2] = {0, 1},
-	[3] = {2, 1},
-	[4] = {1, 2},
-	[5] = {1, 0},
-	[6] = {0, 2},
-	[7] = {-1, -1},
+    [0] = {-1, -1},
+    [1] = {2, 0},
+    [2] = {0, 1},
+    [3] = {2, 1},
+    [4] = {1, 2},
+    [5] = {1, 0},
+    [6] = {0, 2},
+    [7] = {-1, -1},
 };
 
-/* 0..100 % of PWM period (clamp active phase to M1_DUTY_MAX_PCT on M1 path). */
+/** 0..100 % of PWM period (clamp active phase to M1_DUTY_MAX_PCT on M1 path). */
 static volatile float duty_pct[NMOTORS];
 static volatile uint8_t  m_hall[NMOTORS];
 static volatile uint32_t m_trans[NMOTORS];
-/* True while hall code is 1..6; false on 0/7 — that motor is not driven. */
+/** True while hall code is 1..6; false on 0/7 — that motor is not driven. */
 static volatile bool m_run[NMOTORS];
 static volatile uint8_t hall_inv_streak[NMOTORS];
 
 static volatile bool m_use_rev[NMOTORS];
-/* Hall edge timing for M1 (ISR writes, control loop reads). */
+/** Hall edge timing for M1 (ISR writes, control loop reads). */
 static uint32_t m1_cyc_hz;
 static uint32_t m1_hall_dt_min_cyc;
 static volatile uint32_t m1_prev_edge_cyc;
@@ -278,15 +343,20 @@ static const struct device *can_dev = DEVICE_DT_GET(DT_NODELABEL(fdcan1));
 #if DT_NODE_HAS_STATUS(CAN_STB_NODE, okay)
 static const struct gpio_dt_spec can_stb = GPIO_DT_SPEC_GET(CAN_STB_NODE, gpios);
 #endif
+/** @cond */ /* Hidden from Doxygen, or it will mistake this as a function */
 CAN_MSGQ_DEFINE(can_rx_q, 4);
 K_MSGQ_DEFINE(can_proc_q, sizeof(struct can_frame), 16, 4);
+/** @endcond */
 
+/**
+ * @brief Decoded CAN frame with routing fields unpacked from the ID.
+ */
 typedef struct {
-	uint8_t msg_class;
-	uint8_t src;
-	uint8_t dst;
-	uint8_t data[8];
-	uint8_t dlc;
+    uint8_t msg_class;
+    uint8_t src;
+    uint8_t dst;
+    uint8_t data[8];
+    uint8_t dlc;
 } can_packet_t;
 
 static struct gpio_callback hall_cb_gpiod;
@@ -296,398 +366,520 @@ static struct k_thread can_rx_thread_data;
 static struct k_thread can_process_thread_data;
 static struct k_thread scheduler_thread_data;
 static struct k_thread soh_thread_data;
+/** @cond */ /* Hidden from Doxygen, or it will mistake this as a function */
 K_THREAD_STACK_DEFINE(motor_ctrl_stack, APP_THREAD_STACK_SIZE);
 K_THREAD_STACK_DEFINE(can_rx_stack, APP_THREAD_STACK_SIZE);
 K_THREAD_STACK_DEFINE(can_process_stack, APP_THREAD_STACK_SIZE);
 K_THREAD_STACK_DEFINE(scheduler_stack, APP_THREAD_STACK_SIZE);
 K_THREAD_STACK_DEFINE(soh_stack, APP_THREAD_STACK_SIZE);
+/** @endcond */
 
+/**
+ * @brief Check whether a motor index has PI speed control enabled.
+ * @param mi Motor index (0-based).
+ * @return true for motors 0, 1, M3_IDX, and M4_IDX.
+ */
 static bool motor_has_speed_ctrl(unsigned mi)
 {
-	return mi == 0U || mi == 1U || mi == M3_IDX || mi == M4_IDX;
+    return mi == 0U || mi == 1U || mi == M3_IDX || mi == M4_IDX;
 }
 
+/**
+ * @brief Get the configured maximum PWM duty cycle for a motor.
+ * @param mi Motor index (0-based).
+ * @return Duty cap in percent; 100.f for an unrecognized index.
+ */
 static float motor_duty_max_pct(unsigned mi)
 {
-	switch (mi) {
-	case 0U:
-		return (float)M1_DUTY_MAX_PCT;
-	case 1U:
-		return (float)M2_DUTY_MAX_PCT;
-	case M3_IDX:
-		return (float)M3_DUTY_MAX_PCT;
-	case M4_IDX:
-		return (float)M4_DUTY_MAX_PCT;
-	default:
-		return 100.f;
-	}
+    switch (mi) {
+    case 0U:
+        return (float)M1_DUTY_MAX_PCT;
+    case 1U:
+        return (float)M2_DUTY_MAX_PCT;
+    case M3_IDX:
+        return (float)M3_DUTY_MAX_PCT;
+    case M4_IDX:
+        return (float)M4_DUTY_MAX_PCT;
+    default:
+        return 100.f;
+    }
 }
 
+/**
+ * @brief Get the configured RPM measurement sign correction for a motor.
+ * @param mi Motor index (0-based).
+ * @return Sign multiplier (+1.f or -1.f); 1.f for an unrecognized index.
+ */
 static float motor_rpm_meas_sign(unsigned mi)
 {
-	switch (mi) {
-	case 0U:
-		return M1_RPM_MEAS_SIGN;
-	case 1U:
-		return M2_RPM_MEAS_SIGN;
-	case M3_IDX:
-		return M3_RPM_MEAS_SIGN;
-	case M4_IDX:
-		return M4_RPM_MEAS_SIGN;
-	default:
-		return 1.f;
-	}
+    switch (mi) {
+    case 0U:
+        return M1_RPM_MEAS_SIGN;
+    case 1U:
+        return M2_RPM_MEAS_SIGN;
+    case M3_IDX:
+        return M3_RPM_MEAS_SIGN;
+    case M4_IDX:
+        return M4_RPM_MEAS_SIGN;
+    default:
+        return 1.f;
+    }
 }
 
+/**
+ * @brief Get the configured speed-control loop interval for a motor.
+ * @param mi Motor index (0-based).
+ * @return Interval in milliseconds; 0 for an unrecognized index.
+ */
 static uint32_t motor_speed_ctrl_ms(unsigned mi)
 {
-	switch (mi) {
-	case 0U:
-		return M1_SPEED_CTRL_MS;
-	case 1U:
-		return M2_SPEED_CTRL_MS;
-	case M3_IDX:
-		return M3_SPEED_CTRL_MS;
-	case M4_IDX:
-		return M4_SPEED_CTRL_MS;
-	default:
-		return 0U;
-	}
+    switch (mi) {
+    case 0U:
+        return M1_SPEED_CTRL_MS;
+    case 1U:
+        return M2_SPEED_CTRL_MS;
+    case M3_IDX:
+        return M3_SPEED_CTRL_MS;
+    case M4_IDX:
+        return M4_SPEED_CTRL_MS;
+    default:
+        return 0U;
+    }
 }
 
+/**
+ * @brief Get the configured proportional gain for a motor's speed loop.
+ * @param mi Motor index (0-based).
+ * @return Kp in duty%/RPM; 0.f for an unrecognized index.
+ */
 static float motor_speed_kp(unsigned mi)
 {
-	switch (mi) {
-	case 0U:
-		return M1_SPEED_KP_DUTY_PCT;
-	case 1U:
-		return M2_SPEED_KP_DUTY_PCT;
-	case M3_IDX:
-		return M3_SPEED_KP_DUTY_PCT;
-	case M4_IDX:
-		return M4_SPEED_KP_DUTY_PCT;
-	default:
-		return 0.f;
-	}
+    switch (mi) {
+    case 0U:
+        return M1_SPEED_KP_DUTY_PCT;
+    case 1U:
+        return M2_SPEED_KP_DUTY_PCT;
+    case M3_IDX:
+        return M3_SPEED_KP_DUTY_PCT;
+    case M4_IDX:
+        return M4_SPEED_KP_DUTY_PCT;
+    default:
+        return 0.f;
+    }
 }
 
+/**
+ * @brief Get the configured integral gain for a motor's speed loop.
+ * @param mi Motor index (0-based).
+ * @return Ki in duty%/RPM/s; 0.f for an unrecognized index.
+ */
 static float motor_speed_ki(unsigned mi)
 {
-	switch (mi) {
-	case 0U:
-		return M1_SPEED_KI_DUTY_PCT;
-	case 1U:
-		return M2_SPEED_KI_DUTY_PCT;
-	case M3_IDX:
-		return M3_SPEED_KI_DUTY_PCT;
-	case M4_IDX:
-		return M4_SPEED_KI_DUTY_PCT;
-	default:
-		return 0.f;
-	}
+    switch (mi) {
+    case 0U:
+        return M1_SPEED_KI_DUTY_PCT;
+    case 1U:
+        return M2_SPEED_KI_DUTY_PCT;
+    case M3_IDX:
+        return M3_SPEED_KI_DUTY_PCT;
+    case M4_IDX:
+        return M4_SPEED_KI_DUTY_PCT;
+    default:
+        return 0.f;
+    }
 }
 
+/**
+ * @brief Get the configured RPM measurement filter time constant for a motor.
+ * @param mi Motor index (0-based).
+ * @return Filter tau in milliseconds; 0.f for an unrecognized index.
+ */
 static float motor_speed_meas_tau_ms(unsigned mi)
 {
-	switch (mi) {
-	case 0U:
-		return M1_SPEED_MEAS_TAU_MS;
-	case 1U:
-		return M2_SPEED_MEAS_TAU_MS;
-	case M3_IDX:
-		return M3_SPEED_MEAS_TAU_MS;
-	case M4_IDX:
-		return M4_SPEED_MEAS_TAU_MS;
-	default:
-		return 0.f;
-	}
+    switch (mi) {
+    case 0U:
+        return M1_SPEED_MEAS_TAU_MS;
+    case 1U:
+        return M2_SPEED_MEAS_TAU_MS;
+    case M3_IDX:
+        return M3_SPEED_MEAS_TAU_MS;
+    case M4_IDX:
+        return M4_SPEED_MEAS_TAU_MS;
+    default:
+        return 0.f;
+    }
 }
 
+/**
+ * @brief Get the configured feed-forward gain for a motor's speed loop.
+ * @param mi Motor index (0-based).
+ * @return RPM produced per 1% duty; 0.f for an unrecognized index.
+ */
 static float motor_speed_rpm_per_duty_pct(unsigned mi)
 {
-	switch (mi) {
-	case 0U:
-		return M1_SPEED_RPM_PER_DUTY_PCT;
-	case 1U:
-		return M2_SPEED_RPM_PER_DUTY_PCT;
-	case M3_IDX:
-		return M3_SPEED_RPM_PER_DUTY_PCT;
-	case M4_IDX:
-		return M4_SPEED_RPM_PER_DUTY_PCT;
-	default:
-		return 0.f;
-	}
+    switch (mi) {
+    case 0U:
+        return M1_SPEED_RPM_PER_DUTY_PCT;
+    case 1U:
+        return M2_SPEED_RPM_PER_DUTY_PCT;
+    case M3_IDX:
+        return M3_SPEED_RPM_PER_DUTY_PCT;
+    case M4_IDX:
+        return M4_SPEED_RPM_PER_DUTY_PCT;
+    default:
+        return 0.f;
+    }
 }
 
+/**
+ * @brief Drive all three phases of a motor to zero duty and disable all
+ *        three phase enable GPIOs.
+ * @param pwm    PWM device for this motor.
+ * @param tim_ch Per-phase PWM timer channel numbers.
+ * @param pen    Per-phase enable GPIO specs.
+ */
 static void pwm_all_off(const struct device *pwm, const uint32_t tim_ch[3],
-			const struct gpio_dt_spec *const pen[3])
+            const struct gpio_dt_spec *const pen[3])
 {
-	for (int i = 0; i < 3; i++) {
-		pwm_set(pwm, tim_ch[i], PWM_PERIOD_NS, 0, PWM_POLARITY_NORMAL);
-		gpio_pin_set_dt(pen[i], 0);
-	}
+    for (int i = 0; i < 3; i++) {
+        pwm_set(pwm, tim_ch[i], PWM_PERIOD_NS, 0, PWM_POLARITY_NORMAL);
+        gpio_pin_set_dt(pen[i], 0);
+    }
 }
+
+/**
+ * @brief Apply one commutation step to a motor's PWM/enable outputs.
+ * @param pwm  PWM device for this motor.
+ * @param tim_ch Per-phase PWM timer channel numbers.
+ * @param pen  Per-phase enable GPIO specs.
+ * @param tbl  Commutation table to use (fwd_table or rev_table).
+ * @param hall Current hall code (only the low 3 bits are used).
+ * @param mi   Motor index, used to read/clamp duty_pct[mi].
+ * @return true if the hall code was invalid and outputs were forced off;
+ *         false if a normal commutation step was applied.
+ */
 
 static bool apply_sixstep(const struct device *pwm, const uint32_t tim_ch[3],
-			  const struct gpio_dt_spec *const pen[3],
-			  const struct comm_step *tbl, uint8_t hall, unsigned mi)
+              const struct gpio_dt_spec *const pen[3],
+              const struct comm_step *tbl, uint8_t hall, unsigned mi)
 {
-	const struct comm_step *s = &tbl[hall & 0x07];
+    const struct comm_step *s = &tbl[hall & 0x07];
 
-	if (s->hi < 0) {
-		pwm_all_off(pwm, tim_ch, pen);
-		return true;
-	}
+    if (s->hi < 0) {
+        pwm_all_off(pwm, tim_ch, pen);
+        return true;
+    }
 
-	float d = duty_pct[mi];
+    float d = duty_pct[mi];
 
-	if (d < 0.f) {
-		d = 0.f;
-	}
-	if (d > motor_duty_max_pct(mi)) {
-		d = motor_duty_max_pct(mi);
-	}
+    if (d < 0.f) {
+        d = 0.f;
+    }
+    if (d > motor_duty_max_pct(mi)) {
+        d = motor_duty_max_pct(mi);
+    }
 
-	float pulse_f = ((float)PWM_PERIOD_NS * d) / 100.0f;
-	uint32_t pulse = (uint32_t)(pulse_f + 0.5f);
+    float pulse_f = ((float)PWM_PERIOD_NS * d) / 100.0f;
+    uint32_t pulse = (uint32_t)(pulse_f + 0.5f);
 
-	if (pulse > PWM_PERIOD_NS) {
-		pulse = PWM_PERIOD_NS;
-	}
+    if (pulse > PWM_PERIOD_NS) {
+        pulse = PWM_PERIOD_NS;
+    }
 
-	for (int i = 0; i < 3; i++) {
-		if (i == s->hi) {
-			pwm_set(pwm, tim_ch[i], PWM_PERIOD_NS, pulse,
-				PWM_POLARITY_NORMAL);
-			gpio_pin_set_dt(pen[i], 1);
-		} else if (i == s->lo) {
-			pwm_set(pwm, tim_ch[i], PWM_PERIOD_NS, 0,
-				PWM_POLARITY_NORMAL);
-			gpio_pin_set_dt(pen[i], 1);
-		} else {
-			pwm_set(pwm, tim_ch[i], PWM_PERIOD_NS, 0,
-				PWM_POLARITY_NORMAL);
-			gpio_pin_set_dt(pen[i], 0);
-		}
-	}
-	return false;
+    for (int i = 0; i < 3; i++) {
+        if (i == s->hi) {
+            pwm_set(pwm, tim_ch[i], PWM_PERIOD_NS, pulse,
+                PWM_POLARITY_NORMAL);
+            gpio_pin_set_dt(pen[i], 1);
+        } else if (i == s->lo) {
+            pwm_set(pwm, tim_ch[i], PWM_PERIOD_NS, 0,
+                PWM_POLARITY_NORMAL);
+            gpio_pin_set_dt(pen[i], 1);
+        } else {
+            pwm_set(pwm, tim_ch[i], PWM_PERIOD_NS, 0,
+                PWM_POLARITY_NORMAL);
+            gpio_pin_set_dt(pen[i], 0);
+        }
+    }
+    return false;
 }
 
+/**
+ * @brief Read a motor's three hall sensor GPIOs into a 3-bit code.
+ * @param h Per-phase hall GPIO specs (A, B, C).
+ * @return 3-bit hall code (bit0=A, bit1=B, bit2=C).
+ */
 static uint8_t read_hall_code(const struct gpio_dt_spec *const h[3])
 {
-	int a = gpio_pin_get_dt(h[0]) > 0 ? 1 : 0;
-	int b = gpio_pin_get_dt(h[1]) > 0 ? 1 : 0;
-	int c = gpio_pin_get_dt(h[2]) > 0 ? 1 : 0;
+    int a = gpio_pin_get_dt(h[0]) > 0 ? 1 : 0;
+    int b = gpio_pin_get_dt(h[1]) > 0 ? 1 : 0;
+    int c = gpio_pin_get_dt(h[2]) > 0 ? 1 : 0;
 
-	return (uint8_t)(a | (b << 1) | (c << 2));
+    return (uint8_t)(a | (b << 1) | (c << 2));
 }
 
+/**
+ * @brief Check whether a hall code is one of the 6 valid commutation
+ *        states (excludes 0 and 7).
+ * @param h Hall code to check.
+ * @return true if h is in the valid range 1-6.
+ */
 static bool hall_code_valid(uint8_t h)
 {
-	return (h != 0U) && (h != 7U);
+    return (h != 0U) && (h != 7U);
 }
 
-/* +1 one step forward in hall_ring_fwd, -1 backward, 0 ambiguous/jump. */
+/**
+ * @brief Determine rotation direction from a hall code transition.
+ * @param from Previous hall code.
+ * @param to   New hall code.
+ * @return +1 if the transition is one forward step in hall_ring_fwd, -1
+ *         if one backward step, 0 if either code is invalid or the
+ *         transition is ambiguous/skips a step.
+ */
 static int8_t hall_transition_dir(uint8_t from, uint8_t to)
 {
-	int from_idx = -1;
-	int to_idx = -1;
+    int from_idx = -1;
+    int to_idx = -1;
 
-	if (!hall_code_valid(from) || !hall_code_valid(to)) {
-		return 0;
-	}
+    if (!hall_code_valid(from) || !hall_code_valid(to)) {
+        return 0;
+    }
 
-	for (int i = 0; i < 6; i++) {
-		if (hall_ring_fwd[i] == from) {
-			from_idx = i;
-		}
-		if (hall_ring_fwd[i] == to) {
-			to_idx = i;
-		}
-	}
-	if (from_idx < 0 || to_idx < 0) {
-		return 0;
-	}
+    for (int i = 0; i < 6; i++) {
+        if (hall_ring_fwd[i] == from) {
+            from_idx = i;
+        }
+        if (hall_ring_fwd[i] == to) {
+            to_idx = i;
+        }
+    }
+    if (from_idx < 0 || to_idx < 0) {
+        return 0;
+    }
 
-	int diff = (to_idx - from_idx + 6) % 6;
+    int diff = (to_idx - from_idx + 6) % 6;
 
-	if (diff == 1) {
-		return 1;
-	}
-	if (diff == 5) {
-		return -1;
-	}
-	return 0;
+    if (diff == 1) {
+        return 1;
+    }
+    if (diff == 5) {
+        return -1;
+    }
+    return 0;
 }
 
+/**
+ * @brief Re-apply the correct commutation output for every active motor
+ *        based on current hall state and commanded duty.
+ *
+ * For each motor: if inactive, not running, duty is zero, or the live
+ * hall reading is invalid, forces outputs off. Otherwise prefers the
+ * last ISR-latched hall code over a fresh GPIO read when they agree, to
+ * avoid sampling dither against edge-locked commutation.
+ */
 static void refresh_outputs(void)
 {
-	for (unsigned mi = 0; mi < NMOTORS; mi++) {
-		const motor_desc_t *m = &motor_desc[mi];
-		float d = duty_pct[mi];
+    for (unsigned mi = 0; mi < NMOTORS; mi++) {
+        const motor_desc_t *m = &motor_desc[mi];
+        float d = duty_pct[mi];
 
-		if (!motor_is_active(mi)) {
-			pwm_all_off(m->pwm, m->tim_ch, m->en);
-			continue;
-		}
+        if (!motor_is_active(mi)) {
+            pwm_all_off(m->pwm, m->tim_ch, m->en);
+            continue;
+        }
 
-		uint8_t h_live = read_hall_code(m->hall);
-		/*
-		 * When running, prefer the last ISR-step hall if it still matches GPIO
-		 * (avoids sampling dither vs. edge-locked commutation).
-		 */
-		uint8_t h = h_live;
+        uint8_t h_live = read_hall_code(m->hall);
+        /*
+         * When running, prefer the last ISR-step hall if it still matches GPIO
+         * (avoids sampling dither vs. edge-locked commutation).
+         */
+        uint8_t h = h_live;
 
-		if (m_run[mi] && hall_code_valid(m_hall[mi]) && (h_live == m_hall[mi])) {
-			h = m_hall[mi];
-		}
+        if (m_run[mi] && hall_code_valid(m_hall[mi]) && (h_live == m_hall[mi])) {
+            h = m_hall[mi];
+        }
 
-		/* Live halls: do not re-apply stale m_hall while inputs read 0/7. */
-		if (!hall_code_valid(h_live) || !m_run[mi]) {
-			pwm_all_off(m->pwm, m->tim_ch, m->en);
-			continue;
-		}
+        /* Live halls: do not re-apply stale m_hall while inputs read 0/7. */
+        if (!hall_code_valid(h_live) || !m_run[mi]) {
+            pwm_all_off(m->pwm, m->tim_ch, m->en);
+            continue;
+        }
 
-		if (d <= 0.f) {
-			pwm_all_off(m->pwm, m->tim_ch, m->en);
-			continue;
-		}
+        if (d <= 0.f) {
+            pwm_all_off(m->pwm, m->tim_ch, m->en);
+            continue;
+        }
 
-		const struct comm_step *tbl = m_use_rev[mi] ? rev_table : fwd_table;
+        const struct comm_step *tbl = m_use_rev[mi] ? rev_table : fwd_table;
 
-		(void)apply_sixstep(m->pwm, m->tim_ch, m->en, tbl, h, mi);
-	}
+        (void)apply_sixstep(m->pwm, m->tim_ch, m->en, tbl, h, mi);
+    }
 }
 
+/**
+ * @brief Handle a hall state change for one motor: update commutation,
+ *        transition count, and (for M1) edge-timing RPM data.
+ * @param mi Motor index to process.
+ *
+ * Invalid hall readings are debounced via hall_inv_streak[] before
+ * latching m_run=false. On a valid new hall code, updates m_hall/m_run/
+ * m_trans and applies the corresponding commutation step. For M1
+ * specifically, also updates the hall-edge timing state used by
+ * m1_rpm_from_hall_edges(), inferring a fallback direction sign when the
+ * hall-ring lookup is ambiguous so timing keeps advancing even if
+ * hall_ring_fwd's order doesn't exactly match the sensor wiring.
+ *
+ * Called from the hall interrupt handlers (M1/M2) and from the M3/M4
+ * poll timer callback.
+ */
 static void process_motor(unsigned mi)
 {
-	if (!motor_is_active(mi)) {
-		return;
-	}
+    if (!motor_is_active(mi)) {
+        return;
+    }
 
-	const motor_desc_t *m = &motor_desc[mi];
-	uint8_t h = read_hall_code(m->hall);
+    const motor_desc_t *m = &motor_desc[mi];
+    uint8_t h = read_hall_code(m->hall);
 
-	if (!hall_code_valid(h)) {
-		pwm_all_off(m->pwm, m->tim_ch, m->en);
-		if (m_run[mi]) {
-			uint8_t st = hall_inv_streak[mi] + 1U;
+    if (!hall_code_valid(h)) {
+        pwm_all_off(m->pwm, m->tim_ch, m->en);
+        if (m_run[mi]) {
+            uint8_t st = hall_inv_streak[mi] + 1U;
 
-			if (st >= HALL_INVALID_DEBOUNCE) {
-				m_run[mi] = false;
-				if (mi == 0U) {
-					m1_have_prev_edge = false;
-				}
-				m_hall[mi] = h;
-				hall_inv_streak[mi] = 0U;
-			} else {
-				hall_inv_streak[mi] = st;
-			}
-		} else {
-			m_hall[mi] = h;
-			hall_inv_streak[mi] = 0U;
-		}
-		return;
-	}
+            if (st >= HALL_INVALID_DEBOUNCE) {
+                m_run[mi] = false;
+                if (mi == 0U) {
+                    m1_have_prev_edge = false;
+                }
+                m_hall[mi] = h;
+                hall_inv_streak[mi] = 0U;
+            } else {
+                hall_inv_streak[mi] = st;
+            }
+        } else {
+            m_hall[mi] = h;
+            hall_inv_streak[mi] = 0U;
+        }
+        return;
+    }
 
-	hall_inv_streak[mi] = 0U;
+    hall_inv_streak[mi] = 0U;
 
-	if ((h == m_hall[mi]) && m_run[mi]) {
-		return;
-	}
+    if ((h == m_hall[mi]) && m_run[mi]) {
+        return;
+    }
 
-	if (mi == 0U && m_run[mi] && hall_code_valid(m_hall[mi])) {
-		int8_t dir = hall_transition_dir(m_hall[mi], h);
-		/*
-		 * If hall_ring_fwd order does not match the sensor's Gray walk, dir==0
-		 * on real steps — timing must still run or dt spans multiple 60° steps
-		 * and edge-RPM reads ~1/P too low.
-		 */
-		int8_t dir_eff = dir;
+    if (mi == 0U && m_run[mi] && hall_code_valid(m_hall[mi])) {
+        int8_t dir = hall_transition_dir(m_hall[mi], h);
+        /*
+         * If hall_ring_fwd order does not match the sensor's Gray walk, dir==0
+         * on real steps — timing must still run or dt spans multiple 60° steps
+         * and edge-RPM reads ~1/P too low.
+         */
+        int8_t dir_eff = dir;
 
-		if (dir == 0 && hall_code_valid(h) && h != m_hall[mi]) {
-			dir_eff = (m1_last_period_sign != 0) ? m1_last_period_sign : 1;
-		}
+        if (dir == 0 && hall_code_valid(h) && h != m_hall[mi]) {
+            dir_eff = (m1_last_period_sign != 0) ? m1_last_period_sign : 1;
+        }
 
-		if (dir_eff != 0 && m1_cyc_hz > 0U) {
-			uint32_t c = k_cycle_get_32();
-			/*
-			 * Three hall lines often produce multiple IRQs within tens of µs for
-			 * one 60° step. dt_min must exceed that bunching but stay below one
-			 * real step at WHEEL_RPM_ABS_MAX (computed at boot in main).
-			 */
-			uint32_t dt_min =
-				m1_hall_dt_min_cyc > 0U ? m1_hall_dt_min_cyc : (m1_cyc_hz / 8000U);
-			uint32_t dt_max = m1_cyc_hz; /* >~1 s between edges → ignore */
+        if (dir_eff != 0 && m1_cyc_hz > 0U) {
+            uint32_t c = k_cycle_get_32();
+            /*
+             * Three hall lines often produce multiple IRQs within tens of µs for
+             * one 60° step. dt_min must exceed that bunching but stay below one
+             * real step at WHEEL_RPM_ABS_MAX (computed at boot in main).
+             */
+            uint32_t dt_min =
+                m1_hall_dt_min_cyc > 0U ? m1_hall_dt_min_cyc : (m1_cyc_hz / 8000U);
+            uint32_t dt_max = m1_cyc_hz; /* >~1 s between edges → ignore */
 
-			if (m1_have_prev_edge) {
-				uint32_t dt = c - m1_prev_edge_cyc;
+            if (m1_have_prev_edge) {
+                uint32_t dt = c - m1_prev_edge_cyc;
 
-				if (dt >= dt_min && dt <= dt_max) {
-					m1_last_period_cyc = dt;
-					m1_last_period_sign = dir_eff;
-					m1_prev_edge_cyc = c;
-				} else if (dt > dt_max) {
-					/* Baseline too old (stall); restart from this edge. */
-					m1_prev_edge_cyc = c;
-				}
-				/*
-				 * If dt < dt_min: GPIO bunching on one 60° step — do NOT move
-				 * m1_prev_edge_cyc, or dt spans multiple steps and edge-RPM lies.
-				 */
-			} else {
-				m1_prev_edge_cyc = c;
-				m1_have_prev_edge = true;
-			}
-			m1_last_edge_cyc = c;
-		}
-	}
+                if (dt >= dt_min && dt <= dt_max) {
+                    m1_last_period_cyc = dt;
+                    m1_last_period_sign = dir_eff;
+                    m1_prev_edge_cyc = c;
+                } else if (dt > dt_max) {
+                    /* Baseline too old (stall); restart from this edge. */
+                    m1_prev_edge_cyc = c;
+                }
+                /*
+                 * If dt < dt_min: GPIO bunching on one 60° step — do NOT move
+                 * m1_prev_edge_cyc, or dt spans multiple steps and edge-RPM lies.
+                 */
+            } else {
+                m1_prev_edge_cyc = c;
+                m1_have_prev_edge = true;
+            }
+            m1_last_edge_cyc = c;
+        }
+    }
 
-	m_hall[mi] = h;
-	m_run[mi] = true;
-	m_trans[mi]++;
+    m_hall[mi] = h;
+    m_run[mi] = true;
+    m_trans[mi]++;
 
-	if (duty_pct[mi] <= 0.f) {
-		pwm_all_off(m->pwm, m->tim_ch, m->en);
-	} else {
-		const struct comm_step *tbl = m_use_rev[mi] ? rev_table : fwd_table;
+    if (duty_pct[mi] <= 0.f) {
+        pwm_all_off(m->pwm, m->tim_ch, m->en);
+    } else {
+        const struct comm_step *tbl = m_use_rev[mi] ? rev_table : fwd_table;
 
-		(void)apply_sixstep(m->pwm, m->tim_ch, m->en, tbl, h, mi);
-	}
+        (void)apply_sixstep(m->pwm, m->tim_ch, m->en, tbl, h, mi);
+    }
 }
 
+/**
+ * @brief GPIO callback for hall edges on GPIO port D.
+ * @param dev  Unused.
+ * @param cb   Unused.
+ * @param pins Unused (bitmask of triggering pins).
+ *
+ * Calls process_motor() for every active motor whose halls live on
+ * GPIOD.
+ */
 static void hall_isr_gpiod(const struct device *dev, struct gpio_callback *cb,
-			   uint32_t pins)
+               uint32_t pins)
 {
-	ARG_UNUSED(dev);
-	ARG_UNUSED(cb);
-	ARG_UNUSED(pins);
+    ARG_UNUSED(dev);
+    ARG_UNUSED(cb);
+    ARG_UNUSED(pins);
 
-	for (unsigned mi = 0; mi < NMOTORS; mi++) {
-		if (!motor_is_active(mi)) {
-			continue;
-		}
-		if (motor_desc[mi].halls_on_gpiod) {
-			process_motor(mi);
-		}
-	}
+    for (unsigned mi = 0; mi < NMOTORS; mi++) {
+        if (!motor_is_active(mi)) {
+            continue;
+        }
+        if (motor_desc[mi].halls_on_gpiod) {
+            process_motor(mi);
+        }
+    }
 }
 
+/**
+ * @brief GPIO callback for hall edges on GPIO port E.
+ * @param dev  Unused.
+ * @param cb   Unused.
+ * @param pins Unused (bitmask of triggering pins).
+ *
+ * Calls process_motor() for every active motor whose halls do not live
+ * on GPIOD.
+ */
 static void hall_isr_gpioe(const struct device *dev, struct gpio_callback *cb,
-			   uint32_t pins)
+               uint32_t pins)
 {
-	ARG_UNUSED(dev);
-	ARG_UNUSED(cb);
-	ARG_UNUSED(pins);
+    ARG_UNUSED(dev);
+    ARG_UNUSED(cb);
+    ARG_UNUSED(pins);
 
-	for (unsigned mi = 0; mi < NMOTORS; mi++) {
-		if (!motor_is_active(mi)) {
-			continue;
-		}
-		if (!motor_desc[mi].halls_on_gpiod) {
-			process_motor(mi);
-		}
-	}
+    for (unsigned mi = 0; mi < NMOTORS; mi++) {
+        if (!motor_is_active(mi)) {
+            continue;
+        }
+        if (!motor_desc[mi].halls_on_gpiod) {
+            process_motor(mi);
+        }
+    }
 }
 
 /*
@@ -699,869 +891,1094 @@ static void hall_isr_gpioe(const struct device *dev, struct gpio_callback *cb,
 #define HALL_M3M4_POLL_INTERVAL_US 80U
 #endif
 
+/**
+ * @brief Work-queue handler that polls M3 and M4 commutation state.
+ * @param work Unused.
+ *
+ * Runs process_motor() for M3 and M4 if both are active. Exists because
+ * M3's and M4's hall lines share conflicting STM32 EXTI lines and can't
+ * both use edge interrupts simultaneously.
+ */
 static void hall_m3m4_poll_work(struct k_work *work)
 {
-	ARG_UNUSED(work);
+    ARG_UNUSED(work);
 
-	if (!motor_is_active(M3_IDX) || !motor_is_active(M4_IDX)) {
-		return;
-	}
+    if (!motor_is_active(M3_IDX) || !motor_is_active(M4_IDX)) {
+        return;
+    }
 
-	process_motor(M3_IDX);
-	process_motor(M4_IDX);
+    process_motor(M3_IDX);
+    process_motor(M4_IDX);
 }
 
 static K_WORK_DEFINE(hall_m3m4_work, hall_m3m4_poll_work);
 
+/**
+ * @brief Timer callback that submits the M3/M4 hall poll work item.
+ * @param t Unused.
+ */
 static void hall_m3m4_poll_timer_cb(struct k_timer *t)
 {
-	ARG_UNUSED(t);
-	(void)k_work_submit(&hall_m3m4_work);
+    ARG_UNUSED(t);
+    (void)k_work_submit(&hall_m3m4_work);
 }
 
 K_TIMER_DEFINE(hall_m3m4_timer, hall_m3m4_poll_timer_cb, NULL);
 
-/* Mechanical rpm from last 60° hall period and time since last edge (no PLL). */
+/**
+ * @brief Compute M1's mechanical RPM from the most recent hall-edge
+ *        period, with a staleness check against time-since-last-edge.
+ * @return Signed mechanical RPM, clamped to ±WHEEL_RPM_ABS_MAX; 0.f if
+ *         M1 is inactive/not running or the last edge/period data is
+ *         stale or unavailable.
+ *
+ * Takes the minimum of the period-derived and age-derived RPM magnitude
+ * so a slowing rotor reports a decreasing value rather than holding the
+ * last full-speed reading indefinitely.
+ *
+ * @note Mechanical rpm from last 60° hall period and time since last edge (no PLL).
+ */
 static float m1_rpm_from_hall_edges(void)
 {
-	if (!motor_is_active(0U) || !m_run[0] || m1_cyc_hz == 0U) {
-		return 0.f;
-	}
+    if (!motor_is_active(0U) || !m_run[0] || m1_cyc_hz == 0U) {
+        return 0.f;
+    }
 
-	const uint32_t c = k_cycle_get_32();
-	const uint32_t age = c - m1_last_edge_cyc;
-	const uint32_t dt = m1_last_period_cyc;
-	uint32_t stale = m1_cyc_hz;
+    const uint32_t c = k_cycle_get_32();
+    const uint32_t age = c - m1_last_edge_cyc;
+    const uint32_t dt = m1_last_period_cyc;
+    uint32_t stale = m1_cyc_hz;
 
-	if (dt > 0U && dt < m1_cyc_hz) {
-		const uint32_t six = dt * 6U;
+    if (dt > 0U && dt < m1_cyc_hz) {
+        const uint32_t six = dt * 6U;
 
-		if (six > stale) {
-			stale = six;
-		}
-	}
-	if (age > stale || dt == 0U || dt > m1_cyc_hz) {
-		return 0.f;
-	}
+        if (six > stale) {
+            stale = six;
+        }
+    }
+    if (age > stale || dt == 0U || dt > m1_cyc_hz) {
+        return 0.f;
+    }
 
-	const float sgn = (float)m1_last_period_sign;
-	const float fclk = (float)m1_cyc_hz;
-	const float P = (float)POLE_PAIRS;
-	const float age_f = fmaxf((float)age, 1.f);
-	const float dt_f = fmaxf((float)dt, 1.f);
-	const float mag_dt = fclk * 10.f / (dt_f * P);
-	const float mag_age = fclk * 10.f / (age_f * P);
-	const float mag = fminf(mag_dt, mag_age);
-	float rpm = M1_RPM_MEAS_SIGN * sgn * mag;
+    const float sgn = (float)m1_last_period_sign;
+    const float fclk = (float)m1_cyc_hz;
+    const float P = (float)POLE_PAIRS;
+    const float age_f = fmaxf((float)age, 1.f);
+    const float dt_f = fmaxf((float)dt, 1.f);
+    const float mag_dt = fclk * 10.f / (dt_f * P);
+    const float mag_age = fclk * 10.f / (age_f * P);
+    const float mag = fminf(mag_dt, mag_age);
+    float rpm = M1_RPM_MEAS_SIGN * sgn * mag;
 
-	if (rpm > (float)WHEEL_RPM_ABS_MAX) {
-		rpm = (float)WHEEL_RPM_ABS_MAX;
-	} else if (rpm < -(float)WHEEL_RPM_ABS_MAX) {
-		rpm = -(float)WHEEL_RPM_ABS_MAX;
-	}
-	return rpm;
+    if (rpm > (float)WHEEL_RPM_ABS_MAX) {
+        rpm = (float)WHEEL_RPM_ABS_MAX;
+    } else if (rpm < -(float)WHEEL_RPM_ABS_MAX) {
+        rpm = -(float)WHEEL_RPM_ABS_MAX;
+    }
+    return rpm;
 }
 
+/**
+ * @brief Clamp a float to an inclusive range.
+ * @param x  Value to clamp.
+ * @param lo Lower bound.
+ * @param hi Upper bound.
+ * @return x clamped to [lo, hi].
+ */
 static float clampf(float x, float lo, float hi)
 {
-	if (x < lo) {
-		return lo;
-	}
-	if (x > hi) {
-		return hi;
-	}
-	return x;
+    if (x < lo) {
+        return lo;
+    }
+    if (x > hi) {
+        return hi;
+    }
+    return x;
 }
 
+/**
+ * @brief Unpack a big-endian signed 16-bit value from two bytes.
+ * @param msb Most significant byte.
+ * @param lsb Least significant byte.
+ * @return Reassembled int16_t value.
+ */
 static int16_t unpack_be_i16(uint8_t msb, uint8_t lsb)
 {
-	return (int16_t)((uint16_t)msb << 8 | (uint16_t)lsb);
+    return (int16_t)((uint16_t)msb << 8 | (uint16_t)lsb);
 }
 
+/**
+ * @brief Pack a signed 16-bit value into two big-endian bytes.
+ * @param v   Value to pack.
+ * @param msb Output most significant byte.
+ * @param lsb Output least significant byte.
+ */
 static void pack_be_i16(int16_t v, uint8_t *msb, uint8_t *lsb)
 {
-	*msb = (uint8_t)(((uint16_t)v >> 8) & 0xFFU);
-	*lsb = (uint8_t)((uint16_t)v & 0xFFU);
+    *msb = (uint8_t)(((uint16_t)v >> 8) & 0xFFU);
+    *lsb = (uint8_t)((uint16_t)v & 0xFFU);
 }
 
+/**
+ * @brief Set a motor's commanded RPM setpoint, if it has speed control.
+ * @param motor_idx Motor index (0-based).
+ * @param rpm_ref   Requested signed RPM setpoint.
+ * @return true if the motor has speed control and the setpoint was
+ *         applied (clamped to ±WHEEL_RPM_ABS_MAX); false otherwise.
+ */
 static bool set_motor_rpm_ref(unsigned motor_idx, float rpm_ref)
 {
-	if (!motor_has_speed_ctrl(motor_idx)) {
-		return false;
-	}
+    if (!motor_has_speed_ctrl(motor_idx)) {
+        return false;
+    }
 
-	rpm_ref_cmd[motor_idx] = clampf(rpm_ref,
-					 -(float)WHEEL_RPM_ABS_MAX,
-					 (float)WHEEL_RPM_ABS_MAX);
-	return true;
+    rpm_ref_cmd[motor_idx] = clampf(rpm_ref,
+                     -(float)WHEEL_RPM_ABS_MAX,
+                     (float)WHEEL_RPM_ABS_MAX);
+    return true;
 }
 
+/**
+ * @brief Handle an incoming CAN command frame from ADCS.
+ * @param f Raw CAN frame.
+ *
+ * Filters for CLS_COMMAND frames from ADCS_ID addressed to this node or
+ * broadcast, with opcode OP_SET_WHEEL_RPM and at least 5 data bytes.
+ * data[2] selects the target motor (0 = all motors, 1-4 = specific
+ * motor); data[3:4] is the signed RPM setpoint, big-endian.
+ *
+ * @bug motor_sel is checked against `> NMOTORS`, but valid selectors
+ *      should be 1..NMOTORS — worth double-checking this bounds check
+ *      against the intended selector range, since an off-by-one here
+ *      would silently map to the wrong motor or allow an out-of-range
+ *      index.
+ */
 static void handle_can_command(const struct can_frame *f)
 {
-	const uint8_t src = (uint8_t)((f->id >> 14) & 0xFFU);
-	const uint8_t dst = (uint8_t)((f->id >> 6) & 0xFFU);
-	const uint8_t msg_class = (uint8_t)(f->id & 0x3FU);
+    const uint8_t src = (uint8_t)((f->id >> 14) & 0xFFU);
+    const uint8_t dst = (uint8_t)((f->id >> 6) & 0xFFU);
+    const uint8_t msg_class = (uint8_t)(f->id & 0x3FU);
 
-	if (msg_class != CLS_COMMAND || src != ADCS_ID) {
-		return;
-	}
-	if (dst != MOTOR_ID && dst != CAN_BROADCAST) {
-		return;
-	}
-	if (f->dlc < 5U || f->data[1] != OP_SET_WHEEL_RPM) {
-		return;
-	}
+    if (msg_class != CLS_COMMAND || src != ADCS_ID) {
+        return;
+    }
+    if (dst != MOTOR_ID && dst != CAN_BROADCAST) {
+        return;
+    }
+    if (f->dlc < 5U || f->data[1] != OP_SET_WHEEL_RPM) {
+        return;
+    }
 
-	const uint8_t motor_sel = f->data[2];
-	const int16_t rpm_i16 = unpack_be_i16(f->data[3], f->data[4]);
+    const uint8_t motor_sel = f->data[2];
+    const int16_t rpm_i16 = unpack_be_i16(f->data[3], f->data[4]);
 
-	if (motor_sel == 0U) {
-		for (unsigned mi = 0; mi < NMOTORS; mi++) {
-			if (!motor_is_active(mi)) {
-				continue;
-			}
-			(void)set_motor_rpm_ref(mi, (float)rpm_i16);
-		}
-		printk("CAN RPM cmd: all=%d from ADCS\n", (int)rpm_i16);
-		return;
-	}
+    if (motor_sel == 0U) {
+        for (unsigned mi = 0; mi < NMOTORS; mi++) {
+            if (!motor_is_active(mi)) {
+                continue;
+            }
+            (void)set_motor_rpm_ref(mi, (float)rpm_i16);
+        }
+        printk("CAN RPM cmd: all=%d from ADCS\n", (int)rpm_i16);
+        return;
+    }
 
-	if (motor_sel > NMOTORS) {
-		return;
-	}
+    if (motor_sel > NMOTORS) {
+        return;
+    }
 
-	const unsigned mi = (unsigned)(motor_sel - 1U);
+    const unsigned mi = (unsigned)(motor_sel - 1U);
 
-	if (!motor_is_active(mi)) {
-		return;
-	}
-	if (set_motor_rpm_ref(mi, (float)rpm_i16)) {
-		printk("CAN RPM cmd: M%u=%d from ADCS\n", mi + 1U, (int)rpm_i16);
-	}
+    if (!motor_is_active(mi)) {
+        return;
+    }
+    if (set_motor_rpm_ref(mi, (float)rpm_i16)) {
+        printk("CAN RPM cmd: M%u=%d from ADCS\n", mi + 1U, (int)rpm_i16);
+    }
 }
 
+/**
+ * @brief Unpack a raw CAN frame's ID and payload into a can_packet_t.
+ * @param f   Raw CAN frame as received from the driver.
+ * @param pkt Output decoded packet.
+ */
 static void decode_can_packet(const struct can_frame *f, can_packet_t *pkt)
 {
-	const uint32_t id = f->id;
+    const uint32_t id = f->id;
 
-	pkt->src = (uint8_t)((id >> 14) & 0xFFU);
-	pkt->dst = (uint8_t)((id >> 6) & 0xFFU);
-	pkt->msg_class = (uint8_t)(id & 0x3FU);
-	pkt->dlc = f->dlc;
-	memcpy(pkt->data, f->data, f->dlc);
+    pkt->src = (uint8_t)((id >> 14) & 0xFFU);
+    pkt->dst = (uint8_t)((id >> 6) & 0xFFU);
+    pkt->msg_class = (uint8_t)(id & 0x3FU);
+    pkt->dlc = f->dlc;
+    memcpy(pkt->data, f->data, f->dlc);
 }
 
+/**
+ * @brief Bring up the CAN transceiver and controller, and install RX
+ *        filters for this node's address and broadcast.
+ * @return 0 on success; negative errno if the CAN device isn't ready,
+ *         bitrate/mode configuration fails, the controller fails to
+ *         start, or a filter fails to install.
+ *
+ * Retries can_start() once with the STB (standby) GPIO polarity flipped
+ * if the first attempt fails, to accommodate transceivers with inverted
+ * standby polarity.
+ *
+ * @todo The CAN-not-ready error path and the can_start() retry block
+ *       each print/execute their diagnostic logic twice in a row
+ *       (duplicated printk calls, and a duplicated retry-with-STB=1
+ *       block) — likely an accidental copy-paste duplication rather
+ *       than intentional.
+ */
 static int can_setup(void)
 {
-	if (!device_is_ready(can_dev)) {
-		printk("ERR: CAN device not ready\n");
-		printk("CAN node: %s\n", can_dev->name);
+    if (!device_is_ready(can_dev)) {
+        printk("ERR: CAN device not ready\n");
+        printk("CAN node: %s\n", can_dev->name);
 #if DT_NODE_HAS_STATUS(DT_NODELABEL(fdcan1), okay)
-		printk("DT fdcan1 status: okay\n");
+        printk("DT fdcan1 status: okay\n");
 #else
-		printk("DT fdcan1 status: not okay\n");
+        printk("DT fdcan1 status: not okay\n");
 #endif
-		printk("CAN node: %s\n", can_dev->name);
+        printk("CAN node: %s\n", can_dev->name);
 #if DT_NODE_HAS_STATUS(DT_NODELABEL(fdcan1), okay)
-		printk("DT fdcan1 status: okay\n");
+        printk("DT fdcan1 status: okay\n");
 #else
-		printk("DT fdcan1 status: not okay\n");
+        printk("DT fdcan1 status: not okay\n");
 #endif
-		return -ENODEV;
-	}
+        return -ENODEV;
+    }
 
 #if DT_NODE_HAS_STATUS(CAN_STB_NODE, okay)
-	if (!device_is_ready(can_stb.port)) {
-		printk("ERR: CAN STB GPIO device not ready\n");
-		return -ENODEV;
-	}
+    if (!device_is_ready(can_stb.port)) {
+        printk("ERR: CAN STB GPIO device not ready\n");
+        return -ENODEV;
+    }
 
-	/* Default try: STB active-high -> drive low to leave standby. */
-	(void)gpio_pin_configure_dt(&can_stb, GPIO_OUTPUT_INACTIVE);
-	(void)gpio_pin_set_dt(&can_stb, 0);
-	k_msleep(5);
+    /* Default try: STB active-high -> drive low to leave standby. */
+    (void)gpio_pin_configure_dt(&can_stb, GPIO_OUTPUT_INACTIVE);
+    (void)gpio_pin_set_dt(&can_stb, 0);
+    k_msleep(5);
 #else
-	printk("WARN: CAN STB alias missing (canstb)\n");
+    printk("WARN: CAN STB alias missing (canstb)\n");
 #endif
 
-	int ret = can_set_bitrate(can_dev, 500000);
+    int ret = can_set_bitrate(can_dev, 500000);
 
-	if (ret != 0) {
-		printk("ERR: CAN bitrate cfg failed (%d)\n", ret);
-		return ret;
-	}
+    if (ret != 0) {
+        printk("ERR: CAN bitrate cfg failed (%d)\n", ret);
+        return ret;
+    }
 
-	ret = can_set_mode(can_dev, CAN_MODE_NORMAL);
-	if (ret != 0) {
-		printk("ERR: CAN mode cfg failed (%d)\n", ret);
-		return ret;
-	}
+    ret = can_set_mode(can_dev, CAN_MODE_NORMAL);
+    if (ret != 0) {
+        printk("ERR: CAN mode cfg failed (%d)\n", ret);
+        return ret;
+    }
 
-	ret = can_start(can_dev);
-	if (ret != 0) {
+    ret = can_start(can_dev);
+    if (ret != 0) {
 #if DT_NODE_HAS_STATUS(CAN_STB_NODE, okay)
-		/*
-		 * Some transceivers use opposite standby polarity.
-		 * Retry once with STB high to detect that case.
-		 */
-		printk("CAN start failed (%d), retrying with STB=1\n", ret);
-		(void)gpio_pin_set_dt(&can_stb, 1);
-		k_msleep(5);
-		ret = can_start(can_dev);
-		if (ret == 0) {
-			printk("CAN recovered with STB=1 (transceiver standby polarity is inverted)\n");
-		}
+        /*
+         * Some transceivers use opposite standby polarity.
+         * Retry once with STB high to detect that case.
+         */
+        printk("CAN start failed (%d), retrying with STB=1\n", ret);
+        (void)gpio_pin_set_dt(&can_stb, 1);
+        k_msleep(5);
+        ret = can_start(can_dev);
+        if (ret == 0) {
+            printk("CAN recovered with STB=1 (transceiver standby polarity is inverted)\n");
+        }
 #endif
-	}
-	if (ret != 0) {
+    }
+    if (ret != 0) {
 #if DT_NODE_HAS_STATUS(CAN_STB_NODE, okay)
-		/*
-		 * Some transceivers use opposite standby polarity.
-		 * Retry once with STB high to detect that case.
-		 */
-		printk("CAN start failed (%d), retrying with STB=1\n", ret);
-		(void)gpio_pin_set_dt(&can_stb, 1);
-		k_msleep(5);
-		ret = can_start(can_dev);
-		if (ret == 0) {
-			printk("CAN recovered with STB=1 (transceiver standby polarity is inverted)\n");
-		}
+        /*
+         * Some transceivers use opposite standby polarity.
+         * Retry once with STB high to detect that case.
+         */
+        printk("CAN start failed (%d), retrying with STB=1\n", ret);
+        (void)gpio_pin_set_dt(&can_stb, 1);
+        k_msleep(5);
+        ret = can_start(can_dev);
+        if (ret == 0) {
+            printk("CAN recovered with STB=1 (transceiver standby polarity is inverted)\n");
+        }
 #endif
-	}
-	if (ret != 0) {
-		printk("ERR: CAN start failed (%d)\n", ret);
-		return ret;
-	}
+    }
+    if (ret != 0) {
+        printk("ERR: CAN start failed (%d)\n", ret);
+        return ret;
+    }
 
-	const struct can_filter to_me = {
-		.id = CAN_DST(MOTOR_ID),
-		.mask = CAN_DST_MASK_29,
-		.flags = CAN_FILTER_IDE,
-	};
-	const struct can_filter bcast = {
-		.id = CAN_DST(CAN_BROADCAST),
-		.mask = CAN_DST_MASK_29,
-		.flags = CAN_FILTER_IDE,
-	};
+    const struct can_filter to_me = {
+        .id = CAN_DST(MOTOR_ID),
+        .mask = CAN_DST_MASK_29,
+        .flags = CAN_FILTER_IDE,
+    };
+    const struct can_filter bcast = {
+        .id = CAN_DST(CAN_BROADCAST),
+        .mask = CAN_DST_MASK_29,
+        .flags = CAN_FILTER_IDE,
+    };
 
-	ret = can_add_rx_filter_msgq(can_dev, &can_rx_q, &to_me);
-	if (ret < 0) {
-		printk("ERR: CAN to_me filter failed (%d)\n", ret);
-		return ret;
-	}
+    ret = can_add_rx_filter_msgq(can_dev, &can_rx_q, &to_me);
+    if (ret < 0) {
+        printk("ERR: CAN to_me filter failed (%d)\n", ret);
+        return ret;
+    }
 
-	ret = can_add_rx_filter_msgq(can_dev, &can_rx_q, &bcast);
-	if (ret < 0) {
-		printk("ERR: CAN bcast filter failed (%d)\n", ret);
-		return ret;
-	}
+    ret = can_add_rx_filter_msgq(can_dev, &can_rx_q, &bcast);
+    if (ret < 0) {
+        printk("ERR: CAN bcast filter failed (%d)\n", ret);
+        return ret;
+    }
 
-	printk("CAN ready: node=0x%02X, ADCS cmd opcode=0x%02X\n", MOTOR_ID, OP_SET_WHEEL_RPM);
-	return 0;
+    printk("CAN ready: node=0x%02X, ADCS cmd opcode=0x%02X\n", MOTOR_ID, OP_SET_WHEEL_RPM);
+    return 0;
 }
 
+/**
+ * @brief Broadcast a CLS_HEARTBEAT frame with a rolling sequence number.
+ * @param seq Sequence number to encode in the frame (16-bit, big-endian).
+ */
 static void send_can_beacon(uint32_t seq)
 {
-	struct can_frame f = {0};
-	int ret;
+    struct can_frame f = {0};
+    int ret;
 
-	f.id = CAN_ID_FULL(2U, MOTOR_ID, CAN_BROADCAST, CLS_HEARTBEAT);
-	can_fill_payload(&f, MOTOR_ID, OP_HEARTBEAT,
-			 (uint8_t)((seq >> 8) & 0xFFU), (uint8_t)(seq & 0xFFU),
-			 0, 0, 0, 0);
+    f.id = CAN_ID_FULL(2U, MOTOR_ID, CAN_BROADCAST, CLS_HEARTBEAT);
+    can_fill_payload(&f, MOTOR_ID, OP_HEARTBEAT,
+             (uint8_t)((seq >> 8) & 0xFFU), (uint8_t)(seq & 0xFFU),
+             0, 0, 0, 0);
 
-	ret = can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
-	if (ret != 0) {
-		printk("WARN: CAN beacon tx failed (%d)\n", ret);
-	}
+    ret = can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+    if (ret != 0) {
+        printk("WARN: CAN beacon tx failed (%d)\n", ret);
+    }
 }
 
+/**
+ * @brief Broadcast a state-of-health frame with fault/kill pin states
+ *        and the app_run flag.
+ */
 static void send_soh_frame(void)
 {
-	struct can_frame f = {0};
-	int ret;
+    struct can_frame f = {0};
+    int ret;
 
-	f.id = CAN_ID_FULL(2U, MOTOR_ID, CAN_BROADCAST, CLS_HEALTH);
-	can_fill_payload(&f, MOTOR_ID, OP_HEARTBEAT,
-			 (uint8_t)gpio_pin_get_dt(&fault_in),
-			 (uint8_t)gpio_pin_get_dt(&kill_in),
-			 (uint8_t)atomic_get(&app_run), 0, 0, 0);
+    f.id = CAN_ID_FULL(2U, MOTOR_ID, CAN_BROADCAST, CLS_HEALTH);
+    can_fill_payload(&f, MOTOR_ID, OP_HEARTBEAT,
+             (uint8_t)gpio_pin_get_dt(&fault_in),
+             (uint8_t)gpio_pin_get_dt(&kill_in),
+             (uint8_t)atomic_get(&app_run), 0, 0, 0);
 
-	ret = can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
-	if (ret != 0) {
-		printk("WARN: SOH tx failed (%d)\n", ret);
-	}
+    ret = can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+    if (ret != 0) {
+        printk("WARN: SOH tx failed (%d)\n", ret);
+    }
 }
 
+/**
+ * @brief Send a per-motor RPM telemetry frame.
+ * @param mi         Motor index (0-based).
+ * @param rpm_signed Signed RPM value to report.
+ *
+ * Rounds and clamps rpm_signed to int16_t range before packing it
+ * big-endian into the frame payload.
+ */
 static void send_motor_rpm_frame(unsigned mi, float rpm_signed)
 {
-	struct can_frame f = {0};
-	int16_t rpm_i16;
-	uint8_t rpm_msb;
-	uint8_t rpm_lsb;
-	int ret;
+    struct can_frame f = {0};
+    int16_t rpm_i16;
+    uint8_t rpm_msb;
+    uint8_t rpm_lsb;
+    int ret;
 
-	rpm_i16 = (int16_t)lrintf(clampf(rpm_signed, -32768.f, 32767.f));
-	pack_be_i16(rpm_i16, &rpm_msb, &rpm_lsb);
+    rpm_i16 = (int16_t)lrintf(clampf(rpm_signed, -32768.f, 32767.f));
+    pack_be_i16(rpm_i16, &rpm_msb, &rpm_lsb);
 
-	f.id = CAN_ID_FULL(2U, MOTOR_ID, CAN_BROADCAST, CLS_TELEMETRY);
-	can_fill_payload(&f, MOTOR_ID, OP_SET_WHEEL_RPM,
-			 (uint8_t)(mi + 1U), rpm_msb, rpm_lsb, 0, 0, 0);
+    f.id = CAN_ID_FULL(2U, MOTOR_ID, CAN_BROADCAST, CLS_TELEMETRY);
+    can_fill_payload(&f, MOTOR_ID, OP_SET_WHEEL_RPM,
+             (uint8_t)(mi + 1U), rpm_msb, rpm_lsb, 0, 0, 0);
 
-	ret = can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
-	if (ret != 0) {
-		printk("WARN: RPM tx failed M%u (%d)\n", mi + 1U, ret);
-	}
+    ret = can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+    if (ret != 0) {
+        printk("WARN: RPM tx failed M%u (%d)\n", mi + 1U, ret);
+    }
 }
 
+/**
+ * @brief Compute a motor's average RPM over a transition-count window.
+ * @param mi         Motor index (0-based).
+ * @param trans_now  Current cumulative transition count.
+ * @param trans_prev Transition count at the start of the window.
+ * @param dt_ms      Window duration in milliseconds.
+ * @return Signed RPM computed from (trans_now - trans_prev) over dt_ms;
+ *         0.f if dt_ms is 0. Sign is derived from M1's measured edge
+ *         direction when mi==0, otherwise from the motor's current
+ *         commutation table direction (m_use_rev).
+ */
 static float motor_rpm_from_transition_window(unsigned mi, uint32_t trans_now, uint32_t trans_prev, uint32_t dt_ms) {
-	if (dt_ms == 0U) {
-		return 0.f;
-	}
+    if (dt_ms == 0U) {
+        return 0.f;
+    }
 
-	const uint32_t dtrans = trans_now - trans_prev;
-	const float mag =
-		(float)dtrans * 1000.f * 10.f /
-		((float)POLE_PAIRS * (float)dt_ms);
-	float meas_sign = 0.f;
-	const float cmd_sign = m_use_rev[mi] ? -1.f : 1.f;
+    const uint32_t dtrans = trans_now - trans_prev;
+    const float mag =
+        (float)dtrans * 1000.f * 10.f /
+        ((float)POLE_PAIRS * (float)dt_ms);
+    float meas_sign = 0.f;
+    const float cmd_sign = m_use_rev[mi] ? -1.f : 1.f;
 
-	if (mi == 0U) {
-		meas_sign =
-			motor_rpm_meas_sign(mi) * (float)m1_last_period_sign;
-	}
+    if (mi == 0U) {
+        meas_sign =
+            motor_rpm_meas_sign(mi) * (float)m1_last_period_sign;
+    }
 
-	return copysignf(mag, (meas_sign != 0.f) ? meas_sign : cmd_sign);
+    return copysignf(mag, (meas_sign != 0.f) ? meas_sign : cmd_sign);
 }
 
+/**
+ * @brief Compute the feed-forward duty cycle for a target RPM.
+ * @param mi      Motor index (0-based).
+ * @param rpm_ref Target RPM (sign ignored; magnitude used).
+ * @return Feed-forward duty in percent, clamped to [0, motor_duty_max_pct(mi)];
+ *         0.f if this motor's feed-forward gain is not positive.
+ */
 static float motor_speed_duty_ff_pct(unsigned mi, float rpm_ref) {
-	const float rpm_abs = fabsf(rpm_ref);
-	const float rpm_per_duty = motor_speed_rpm_per_duty_pct(mi);
+    const float rpm_abs = fabsf(rpm_ref);
+    const float rpm_per_duty = motor_speed_rpm_per_duty_pct(mi);
 
-	if (rpm_per_duty <= 0.f) {
-		return 0.f;
-	}
+    if (rpm_per_duty <= 0.f) {
+        return 0.f;
+    }
 
-	return clampf(rpm_abs / rpm_per_duty, 0.f, motor_duty_max_pct(mi));
+    return clampf(rpm_abs / rpm_per_duty, 0.f, motor_duty_max_pct(mi));
 }
 
+/**
+ * @brief Reset a motor's speed-control PI state (integral term, RPM
+ *        filter, and transition-count baseline).
+ * @param mi Motor index (0-based).
+ */
 static void motor_speed_ctrl_reset(unsigned mi) {
-	speed_pi_integral_pct[mi] = 0.f;
-	speed_rpm_ctrl_filt[mi] = 0.f;
-	speed_rpm_ctrl_filt_valid[mi] = false;
-	speed_trans_prev_ctrl[mi] = m_trans[mi];
+    speed_pi_integral_pct[mi] = 0.f;
+    speed_rpm_ctrl_filt[mi] = 0.f;
+    speed_rpm_ctrl_filt_valid[mi] = false;
+    speed_trans_prev_ctrl[mi] = m_trans[mi];
 }
 
+/**
+ * @brief Run one iteration of a motor's PI speed control loop.
+ * @param mi             Motor index (0-based).
+ * @param dt_ms          Elapsed time since the last control step.
+ * @param rpm_ref_signed Signed RPM setpoint (negative = reverse).
+ *
+ * No-ops if the motor is inactive, has no speed control, or dt_ms is 0.
+ * Filters the raw transition-window RPM measurement with a single-pole
+ * low-pass filter, then either handles a pending direction reversal
+ * (holding duty at 0 until measured RPM drops below
+ * MOTOR_DIR_SWITCH_RPM) or runs the PI update with feed-forward and
+ * anti-windup (only integrating when doing so wouldn't push further into
+ * duty saturation), writing the result to duty_pct[mi] and calling
+ * refresh_outputs().
+ */
 static void motor_speed_pi_step(unsigned mi, uint32_t dt_ms, float rpm_ref_signed) {
-	if (!motor_is_active(mi) || !motor_has_speed_ctrl(mi) || dt_ms == 0U) {
-		return;
-	}
+    if (!motor_is_active(mi) || !motor_has_speed_ctrl(mi) || dt_ms == 0U) {
+        return;
+    }
 
-	const uint32_t trn = m_trans[mi];
-	const float rpm_meas_raw =
-		fabsf(motor_rpm_from_transition_window(mi, trn,
-						      speed_trans_prev_ctrl[mi],
-						      dt_ms));
-	const float rpm_ref = fabsf(rpm_ref_signed);
-	const bool rev_req = (rpm_ref_signed < 0.f);
-	const float duty_ff = motor_speed_duty_ff_pct(mi, rpm_ref);
-	const float dt_s = (float)dt_ms / 1000.f;
-	const float alpha =
-		clampf(dt_s / (dt_s + (motor_speed_meas_tau_ms(mi) / 1000.f)),
-		       0.f, 1.f);
+    const uint32_t trn = m_trans[mi];
+    const float rpm_meas_raw =
+        fabsf(motor_rpm_from_transition_window(mi, trn,
+                              speed_trans_prev_ctrl[mi],
+                              dt_ms));
+    const float rpm_ref = fabsf(rpm_ref_signed);
+    const bool rev_req = (rpm_ref_signed < 0.f);
+    const float duty_ff = motor_speed_duty_ff_pct(mi, rpm_ref);
+    const float dt_s = (float)dt_ms / 1000.f;
+    const float alpha =
+        clampf(dt_s / (dt_s + (motor_speed_meas_tau_ms(mi) / 1000.f)),
+               0.f, 1.f);
 
-	if (!speed_rpm_ctrl_filt_valid[mi]) {
-		speed_rpm_ctrl_filt[mi] = rpm_meas_raw;
-		speed_rpm_ctrl_filt_valid[mi] = true;
-	} else {
-		speed_rpm_ctrl_filt[mi] +=
-			alpha * (rpm_meas_raw - speed_rpm_ctrl_filt[mi]);
-	}
+    if (!speed_rpm_ctrl_filt_valid[mi]) {
+        speed_rpm_ctrl_filt[mi] = rpm_meas_raw;
+        speed_rpm_ctrl_filt_valid[mi] = true;
+    } else {
+        speed_rpm_ctrl_filt[mi] +=
+            alpha * (rpm_meas_raw - speed_rpm_ctrl_filt[mi]);
+    }
 
-	/*
-	 * Reverse only after the rotor has slowed down enough that swapping the
-	 * six-step table will not command an abrupt torque reversal.
-	 */
-	if (rev_req != m_use_rev[mi]) {
-		if (speed_rpm_ctrl_filt[mi] > MOTOR_DIR_SWITCH_RPM) {
-			duty_pct[mi] = 0.f;
-			speed_pi_integral_pct[mi] = 0.f;
-			refresh_outputs();
-			speed_trans_prev_ctrl[mi] = trn;
-			return;
-		}
+    /*
+     * Reverse only after the rotor has slowed down enough that swapping the
+     * six-step table will not command an abrupt torque reversal.
+     */
+    if (rev_req != m_use_rev[mi]) {
+        if (speed_rpm_ctrl_filt[mi] > MOTOR_DIR_SWITCH_RPM) {
+            duty_pct[mi] = 0.f;
+            speed_pi_integral_pct[mi] = 0.f;
+            refresh_outputs();
+            speed_trans_prev_ctrl[mi] = trn;
+            return;
+        }
 
-		m_use_rev[mi] = rev_req;
-		motor_speed_ctrl_reset(mi);
-		duty_pct[mi] = 0.f;
-		refresh_outputs();
-		return;
-	}
+        m_use_rev[mi] = rev_req;
+        motor_speed_ctrl_reset(mi);
+        duty_pct[mi] = 0.f;
+        refresh_outputs();
+        return;
+    }
 
-	const float err = rpm_ref - speed_rpm_ctrl_filt[mi];
-	const float integ_candidate =
-		speed_pi_integral_pct[mi] + (motor_speed_ki(mi) * err * dt_s);
-	float duty_unsat = duty_ff + (motor_speed_kp(mi) * err) + integ_candidate;
-	float duty_cmd = clampf(duty_unsat, 0.f, motor_duty_max_pct(mi));
+    const float err = rpm_ref - speed_rpm_ctrl_filt[mi];
+    const float integ_candidate =
+        speed_pi_integral_pct[mi] + (motor_speed_ki(mi) * err * dt_s);
+    float duty_unsat = duty_ff + (motor_speed_kp(mi) * err) + integ_candidate;
+    float duty_cmd = clampf(duty_unsat, 0.f, motor_duty_max_pct(mi));
 
-	/*
-	 * Integrate unless that would push farther into saturation.
-	 * This keeps the loop from winding up while duty is pinned.
-	 */
-	if ((duty_unsat == duty_cmd) ||
-	    ((duty_unsat > motor_duty_max_pct(mi)) && (err < 0.f)) ||
-	    ((duty_unsat < 0.f) && (err > 0.f))) {
-		speed_pi_integral_pct[mi] = integ_candidate;
-		duty_unsat =
-			duty_ff + (motor_speed_kp(mi) * err) +
-			speed_pi_integral_pct[mi];
-		duty_cmd = clampf(duty_unsat, 0.f, motor_duty_max_pct(mi));
-	}
+    /*
+     * Integrate unless that would push farther into saturation.
+     * This keeps the loop from winding up while duty is pinned.
+     */
+    if ((duty_unsat == duty_cmd) ||
+        ((duty_unsat > motor_duty_max_pct(mi)) && (err < 0.f)) ||
+        ((duty_unsat < 0.f) && (err > 0.f))) {
+        speed_pi_integral_pct[mi] = integ_candidate;
+        duty_unsat =
+            duty_ff + (motor_speed_kp(mi) * err) +
+            speed_pi_integral_pct[mi];
+        duty_cmd = clampf(duty_unsat, 0.f, motor_duty_max_pct(mi));
+    }
 
-	duty_pct[mi] = duty_cmd;
-	speed_trans_prev_ctrl[mi] = trn;
-	refresh_outputs();
+    duty_pct[mi] = duty_cmd;
+    speed_trans_prev_ctrl[mi] = trn;
+    refresh_outputs();
 }
 
+/**
+ * @brief Force every motor's PWM/enable outputs off, regardless of
+ *        active/enabled state.
+ */
 static void all_motors_off(void) {
-	for (unsigned mi = 0; mi < NMOTORS; mi++) {
-		const motor_desc_t *m = &motor_desc[mi];
+    for (unsigned mi = 0; mi < NMOTORS; mi++) {
+        const motor_desc_t *m = &motor_desc[mi];
 
-		pwm_all_off(m->pwm, m->tim_ch, m->en);
-	}
+        pwm_all_off(m->pwm, m->tim_ch, m->en);
+    }
 }
 
+/**
+ * @brief Thread entry point: drains raw CAN frames from the driver queue
+ *        into the processing queue.
+ * @param arg1 Unused.
+ * @param arg2 Unused.
+ * @param arg3 Unused.
+ *
+ * Runs until app_run is cleared.
+ */
 static void can_rx_thread(void *arg1, void *arg2, void *arg3) {
-	ARG_UNUSED(arg1);
-	ARG_UNUSED(arg2);
-	ARG_UNUSED(arg3);
+    ARG_UNUSED(arg1);
+    ARG_UNUSED(arg2);
+    ARG_UNUSED(arg3);
 
-	while (atomic_get(&app_run) != 0) {
-		struct can_frame rx = {0};
-		int ret = k_msgq_get(&can_rx_q, &rx, K_MSEC(100));
+    while (atomic_get(&app_run) != 0) {
+        struct can_frame rx = {0};
+        int ret = k_msgq_get(&can_rx_q, &rx, K_MSEC(100));
 
-		if (ret == 0) {
-			(void)k_msgq_put(&can_proc_q, &rx, K_NO_WAIT);
-		}
-	}
+        if (ret == 0) {
+            (void)k_msgq_put(&can_proc_q, &rx, K_NO_WAIT);
+        }
+    }
 }
 
+/**
+ * @brief Thread entry point: decodes queued CAN frames and dispatches
+ *        command frames to handle_can_command().
+ * @param arg1 Unused.
+ * @param arg2 Unused.
+ * @param arg3 Unused.
+ *
+ * Filters for frames addressed to this node or broadcast before
+ * dispatching. Runs until app_run is cleared.
+ */
 static void can_process_thread(void *arg1, void *arg2, void *arg3)
 {
-	ARG_UNUSED(arg1);
-	ARG_UNUSED(arg2);
-	ARG_UNUSED(arg3);
+    ARG_UNUSED(arg1);
+    ARG_UNUSED(arg2);
+    ARG_UNUSED(arg3);
 
-	while (atomic_get(&app_run) != 0) {
-		struct can_frame frame = {0};
-		can_packet_t pkt = {0};
-		int ret = k_msgq_get(&can_proc_q, &frame, K_MSEC(100));
+    while (atomic_get(&app_run) != 0) {
+        struct can_frame frame = {0};
+        can_packet_t pkt = {0};
+        int ret = k_msgq_get(&can_proc_q, &frame, K_MSEC(100));
 
-		if (ret != 0) {
-			continue;
-		}
+        if (ret != 0) {
+            continue;
+        }
 
-		decode_can_packet(&frame, &pkt);
-		if (pkt.dst != MOTOR_ID && pkt.dst != CAN_BROADCAST) {
-			continue;
-		}
+        decode_can_packet(&frame, &pkt);
+        if (pkt.dst != MOTOR_ID && pkt.dst != CAN_BROADCAST) {
+            continue;
+        }
 
-		if (pkt.msg_class == CLS_COMMAND) {
-			handle_can_command(&frame);
-		}
-	}
+        if (pkt.msg_class == CLS_COMMAND) {
+            handle_can_command(&frame);
+        }
+    }
 }
 
+/**
+ * @brief Thread entry point: runs each speed-controlled motor's PI loop
+ *        on its own configured interval.
+ * @param arg1 Unused.
+ * @param arg2 Unused.
+ * @param arg3 Unused.
+ *
+ * Runs until app_run is cleared.
+ */
 static void motor_ctrl_thread(void *arg1, void *arg2, void *arg3) {
-	ARG_UNUSED(arg1);
-	ARG_UNUSED(arg2);
-	ARG_UNUSED(arg3);
+    ARG_UNUSED(arg1);
+    ARG_UNUSED(arg2);
+    ARG_UNUSED(arg3);
 
-	int64_t t_last_ctrl[NMOTORS];
-	const int64_t t0 = k_uptime_get();
+    int64_t t_last_ctrl[NMOTORS];
+    const int64_t t0 = k_uptime_get();
 
-	for (unsigned mi = 0; mi < NMOTORS; mi++) {
-		t_last_ctrl[mi] = t0;
-	}
+    for (unsigned mi = 0; mi < NMOTORS; mi++) {
+        t_last_ctrl[mi] = t0;
+    }
 
-	while (atomic_get(&app_run) != 0) {
-		const int64_t now = k_uptime_get();
+    while (atomic_get(&app_run) != 0) {
+        const int64_t now = k_uptime_get();
 
-		for (unsigned mi = 0; mi < NMOTORS; mi++) {
-			if (!motor_is_active(mi) || !motor_has_speed_ctrl(mi)) {
-				continue;
-			}
-			const uint32_t ctrl_ms = motor_speed_ctrl_ms(mi);
+        for (unsigned mi = 0; mi < NMOTORS; mi++) {
+            if (!motor_is_active(mi) || !motor_has_speed_ctrl(mi)) {
+                continue;
+            }
+            const uint32_t ctrl_ms = motor_speed_ctrl_ms(mi);
 
-			if ((now - t_last_ctrl[mi]) >= (int64_t)ctrl_ms) {
-				motor_speed_pi_step(mi,
-						    (uint32_t)(now - t_last_ctrl[mi]),
-						    rpm_ref_cmd[mi]);
-				t_last_ctrl[mi] = now;
-			}
-		}
+            if ((now - t_last_ctrl[mi]) >= (int64_t)ctrl_ms) {
+                motor_speed_pi_step(mi,
+                            (uint32_t)(now - t_last_ctrl[mi]),
+                            rpm_ref_cmd[mi]);
+                t_last_ctrl[mi] = now;
+            }
+        }
 
-		k_msleep(MOTOR_CTRL_BASE_MS);
-	}
+        k_msleep(MOTOR_CTRL_BASE_MS);
+    }
 }
 
+/**
+ * @brief Thread entry point: broadcasts a CAN heartbeat beacon on a
+ *        fixed interval.
+ * @param arg1 Unused.
+ * @param arg2 Unused.
+ * @param arg3 Unused.
+ *
+ * Runs until app_run is cleared.
+ */
 static void scheduler_thread(void *arg1, void *arg2, void *arg3)
 {
-	ARG_UNUSED(arg1);
-	ARG_UNUSED(arg2);
-	ARG_UNUSED(arg3);
+    ARG_UNUSED(arg1);
+    ARG_UNUSED(arg2);
+    ARG_UNUSED(arg3);
 
-	int64_t t_last_hb = k_uptime_get();
-	uint32_t can_beacon_seq = 0U;
+    int64_t t_last_hb = k_uptime_get();
+    uint32_t can_beacon_seq = 0U;
 
-	while (atomic_get(&app_run) != 0) {
-		const int64_t now = k_uptime_get();
+    while (atomic_get(&app_run) != 0) {
+        const int64_t now = k_uptime_get();
 
-		if ((now - t_last_hb) >= (int64_t)CAN_HEARTBEAT_MS) {
-			t_last_hb = now;
-			send_can_beacon(can_beacon_seq++);
-		}
+        if ((now - t_last_hb) >= (int64_t)CAN_HEARTBEAT_MS) {
+            t_last_hb = now;
+            send_can_beacon(can_beacon_seq++);
+        }
 
-		k_msleep(10);
-	}
+        k_msleep(10);
+    }
 }
 
+/**
+ * @brief Thread entry point: sends periodic state-of-health and per-
+ *        motor RPM telemetry, and monitors the kill switch.
+ * @param arg1 Unused.
+ * @param arg2 Unused.
+ * @param arg3 Unused.
+ *
+ * On the SOH interval, currently only logs a placeholder message rather
+ * than calling send_soh_frame(). On the telemetry interval, sends an RPM
+ * frame for each active speed-controlled motor and checks the kill
+ * switch, clearing app_run if asserted. Runs until app_run is cleared.
+ *
+ * @todo The SOH branch prints "soh handling, TODO" instead of calling
+ *       the already-implemented send_soh_frame() — looks like an
+ *       unfinished wire-up rather than intentional behavior.
+ */
 static void soh_thread(void *arg1, void *arg2, void *arg3)
 {
-	ARG_UNUSED(arg1);
-	ARG_UNUSED(arg2);
-	ARG_UNUSED(arg3);
+    ARG_UNUSED(arg1);
+    ARG_UNUSED(arg2);
+    ARG_UNUSED(arg3);
 
-	int64_t t_last_telem = k_uptime_get();
-	int64_t t_last_soh = k_uptime_get();
+    int64_t t_last_telem = k_uptime_get();
+    int64_t t_last_soh = k_uptime_get();
 
-	while (atomic_get(&app_run) != 0) {
-		const int64_t now = k_uptime_get();
+    while (atomic_get(&app_run) != 0) {
+        const int64_t now = k_uptime_get();
 
-		if ((now - t_last_soh) >= (int64_t)SOH_TX_MS) {
-			t_last_soh = now;
-			printk("soh handling, TODO\n");
-		}
+        if ((now - t_last_soh) >= (int64_t)SOH_TX_MS) {
+            t_last_soh = now;
+            printk("soh handling, TODO\n");
+        }
 
-		if ((now - t_last_telem) >= TELEMETRY_MS) {
-			t_last_telem = now;
+        if ((now - t_last_telem) >= TELEMETRY_MS) {
+            t_last_telem = now;
 
-			for (unsigned mi = 0; mi < NMOTORS; mi++) {
-				if (!motor_is_active(mi) || !motor_has_speed_ctrl(mi)) {
-					continue;
-				}
-				const uint32_t trn = m_trans[mi];
-				const float rpm_win =
-					motor_rpm_from_transition_window(mi, trn,
-									 speed_trans_prev_telem[mi],
-									 TELEMETRY_MS);
-				const float rpm_ctrl =
-					speed_rpm_ctrl_filt_valid[mi] ?
-					speed_rpm_ctrl_filt[mi] : fabsf(rpm_win);
-				const float rpm_ctrl_signed =
-					copysignf(rpm_ctrl, m_use_rev[mi] ? -1.f : 1.f);
-				speed_trans_prev_telem[mi] = trn;
-				send_motor_rpm_frame(mi, rpm_ctrl_signed);
-			}
+            for (unsigned mi = 0; mi < NMOTORS; mi++) {
+                if (!motor_is_active(mi) || !motor_has_speed_ctrl(mi)) {
+                    continue;
+                }
+                const uint32_t trn = m_trans[mi];
+                const float rpm_win =
+                    motor_rpm_from_transition_window(mi, trn,
+                                     speed_trans_prev_telem[mi],
+                                     TELEMETRY_MS);
+                const float rpm_ctrl =
+                    speed_rpm_ctrl_filt_valid[mi] ?
+                    speed_rpm_ctrl_filt[mi] : fabsf(rpm_win);
+                const float rpm_ctrl_signed =
+                    copysignf(rpm_ctrl, m_use_rev[mi] ? -1.f : 1.f);
+                speed_trans_prev_telem[mi] = trn;
+                send_motor_rpm_frame(mi, rpm_ctrl_signed);
+            }
 
-			if (gpio_pin_get_dt(&kill_in) != 0) {
-				printk("KILL asserted, stopping motor app\n");
-				atomic_set(&app_run, 0);
-			}
-		}
+            if (gpio_pin_get_dt(&kill_in) != 0) {
+                printk("KILL asserted, stopping motor app\n");
+                atomic_set(&app_run, 0);
+            }
+        }
 
-		k_msleep(1);
-	}
+        k_msleep(1);
+    }
 }
 
+/**
+ * @brief Entry point: initializes all motor hardware and CAN, spawns the
+ *        worker threads, then idles handling any motors that haven't
+ *        yet latched a valid hall state.
+ *
+ * Boot sequence: verify all PWM and hall/enable GPIOs are ready for
+ * every motor plus fault/kill inputs, configure GPIO directions, force
+ * all motors off, compute M1's hall edge-timing thresholds from the
+ * configured pole count and RPM ceiling, initialize per-motor
+ * commutation direction and duty/RPM state, bring up CAN, print a boot
+ * summary of enabled motors and control gains, read each motor's
+ * initial hall state, abort if the kill switch is already asserted,
+ * configure hall-edge interrupts (grouped per shared GPIO port for
+ * GPIOD- and non-GPIOD-hosted motors), start the M3/M4 poll timer if
+ * both are active, then spawn the motor control, CAN RX, CAN process,
+ * scheduler, and SOH threads. The main thread then loops re-processing
+ * any active motor that hasn't yet latched a running state, until
+ * app_run is cleared, at which point it joins all worker threads,
+ * disables hall interrupts, stops the poll timer, forces all motors off,
+ * and prints final per-motor transition counts.
+ *
+ * @return -1 if any PWM/GPIO device isn't ready, CAN setup fails, or the
+ *         kill switch is asserted at boot; 0 on a normal shutdown.
+ *
+ * @todo refactor this function and add more comments. This function is way
+ *       too big, and should be split up into multiple functions.
+ */
 int main(void)
 {
-	for (unsigned mi = 0; mi < NMOTORS; mi++) {
-		if (!device_is_ready(motor_desc[mi].pwm)) {
-			printk("ERR: PWM M%u not ready\n", mi + 1U);
-			return -1;
-		}
-	}
+    for (unsigned mi = 0; mi < NMOTORS; mi++) {
+        if (!device_is_ready(motor_desc[mi].pwm)) {
+            printk("ERR: PWM M%u not ready\n", mi + 1U);
+            return -1;
+        }
+    }
 
-	for (unsigned mi = 0; mi < NMOTORS; mi++) {
-		const motor_desc_t *m = &motor_desc[mi];
+    for (unsigned mi = 0; mi < NMOTORS; mi++) {
+        const motor_desc_t *m = &motor_desc[mi];
 
-		for (int j = 0; j < 3; j++) {
-			if (!gpio_is_ready_dt(m->hall[j])) {
-				printk("ERR: M%u hall GPIO not ready\n", mi + 1U);
-				return -1;
-			}
-			if (!gpio_is_ready_dt(m->en[j])) {
-				printk("ERR: M%u enable GPIO not ready\n", mi + 1U);
-				return -1;
-			}
-		}
-	}
+        for (int j = 0; j < 3; j++) {
+            if (!gpio_is_ready_dt(m->hall[j])) {
+                printk("ERR: M%u hall GPIO not ready\n", mi + 1U);
+                return -1;
+            }
+            if (!gpio_is_ready_dt(m->en[j])) {
+                printk("ERR: M%u enable GPIO not ready\n", mi + 1U);
+                return -1;
+            }
+        }
+    }
 
-	if (!gpio_is_ready_dt(&fault_in) || !gpio_is_ready_dt(&kill_in)) {
-		printk("ERR: Fault/Kill GPIO not ready\n");
-		return -1;
-	}
+    if (!gpio_is_ready_dt(&fault_in) || !gpio_is_ready_dt(&kill_in)) {
+        printk("ERR: Fault/Kill GPIO not ready\n");
+        return -1;
+    }
 
-	for (unsigned mi = 0; mi < NMOTORS; mi++) {
-		const motor_desc_t *m = &motor_desc[mi];
+    for (unsigned mi = 0; mi < NMOTORS; mi++) {
+        const motor_desc_t *m = &motor_desc[mi];
 
-		for (int j = 0; j < 3; j++) {
-			gpio_pin_configure_dt(m->hall[j], GPIO_INPUT);
-			gpio_pin_configure_dt(m->en[j], GPIO_OUTPUT_INACTIVE);
-		}
-	}
+        for (int j = 0; j < 3; j++) {
+            gpio_pin_configure_dt(m->hall[j], GPIO_INPUT);
+            gpio_pin_configure_dt(m->en[j], GPIO_OUTPUT_INACTIVE);
+        }
+    }
 
-	gpio_pin_configure_dt(&fault_in, GPIO_INPUT);
-	gpio_pin_configure_dt(&kill_in, GPIO_INPUT);
+    gpio_pin_configure_dt(&fault_in, GPIO_INPUT);
+    gpio_pin_configure_dt(&kill_in, GPIO_INPUT);
 
-	all_motors_off();
+    all_motors_off();
 
-	m1_cyc_hz = sys_clock_hw_cycles_per_sec();
+    m1_cyc_hz = sys_clock_hw_cycles_per_sec();
 
-	/* Hall edges/sec at max rated mech rpm → cycles per 60° step; dt_min ~30% of that. */
-	{
-		uint32_t edges_ps =
-			(6U * POLE_PAIRS * (uint32_t)WHEEL_RPM_ABS_MAX) / 60U;
+    /* Hall edges/sec at max rated mech rpm → cycles per 60° step; dt_min ~30% of that. */
+    {
+        uint32_t edges_ps =
+            (6U * POLE_PAIRS * (uint32_t)WHEEL_RPM_ABS_MAX) / 60U;
 
-		if (edges_ps > 0U && m1_cyc_hz > edges_ps) {
-			uint32_t cyc_per_step = m1_cyc_hz / edges_ps;
+        if (edges_ps > 0U && m1_cyc_hz > edges_ps) {
+            uint32_t cyc_per_step = m1_cyc_hz / edges_ps;
 
-			m1_hall_dt_min_cyc = (cyc_per_step * 3U) / 10U;
-		} else {
-			m1_hall_dt_min_cyc = 4000U;
-		}
-		if (m1_hall_dt_min_cyc < 2500U) {
-			m1_hall_dt_min_cyc = 2500U;
-		}
-	}
+            m1_hall_dt_min_cyc = (cyc_per_step * 3U) / 10U;
+        } else {
+            m1_hall_dt_min_cyc = 4000U;
+        }
+        if (m1_hall_dt_min_cyc < 2500U) {
+            m1_hall_dt_min_cyc = 2500U;
+        }
+    }
 
-	m1_have_prev_edge = false;
-	for (unsigned mi = 0; mi < NMOTORS; mi++) {
-		m_use_rev[mi] = false;
-	}
-	m_use_rev[0] = (M1_OPEN_LOOP_REVERSE != 0);
-	m_use_rev[1] = (M2_OPEN_LOOP_REVERSE != 0);
-	m_use_rev[M3_IDX] = (M3_OPEN_LOOP_REVERSE != 0);
-	m_use_rev[M4_IDX] = (M4_OPEN_LOOP_REVERSE != 0);
-	for (unsigned mi = 0; mi < NMOTORS; mi++) {
-		duty_pct[mi] = 0.f;
-		rpm_ref_cmd[mi] = 0.f;
-	}
+    m1_have_prev_edge = false;
+    for (unsigned mi = 0; mi < NMOTORS; mi++) {
+        m_use_rev[mi] = false;
+    }
+    m_use_rev[0] = (M1_OPEN_LOOP_REVERSE != 0);
+    m_use_rev[1] = (M2_OPEN_LOOP_REVERSE != 0);
+    m_use_rev[M3_IDX] = (M3_OPEN_LOOP_REVERSE != 0);
+    m_use_rev[M4_IDX] = (M4_OPEN_LOOP_REVERSE != 0);
+    for (unsigned mi = 0; mi < NMOTORS; mi++) {
+        duty_pct[mi] = 0.f;
+        rpm_ref_cmd[mi] = 0.f;
+    }
 
-	for (unsigned mi = 0; mi < NMOTORS; mi++) {
-		if (motor_is_active(mi) && motor_has_speed_ctrl(mi)) {
-			rpm_ref_cmd[mi] = 0.f;
-			duty_pct[mi] = 0.f;
-		}
-	}
+    for (unsigned mi = 0; mi < NMOTORS; mi++) {
+        if (motor_is_active(mi) && motor_has_speed_ctrl(mi)) {
+            rpm_ref_cmd[mi] = 0.f;
+            duty_pct[mi] = 0.f;
+        }
+    }
 
-	if (can_setup() != 0) {
-		return -1;
-	}
+    if (can_setup() != 0) {
+        return -1;
+    }
 
-	printk("\n============================================\n");
-	printk("  BLDC - ISR 6-step  (%u motors)\n", NMOTORS);
-	for (unsigned mi = 0; mi < NMOTORS; mi++) {
-		printk("    M%u: %s\n", mi + 1U,
-		       motor_enable[mi] ? "enabled" : "disabled");
-	}
-	printk("============================================\n");
-	printk("Clock: 48 MHz (PLL)   PWM: 20 kHz\n");
-	printk("Wheel |omega| max: %u rpm (mech)\n", WHEEL_RPM_ABS_MAX);
-	for (unsigned mi = 0; mi < NMOTORS; mi++) {
-		if (!motor_is_active(mi)) {
-			continue;
-		}
-		if (!motor_has_speed_ctrl(mi)) {
-			continue;
-		}
-		const uint32_t kp_ppm =
-			(uint32_t)lrintf(motor_speed_kp(mi) * 1000000.f);
-		const uint32_t ki_ppm =
-			(uint32_t)lrintf(motor_speed_ki(mi) * 1000000.f);
-		const uint32_t ff_rpm_per_pct =
-			(uint32_t)lrintf(motor_speed_rpm_per_duty_pct(mi) * 1000.f);
-		printk("M%u ref CAN-driven (%d..%d rpm)  FF gain=%u.%03u rpm/pct  PI kp=%u ppm ki=%u ppm  reverse=%u  duty cap %u%%\n",
-		       mi + 1U,
-		       -(int)WHEEL_RPM_ABS_MAX,
-		       (int)WHEEL_RPM_ABS_MAX,
-		       (unsigned)(ff_rpm_per_pct / 1000U),
-		       (unsigned)(ff_rpm_per_pct % 1000U),
-		       (unsigned)kp_ppm,
-		       (unsigned)ki_ppm,
-		       (unsigned)m_use_rev[mi],
-		       (unsigned)motor_duty_max_pct(mi));
-	}
-	printk("M1 hall dt_min: %u cycles (reject sub-step GPIO IRQ bunching)\n\n",
-	       m1_hall_dt_min_cyc);
+    printk("\n============================================\n");
+    printk("  BLDC - ISR 6-step  (%u motors)\n", NMOTORS);
+    for (unsigned mi = 0; mi < NMOTORS; mi++) {
+        printk("    M%u: %s\n", mi + 1U,
+               motor_enable[mi] ? "enabled" : "disabled");
+    }
+    printk("============================================\n");
+    printk("Clock: 48 MHz (PLL)   PWM: 20 kHz\n");
+    printk("Wheel |omega| max: %u rpm (mech)\n", WHEEL_RPM_ABS_MAX);
+    for (unsigned mi = 0; mi < NMOTORS; mi++) {
+        if (!motor_is_active(mi)) {
+            continue;
+        }
+        if (!motor_has_speed_ctrl(mi)) {
+            continue;
+        }
+        const uint32_t kp_ppm =
+            (uint32_t)lrintf(motor_speed_kp(mi) * 1000000.f);
+        const uint32_t ki_ppm =
+            (uint32_t)lrintf(motor_speed_ki(mi) * 1000000.f);
+        const uint32_t ff_rpm_per_pct =
+            (uint32_t)lrintf(motor_speed_rpm_per_duty_pct(mi) * 1000.f);
+        printk("M%u ref CAN-driven (%d..%d rpm)  FF gain=%u.%03u rpm/pct  PI kp=%u ppm ki=%u ppm  reverse=%u  duty cap %u%%\n",
+               mi + 1U,
+               -(int)WHEEL_RPM_ABS_MAX,
+               (int)WHEEL_RPM_ABS_MAX,
+               (unsigned)(ff_rpm_per_pct / 1000U),
+               (unsigned)(ff_rpm_per_pct % 1000U),
+               (unsigned)kp_ppm,
+               (unsigned)ki_ppm,
+               (unsigned)m_use_rev[mi],
+               (unsigned)motor_duty_max_pct(mi));
+    }
+    printk("M1 hall dt_min: %u cycles (reject sub-step GPIO IRQ bunching)\n\n",
+           m1_hall_dt_min_cyc);
 
-	for (unsigned mi = 0; mi < NMOTORS; mi++) {
-		uint8_t h = read_hall_code(motor_desc[mi].hall);
+    for (unsigned mi = 0; mi < NMOTORS; mi++) {
+        uint8_t h = read_hall_code(motor_desc[mi].hall);
 
-		m_hall[mi]  = h;
-		m_trans[mi] = 0;
-		hall_inv_streak[mi] = 0U;
+        m_hall[mi]  = h;
+        m_trans[mi] = 0;
+        hall_inv_streak[mi] = 0U;
 
-		if (!motor_is_active(mi)) {
-			m_run[mi] = false;
-			printk("M%u hall: %u (inactive)\n", mi + 1U, h);
-			continue;
-		}
+        if (!motor_is_active(mi)) {
+            m_run[mi] = false;
+            printk("M%u hall: %u (inactive)\n", mi + 1U, h);
+            continue;
+        }
 
-		if (hall_code_valid(h)) {
-			m_run[mi] = true;
-			printk("M%u hall: %u (running)\n", mi + 1U, h);
-		} else {
-			m_run[mi] = false;
-			printk("M%u hall: %u — invalid, motor held off\n", mi + 1U, h);
-		}
-	}
+        if (hall_code_valid(h)) {
+            m_run[mi] = true;
+            printk("M%u hall: %u (running)\n", mi + 1U, h);
+        } else {
+            m_run[mi] = false;
+            printk("M%u hall: %u — invalid, motor held off\n", mi + 1U, h);
+        }
+    }
 
-	printk("Fault: %d  Kill: %d\n",
-	       gpio_pin_get_dt(&fault_in), gpio_pin_get_dt(&kill_in));
-	if (gpio_pin_get_dt(&kill_in) != 0) {
-		printk("ABORT: KILL active\n");
-		return -1;
-	}
+    printk("Fault: %d  Kill: %d\n",
+           gpio_pin_get_dt(&fault_in), gpio_pin_get_dt(&kill_in));
+    if (gpio_pin_get_dt(&kill_in) != 0) {
+        printk("ABORT: KILL active\n");
+        return -1;
+    }
 
-	for (unsigned mi = 0; mi < NMOTORS; mi++) {
-		const motor_desc_t *m = &motor_desc[mi];
+    for (unsigned mi = 0; mi < NMOTORS; mi++) {
+        const motor_desc_t *m = &motor_desc[mi];
 
-		for (int j = 0; j < 3; j++) {
-			gpio_flags_t irq_flags = motor_is_active(mi) ? GPIO_INT_EDGE_BOTH
-								       : GPIO_INT_MODE_DISABLED;
-			int err = gpio_pin_interrupt_configure_dt(m->hall[j], irq_flags);
+        for (int j = 0; j < 3; j++) {
+            gpio_flags_t irq_flags = motor_is_active(mi) ? GPIO_INT_EDGE_BOTH
+                                       : GPIO_INT_MODE_DISABLED;
+            int err = gpio_pin_interrupt_configure_dt(m->hall[j], irq_flags);
 
-			if (err != 0) {
-				printk("WARN: M%u hall pin %d irq cfg err %d\n",
-				       mi + 1U, j, err);
-			}
-		}
-	}
+            if (err != 0) {
+                printk("WARN: M%u hall pin %d irq cfg err %d\n",
+                       mi + 1U, j, err);
+            }
+        }
+    }
 
-	uint32_t mask_d = 0U;
-	const struct device *port_d = NULL;
+    uint32_t mask_d = 0U;
+    const struct device *port_d = NULL;
 
-	for (unsigned mi = 0; mi < NMOTORS; mi++) {
-		const motor_desc_t *m = &motor_desc[mi];
+    for (unsigned mi = 0; mi < NMOTORS; mi++) {
+        const motor_desc_t *m = &motor_desc[mi];
 
-		if (!motor_is_active(mi) || !m->halls_on_gpiod) {
-			continue;
-		}
-		if (port_d == NULL) {
-			port_d = m->hall[0]->port;
-		} else if (m->hall[0]->port != port_d) {
-			printk("ERR: active GPIOD hall motors must share one GPIO port\n");
-			return -1;
-		}
-		for (int j = 0; j < 3; j++) {
-			mask_d |= BIT(m->hall[j]->pin);
-		}
-	}
+        if (!motor_is_active(mi) || !m->halls_on_gpiod) {
+            continue;
+        }
+        if (port_d == NULL) {
+            port_d = m->hall[0]->port;
+        } else if (m->hall[0]->port != port_d) {
+            printk("ERR: active GPIOD hall motors must share one GPIO port\n");
+            return -1;
+        }
+        for (int j = 0; j < 3; j++) {
+            mask_d |= BIT(m->hall[j]->pin);
+        }
+    }
 
-	if (mask_d != 0U) {
-		gpio_init_callback(&hall_cb_gpiod, hall_isr_gpiod, mask_d);
-		gpio_add_callback(port_d, &hall_cb_gpiod);
-	}
+    if (mask_d != 0U) {
+        gpio_init_callback(&hall_cb_gpiod, hall_isr_gpiod, mask_d);
+        gpio_add_callback(port_d, &hall_cb_gpiod);
+    }
 
-	uint32_t mask_e = 0U;
-	const struct device *port_e = NULL;
+    uint32_t mask_e = 0U;
+    const struct device *port_e = NULL;
 
-	for (unsigned mi = 0; mi < NMOTORS; mi++) {
-		const motor_desc_t *m = &motor_desc[mi];
+    for (unsigned mi = 0; mi < NMOTORS; mi++) {
+        const motor_desc_t *m = &motor_desc[mi];
 
-		if (!motor_is_active(mi) || m->halls_on_gpiod) {
-			continue;
-		}
-		if (port_e == NULL) {
-			port_e = m->hall[0]->port;
-		} else if (m->hall[0]->port != port_e) {
-			printk("ERR: active non-GPIOD hall motors must share one GPIO port\n");
-			return -1;
-		}
-		for (int j = 0; j < 3; j++) {
-			mask_e |= BIT(m->hall[j]->pin);
-		}
-	}
-	if (mask_e != 0U) {
-		gpio_init_callback(&hall_cb_gpioe, hall_isr_gpioe, mask_e);
-		gpio_add_callback(port_e, &hall_cb_gpioe);
-	}
+        if (!motor_is_active(mi) || m->halls_on_gpiod) {
+            continue;
+        }
+        if (port_e == NULL) {
+            port_e = m->hall[0]->port;
+        } else if (m->hall[0]->port != port_e) {
+            printk("ERR: active non-GPIOD hall motors must share one GPIO port\n");
+            return -1;
+        }
+        for (int j = 0; j < 3; j++) {
+            mask_e |= BIT(m->hall[j]->pin);
+        }
+    }
+    if (mask_e != 0U) {
+        gpio_init_callback(&hall_cb_gpioe, hall_isr_gpioe, mask_e);
+        gpio_add_callback(port_e, &hall_cb_gpioe);
+    }
 
-	if (motor_is_active(M3_IDX) && motor_is_active(M4_IDX)) {
-		printk("\nNOTE: M3 (PD8/PD9) and M4 (PE8/PE9) share STM32 EXTI8/EXTI9 — "
-		       "one EXTI mux cannot serve both; %u us hall poll keeps M3+M4 "
-		       "in sync (fix hardware by moving halls off conflicting lines).\n\n",
-		       (unsigned)HALL_M3M4_POLL_INTERVAL_US);
-		k_timer_start(&hall_m3m4_timer,
-			      K_USEC(HALL_M3M4_POLL_INTERVAL_US),
-			      K_USEC(HALL_M3M4_POLL_INTERVAL_US));
-	}
+    if (motor_is_active(M3_IDX) && motor_is_active(M4_IDX)) {
+        printk("\nNOTE: M3 (PD8/PD9) and M4 (PE8/PE9) share STM32 EXTI8/EXTI9 — "
+               "one EXTI mux cannot serve both; %u us hall poll keeps M3+M4 "
+               "in sync (fix hardware by moving halls off conflicting lines).\n\n",
+               (unsigned)HALL_M3M4_POLL_INTERVAL_US);
+        k_timer_start(&hall_m3m4_timer,
+                  K_USEC(HALL_M3M4_POLL_INTERVAL_US),
+                  K_USEC(HALL_M3M4_POLL_INTERVAL_US));
+    }
 
-	refresh_outputs();
+    refresh_outputs();
 
-	printk("\nRunning - PI speed control on enabled controlled motors\n\n");
+    printk("\nRunning - PI speed control on enabled controlled motors\n\n");
 
-	for (unsigned mi = 0; mi < NMOTORS; mi++) {
-		speed_trans_prev_telem[mi] = m_trans[mi];
-		speed_trans_prev_ctrl[mi] = m_trans[mi];
-		motor_speed_ctrl_reset(mi);
-	}
-	atomic_set(&app_run, 1);
-	(void)k_thread_create(&motor_ctrl_thread_data, motor_ctrl_stack,
-			      K_THREAD_STACK_SIZEOF(motor_ctrl_stack),
-			      motor_ctrl_thread, NULL, NULL, NULL,
-			      MOTOR_CTRL_THREAD_PRIO, 0, K_NO_WAIT);
-	(void)k_thread_create(&can_rx_thread_data, can_rx_stack,
-			      K_THREAD_STACK_SIZEOF(can_rx_stack),
-			      can_rx_thread, NULL, NULL, NULL,
-			      CAN_RX_THREAD_PRIO, 0, K_NO_WAIT);
-	(void)k_thread_create(&can_process_thread_data, can_process_stack,
-			      K_THREAD_STACK_SIZEOF(can_process_stack),
-			      can_process_thread, NULL, NULL, NULL,
-			      CAN_PROCESS_THREAD_PRIO, 0, K_NO_WAIT);
-	(void)k_thread_create(&scheduler_thread_data, scheduler_stack,
-			      K_THREAD_STACK_SIZEOF(scheduler_stack),
-			      scheduler_thread, NULL, NULL, NULL,
-			      SCHEDULER_THREAD_PRIO, 0, K_NO_WAIT);
-	(void)k_thread_create(&soh_thread_data, soh_stack,
-			      K_THREAD_STACK_SIZEOF(soh_stack),
-			      soh_thread, NULL, NULL, NULL,
-			      SOH_THREAD_PRIO, 0, K_NO_WAIT);
+    for (unsigned mi = 0; mi < NMOTORS; mi++) {
+        speed_trans_prev_telem[mi] = m_trans[mi];
+        speed_trans_prev_ctrl[mi] = m_trans[mi];
+        motor_speed_ctrl_reset(mi);
+    }
+    atomic_set(&app_run, 1);
+    (void)k_thread_create(&motor_ctrl_thread_data, motor_ctrl_stack,
+                  K_THREAD_STACK_SIZEOF(motor_ctrl_stack),
+                  motor_ctrl_thread, NULL, NULL, NULL,
+                  MOTOR_CTRL_THREAD_PRIO, 0, K_NO_WAIT);
+    (void)k_thread_create(&can_rx_thread_data, can_rx_stack,
+                  K_THREAD_STACK_SIZEOF(can_rx_stack),
+                  can_rx_thread, NULL, NULL, NULL,
+                  CAN_RX_THREAD_PRIO, 0, K_NO_WAIT);
+    (void)k_thread_create(&can_process_thread_data, can_process_stack,
+                  K_THREAD_STACK_SIZEOF(can_process_stack),
+                  can_process_thread, NULL, NULL, NULL,
+                  CAN_PROCESS_THREAD_PRIO, 0, K_NO_WAIT);
+    (void)k_thread_create(&scheduler_thread_data, scheduler_stack,
+                  K_THREAD_STACK_SIZEOF(scheduler_stack),
+                  scheduler_thread, NULL, NULL, NULL,
+                  SCHEDULER_THREAD_PRIO, 0, K_NO_WAIT);
+    (void)k_thread_create(&soh_thread_data, soh_stack,
+                  K_THREAD_STACK_SIZEOF(soh_stack),
+                  soh_thread, NULL, NULL, NULL,
+                  SOH_THREAD_PRIO, 0, K_NO_WAIT);
 
-	while (atomic_get(&app_run) != 0) {
-		for (unsigned mi = 0; mi < NMOTORS; mi++) {
-			if (motor_is_active(mi) && !m_run[mi]) {
-				process_motor(mi);
-			}
-		}
-		k_msleep(1);
-	}
+    while (atomic_get(&app_run) != 0) {
+        for (unsigned mi = 0; mi < NMOTORS; mi++) {
+            if (motor_is_active(mi) && !m_run[mi]) {
+                process_motor(mi);
+            }
+        }
+        k_msleep(1);
+    }
 
-	k_thread_join(&can_rx_thread_data, K_MSEC(200));
-	k_thread_join(&can_process_thread_data, K_MSEC(200));
-	k_thread_join(&motor_ctrl_thread_data, K_MSEC(200));
-	k_thread_join(&scheduler_thread_data, K_MSEC(200));
-	k_thread_join(&soh_thread_data, K_MSEC(200));
+    k_thread_join(&can_rx_thread_data, K_MSEC(200));
+    k_thread_join(&can_process_thread_data, K_MSEC(200));
+    k_thread_join(&motor_ctrl_thread_data, K_MSEC(200));
+    k_thread_join(&scheduler_thread_data, K_MSEC(200));
+    k_thread_join(&soh_thread_data, K_MSEC(200));
 
-	for (unsigned mi = 0; mi < NMOTORS; mi++) {
-		const motor_desc_t *m = &motor_desc[mi];
+    for (unsigned mi = 0; mi < NMOTORS; mi++) {
+        const motor_desc_t *m = &motor_desc[mi];
 
-		for (int j = 0; j < 3; j++) {
-			gpio_pin_interrupt_configure_dt(m->hall[j],
-							GPIO_INT_DISABLE);
-		}
-	}
+        for (int j = 0; j < 3; j++) {
+            gpio_pin_interrupt_configure_dt(m->hall[j],
+                            GPIO_INT_DISABLE);
+        }
+    }
 
-	k_timer_stop(&hall_m3m4_timer);
+    k_timer_stop(&hall_m3m4_timer);
 
-	all_motors_off();
-	printk("\nStopped.");
-	for (unsigned mi = 0; mi < NMOTORS; mi++) {
-		printk("  M%u trans=%u", mi + 1U, (unsigned)m_trans[mi]);
-	}
-	printk("\n");
+    all_motors_off();
+    printk("\nStopped.");
+    for (unsigned mi = 0; mi < NMOTORS; mi++) {
+        printk("  M%u trans=%u", mi + 1U, (unsigned)m_trans[mi]);
+    }
+    printk("\n");
 
-	return 0;
+    return 0;
 }

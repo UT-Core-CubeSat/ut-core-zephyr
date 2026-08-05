@@ -174,6 +174,7 @@ readme:
 docs:
 	-@$(MKDIR) build
 	doxygen
+	@echo Docs successfully built
 
 host:
 	$(SYS_PYTHON) -m http.server 8080 --directory build/docs/html

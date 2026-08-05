@@ -1,5 +1,6 @@
 /**
  * @file orion_b16_config.c
+ * @ingroup gnss
  * @brief Higher-level configuration recipes for the Orion B16.
  *
  * Provides "one-call" convenience functions that string together multiple

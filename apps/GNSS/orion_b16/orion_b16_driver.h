@@ -1,5 +1,6 @@
 /**
  * @file orion_b16_driver.h
+ * @ingroup gnss
  * @brief High-level Orion B16 GNSS driver for ZephyrRTOS.
  *
  * This driver manages UART communication with the Orion B16, provides a

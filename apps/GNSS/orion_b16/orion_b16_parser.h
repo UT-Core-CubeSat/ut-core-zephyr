@@ -1,5 +1,6 @@
 /**
  * @file orion_b16_parser.h
+ * @ingroup gnss
  * @brief Zero-allocation state-machine parser for the SkyTraq Binary Protocol.
  *
  * Feed raw UART bytes one at a time into `orion_parser_feed_byte()`.

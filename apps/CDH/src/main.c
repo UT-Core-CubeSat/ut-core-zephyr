@@ -2,6 +2,8 @@
  * @defgroup cdh CDH
  * @ingroup apps
  * @brief Command and Data Handling firmware
+ *
+ * @include{doc} ./apps/CDH/README.md
  */
 
 /**
@@ -28,6 +30,8 @@
  *   led0 — pulses briefly on every received CAN frame (activity indicator)
  *   led1 — spare
  *   led2 — controlled remotely via OP_SET_LED ground command
+ *
+ * @todo move CAN code shared between apps into the `common/` directory at git root.
  */
 
 #include <zephyr/kernel.h>
@@ -41,15 +45,11 @@
 #include "common/can_proto.h"
 #include "common/temp_telemetry.h"
 
+/** @cond */ /* Hidden from Doxygen, or it will mistake this as a function */
 LOG_MODULE_REGISTER(cdh, LOG_LEVEL_INF);
+/** @endcond */
 
 /* ================= DEVICE HANDLES ================= */
-/**
- * @name Device Handles
- * @brief Zephyr device/GPIO handles for the CAN controller, GPIO port,
- *        I2C bus, and status LEDs, bound at compile time via devicetree.
- * @{
- */
 
 static const struct device          *can_dev  = DEVICE_DT_GET(CAN_NODE);
 static const struct device          *gpioa    = DEVICE_DT_GET(GPIOA_NODE);
@@ -58,19 +58,17 @@ static const struct gpio_dt_spec     led0     = GPIO_DT_SPEC_GET(LED0_NODE, gpio
 static const struct gpio_dt_spec     led1     = GPIO_DT_SPEC_GET(LED1_NODE, gpios);
 static const struct gpio_dt_spec     led2     = GPIO_DT_SPEC_GET(LED2_NODE, gpios);
 
+/** @cond */ /* Hidden from Doxygen, or it will mistake this as a function */
 /** Hardware-backed CAN RX queue — the driver ISR deposits frames here. */
 CAN_MSGQ_DEFINE(rxq, 16);
+/** @endcond */
 
+/** @cond */ /* Hidden from Doxygen, or it will mistake this as a function */
 /** SW queue between can_rx_thread and can_process_thread. */
 K_MSGQ_DEFINE(can_proc_q, sizeof(struct can_frame), CAN_PROC_Q_LEN, 4);
-
-/** @} */
+/** @endcond */
 
 /* ================= DATA STRUCTURES ================= */
-/**
- * @name Data Structures
- * @{
- */
 
 /**
  * node_status_t — liveness record for one remote satellite subsystem.
@@ -131,15 +129,8 @@ typedef struct {
  */
 static gnss_data_t gnss_latest = {0};
 
-/** @} */
 
 /* ================= MODE STATE MACHINE ================= */
-/**
- * @name Mode State Machine
- * @brief Top-level operating mode for the CDH, gating which threads are
- *        actively doing work vs. idling.
- * @{
- */
 
 /**
  * @brief Current CDH operating mode.
@@ -151,19 +142,9 @@ typedef enum {
     MODE_ERROR
 } cdh_mode_t;
 
-    MODE_SETUP,
-
 volatile cdh_mode_t current_mode = MODE_SETUP;
 
-/** @} */
-
 /* ================= THREAD STACKS ================= */
-/**
- * @name Thread Stacks
- * @brief Static stack allocations and k_thread control blocks for every
- *        CDH thread.
- * @{
- */
 
 K_THREAD_STACK_DEFINE(watchdog_stack,  STACK_SIZE);
 K_THREAD_STACK_DEFINE(can_stack,       STACK_SIZE);
@@ -181,8 +162,6 @@ static struct k_thread can_proc_thread_data;
 static struct k_thread gnss_thread_data;
 static struct k_thread telemetry_thread_data;
 
-/** @} */
-
 /* ================= FORWARD DECLARATIONS ================= */
 
 static void handle_heartbeat(const can_packet_t *pkt);
@@ -195,11 +174,6 @@ static void can_dispatch(const can_packet_t *pkt);
 /* ===================================================== */
 /* ================= UTILITY FUNCTIONS ================== */
 /* ===================================================== */
-/**
- * @name Utility Functions
- * @brief Small helpers for UID reading, LED control, and node lookup.
- * @{
- */
 
 /**
  * @brief Read this MCU's 96-bit factory UID from the flash info area.
@@ -257,17 +231,9 @@ static node_status_t *get_node_status(uint8_t node_id)
     }
 }
 
-/** @} */
-
 /* ===================================================== */
 /* ================= CAN FUNCTIONS ====================== */
 /* ===================================================== */
-/**
- * @name CAN Functions
- * @brief Low-level CAN setup, frame construction, encoding/decoding, and
- *        message dispatch.
- * @{
- */
 
 /**
  * @brief Build and send a single-opcode CAN frame with one data byte.
@@ -365,17 +331,9 @@ static void can_dispatch(const can_packet_t *pkt)
     }
 }
 
-/** @} */
-
 /* ===================================================== */
 /* ================= MESSAGE HANDLERS =================== */
 /* ===================================================== */
-/**
- * @name Message Handlers
- * @brief Per-message-class handlers invoked by can_dispatch(), plus
- *        heartbeat timeout tracking.
- * @{
- */
 
 /**
  * @brief Handle a CLS_CMD_RESP frame — currently only logs/confirms EPS
@@ -565,17 +523,9 @@ static void check_node_timeouts(void)
     }
 }
 
-/** @} */
-
 /* ===================================================== */
 /* ================= SETUP MODE ========================= */
 /* ===================================================== */
-/**
- * @name Setup Mode
- * @brief One-time boot-time initialization run before entering
- *        MODE_STANDARD.
- * @{
- */
 
 /**
  * @brief One-time boot sequence: read/verify UID against the role strap,
@@ -621,16 +571,9 @@ static void setup_mode_init(void)
     current_mode = MODE_STANDARD;
 }
 
-/** @} */
-
 /* ===================================================== */
 /* ================= THREADS ============================ */
 /* ===================================================== */
-/**
- * @name Threads
- * @brief Entry functions for every CDH thread, spawned from main().
- * @{
- */
 
 /**
  * @brief Drains the hardware CAN RX FIFO into the software processing
@@ -791,8 +734,6 @@ void telemetry_thread(void *a, void *b, void *c)
         k_sleep(K_MSEC(TELEMETRY_CHECK_MS));
     }
 }
-
-/** @} */
 
 /* ===================================================== */
 /* ================= MAIN =============================== */

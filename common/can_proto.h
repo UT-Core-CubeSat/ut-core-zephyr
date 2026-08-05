@@ -1,4 +1,9 @@
 #pragma once
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <zephyr/drivers/can.h>
 #include <stdint.h>
 
@@ -108,3 +113,6 @@ static inline void can_fill_payload(struct can_frame *f,
     f->data[6] = p6; f->data[7] = p7;
 }
 
+#ifdef __cplusplus
+}
+#endif

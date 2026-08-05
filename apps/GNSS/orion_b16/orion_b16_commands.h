@@ -1,5 +1,6 @@
 /**
  * @file orion_b16_commands.h
+ * @ingroup gnss
  * @brief Command builders for Host → Orion B16 messages.
  *
  * Each `orion_cmd_build_*()` function serializes a complete SkyTraq binary
