@@ -1,6 +1,7 @@
 
 ZEPHYR_VERSION := 1.0.1
 
+# APPS := ADCS CDH EPS GNSS MOTOR SOLAR
 
 export ZEPHYR_BASE            := $(CURDIR)/zephyr
 export ZEPHYR_SDK_INSTALL_DIR := $(CURDIR)/zephyr/zephyr-sdk-1.0.1
@@ -10,7 +11,7 @@ export ROOT                   := $(CURDIR)
 
 WEST_BFLAGS :=
 # CMAKE_BFLAGS := -DCONFIG_LOG_DEFAULT_LEVEL=3
-CMAKE_BFLAGS :=
+CMAKE_BFLAGS := -DCMAKE_BUILD_PARALLEL_LEVEL=8
 
 
 ifeq ($(OS),Windows_NT)
@@ -131,6 +132,13 @@ build-full:
 	$(MAKE) build APP=apps/MOTOR
 	$(MAKE) build APP=apps/SOLAR
 
+
+# build-full: $(APPS)
+# 
+# $(APPS):
+# 	$(MAKE) build APP=apps/EPS
+
+
 build-can-tests:
 	$(MAKE) build BUILD=build/apps/test/CANtest1 APP=apps/tests/CANtest EXTRA_CFLAGS="-DNODE_ID=1"
 	$(MAKE) build BUILD=build/apps/test/CANtest2 APP=apps/tests/CANtest EXTRA_CFLAGS="-DNODE_ID=2"
@@ -183,6 +191,8 @@ host:
 	$(SYS_PYTHON) -m http.server 8080 --directory build/docs/html
 
 .PHONY: setup update
-.PHONY: build build-full build-can-tests flash
+# .PHONY: build build-full build-can-tests flash $(APPS)
+.PHONY: build build-full build-can-tests flash $(APPS)
 .PHONY: debug simulate simulate-full gdb listen
 .PHONY: clean clean-purge readme host docs
+

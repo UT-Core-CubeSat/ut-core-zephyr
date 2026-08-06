@@ -1,5 +1,3 @@
-<!-- \\page git_readme GIT Readme -->
-
 # UT CubeSat - Zephyr RTOS Development
 
 Custom STM32U5A5RJTXQ6Q board firmware for our CubeSat project using Zephyr RTOS.
@@ -51,8 +49,6 @@ apps/<appname>/             Application directory
 
 ## How to Build
 
-(Only tested on Debian)
-
 
 ### Install dependancies (Windows)
 
@@ -89,11 +85,6 @@ sudo apt install --no-install-recommends git cmake ninja-build gperf \
 # install dependancies for debugging (optional)
 sudo apt install openocd gdb-multiarch
 ```
-
-
-### Install dependancies (Windows)
-
-(TBD)
 
 
 ### Setup environment and install Zephyr
