@@ -37,15 +37,14 @@ jobs:
 
       - name: Build docs
         run: |
-          make -C master-checkout   docs || echo "::warning::master failed to build! (remove this later)"
+          make -C master-checkout   docs
           make -C unstable-checkout docs || echo "::warning::unstable failed to build!"
           make -C doctest-checkout  docs || echo "::warning::doctest failed to build!"
 
       - name: Assemble combined site
         run: |
           mkdir -p combined/
-          mv master-checkout/build/docs/html   combined/stable/ ||
-                echo "::warning::master failed to copy! (remove this later)"
+          mv master-checkout/build/docs/html   combined/stable/
           mv unstable-checkout/build/docs/html combined/unstable/ ||
                 echo "::warning::unstable failed to copy!"
           mv doctest-checkout/build/docs/html  combined/test/ ||

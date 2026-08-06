@@ -1,11 +1,9 @@
 #pragma once
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-/*
- * UT-CORE Shared Temperature Telemetry
+/**
+ * @file temp_telemetry.h
+ * @ingroup common
+ * @brief UT-CORE Shared Temperature Telemetry
  *
  * I2C temperature sensor reader for TMP1xx/TMP275-family sensors.
  * All boards include this header and call the functions with their
@@ -17,6 +15,11 @@ extern "C" {
  *   To integer °C (rounded):  (temp_q4 + 8) / 16
  */
 
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/i2c.h>
 #include <zephyr/sys/printk.h>
@@ -24,36 +27,36 @@ extern "C" {
 
 /* ============== Sensor Configuration ============== */
 
-/* TMP1xx I2C 7-bit addresses (A0-A2 strap pins → 0x48-0x4D). */
+/** TMP1xx I2C 7-bit addresses (A0-A2 strap pins → 0x48-0x4D). */
 static const uint8_t temp_addrs[] = { 0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D };
 #define NUM_TEMP_SENSORS ((uint8_t)(sizeof(temp_addrs) / sizeof(temp_addrs[0])))
 
-/* TMP1xx temperature register address. */
+/** TMP1xx temperature register address. */
 #define TEMP_REG 0x00
 
 /* ============== Data Structures ============== */
 
-/* Single sensor reading. */
+/** Single sensor reading. */
 struct temp_sample {
-    uint8_t addr;      /* I2C address (0x48-0x4D), for debug labelling   */
-    int16_t temp_q4;   /* Temperature in Q4 (degC * 16); 0 if read failed */
-    int     status;    /* 0 = success, negative errno on I2C failure      */
+    uint8_t addr;      /**< I2C address (0x48-0x4D), for debug labelling   */
+    int16_t temp_q4;   /**< Temperature in Q4 (degC * 16); 0 if read failed */
+    int     status;    /**< 0 = success, negative errno on I2C failure      */
 };
 
-/* Snapshot of all sensors at one instant. */
+/** Snapshot of all sensors at one instant. */
 struct temp_telemetry {
-    uint32_t t_ms;                          /* k_uptime_get_32() timestamp */
-    struct temp_sample s[NUM_TEMP_SENSORS]; /* Same order as temp_addrs[]  */
+    uint32_t t_ms;                          /**< k_uptime_get_32() timestamp */
+    struct temp_sample s[NUM_TEMP_SENSORS]; /**< Same order as temp_addrs[]  */
 };
 
 /* ============== Functions ============== */
 
-/*
- * temp_telemetry_read_all() - Poll every configured sensor over I2C.
+/**
+ * @brief Poll every configured sensor over I2C.
  *
- * @bus:  Zephyr I2C device handle (caller provides — each board may differ).
- * @out:  Caller-allocated telemetry struct to fill.
- * @return: Number of sensors read successfully (0 to NUM_TEMP_SENSORS).
+ * @param bus Zephyr I2C device handle (caller provides — each board may differ).
+ * @param out Caller-allocated telemetry struct to fill.
+ * @return Number of sensors read successfully (0 to NUM_TEMP_SENSORS).
  *
  * Per-sensor failures are recorded in s[i].status; a dead sensor does not
  * invalidate the rest of the snapshot.
@@ -90,8 +93,9 @@ static inline int temp_telemetry_read_all(const struct device *bus,
     return ok;
 }
 
-/*
- * print_temp_q4() - Print a Q4 value as a rounded integer °C.
+/**
+ * @brief Print a Q4 value as a rounded integer °C.
+ * @param t_q4 Temperature in Q4 fixed-point (degC * 16).
  */
 static inline void print_temp_q4(int16_t t_q4)
 {
@@ -99,8 +103,10 @@ static inline void print_temp_q4(int16_t t_q4)
     printk("%ld", (long)temp_c);
 }
 
-/*
- * temp_telemetry_print() - Print a full snapshot to console.
+/**
+ * @brief Print a full snapshot to console.
+ * @param t Telemetry snapshot to print.
+ *
  * Format: "t=<ms> ms | 0x48:25C  0x49:ERR(-5) ..."
  */
 static inline void temp_telemetry_print(const struct temp_telemetry *t)

@@ -5,10 +5,12 @@
     - @ref contributing
     - @ref onboarding
     - @ref zephyr
-- @ref apps
-    - @ref adcs
-    - @ref cdh
-    - @ref eps
-    - @ref gnss
-    - @ref motor
-    - @ref solar
+- Code Docs
+    - @ref common
+    - @ref apps
+        - @ref adcs
+        - @ref cdh
+        - @ref eps
+        - @ref gnss
+        - @ref motor
+        - @ref solar

@@ -20,3 +20,6 @@ target_include_directories(app PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/orion_b16
     $ENV{ROOT}
 )
+
+add_subdirectory($ENV{ROOT}/common ${CMAKE_BINARY_DIR}/common)
+target_link_libraries(app PRIVATE common)

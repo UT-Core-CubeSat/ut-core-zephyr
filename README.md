@@ -192,6 +192,34 @@ make simulate BUILD=build/<appname>
 ```
 
 
+## How to build and host docs
+
+### Install dependancies
+
+```bash
+# Install doxygen (Ubuntu/Debian)
+sudo apt install doxygen
+```
+
+If on windows, install doxygen from [here](https://www.doxygen.nl/download.html).
+
+### Building and hosting the docs
+
+```bash
+# build docs
+make docs
+
+# host docs via localhost
+# Will host it on `http://127.0.0.1:8080/`
+make host
+```
+
+Pushing to the branches `master`, `unstable`, or `doctest` will trigger a GitHub Action, and will deploy the site to these URLS:
+- https://ut-core-cubesat.github.io/ut-core-zephyr/stable
+- https://ut-core-cubesat.github.io/ut-core-zephyr/unstable
+- https://ut-core-cubesat.github.io/ut-core-zephyr/test
+
+
 ## Resources
 
 For more information on Zephyr, 

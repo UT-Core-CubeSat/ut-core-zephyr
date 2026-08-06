@@ -123,15 +123,18 @@ build:
 
 
 build-full:
-	$(MAKE) build APP=apps/cdhMain
-	$(MAKE) build APP=apps/GNSS
+	$(MAKE) build APP=apps/ADCS
+	$(MAKE) build APP=apps/CDH
+	# $(MAKE) build APP=apps/COMMS
 	$(MAKE) build APP=apps/EPS
-	$(MAKE) build APP=apps/solarconglomMain
+	$(MAKE) build APP=apps/GNSS
+	$(MAKE) build APP=apps/MOTOR
+	$(MAKE) build APP=apps/SOLAR
 
 build-can-tests:
-	$(MAKE) build BUILD=build/apps/test/CANtest1 APP=apps/test/CANtest EXTRA_CFLAGS="-DNODE_ID=1"
-	$(MAKE) build BUILD=build/apps/test/CANtest2 APP=apps/test/CANtest EXTRA_CFLAGS="-DNODE_ID=2"
-	$(MAKE) build BUILD=build/apps/test/CANloop APP=apps/test/CANtest EXTRA_CFLAGS="-DLOOPBACK_TEST"
+	$(MAKE) build BUILD=build/apps/test/CANtest1 APP=apps/tests/CANtest EXTRA_CFLAGS="-DNODE_ID=1"
+	$(MAKE) build BUILD=build/apps/test/CANtest2 APP=apps/tests/CANtest EXTRA_CFLAGS="-DNODE_ID=2"
+	$(MAKE) build BUILD=build/apps/test/CANloop APP=apps/tests/CANtest EXTRA_CFLAGS="-DLOOPBACK_TEST"
 
 
 simulate:

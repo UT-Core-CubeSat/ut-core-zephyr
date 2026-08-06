@@ -8,3 +8,6 @@ project(eps)
 #target_sources(app PRIVATE src/main.c)
 target_sources(app PRIVATE src/demo.c)
 target_include_directories(app PRIVATE $ENV{ROOT})
+
+add_subdirectory($ENV{ROOT}/common ${CMAKE_BINARY_DIR}/common)
+target_link_libraries(app PRIVATE common)
