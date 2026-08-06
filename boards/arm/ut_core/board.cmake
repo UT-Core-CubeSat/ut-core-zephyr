@@ -20,3 +20,6 @@ include(${ZEPHYR_BASE}/boards/common/stm32cubeprogrammer.board.cmake)
 include(${ZEPHYR_BASE}/boards/common/openocd-stm32.board.cmake)
 include(${ZEPHYR_BASE}/boards/common/pyocd.board.cmake)
 include(${ZEPHYR_BASE}/boards/common/jlink.board.cmake)
+
+# for simulation
+include(${ZEPHYR_BASE}/boards/common/renode.board.cmake)

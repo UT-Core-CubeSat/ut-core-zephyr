@@ -1,0 +1,53 @@
+#include <zephyr/dt-bindings/pwm/pwm.h>
+#include <zephyr/dt-bindings/pinctrl/stm32-pinctrl.h>
+
+/*
+ * Solarconglomerator PWM overlay — STM32U5A5
+ *
+ * PC5 = TIM1_CH4N (AF1) — complementary, needs MOE+CC4NE in code
+ * PC6 = TIM3_CH1  (AF2)
+ * PA7 = TIM3_CH2  (AF2)
+ * PC9 = TIM3_CH4  (AF2)
+ */
+
+&pinctrl {
+	/* TIM1 complementary output */
+	tim1_ch4n_pc5: tim1_ch4n_pc5 {
+		pinmux = <STM32_PINMUX('C', 5, AF1)>;
+	};
+
+	/* TIM3 channels */
+	tim3_ch1_pc6: tim3_ch1_pc6 {
+		pinmux = <STM32_PINMUX('C', 6, AF2)>;
+	};
+
+	tim3_ch2_pa7: tim3_ch2_pa7 {
+		pinmux = <STM32_PINMUX('A', 7, AF2)>;
+	};
+
+	tim3_ch4_pc9: tim3_ch4_pc9 {
+		pinmux = <STM32_PINMUX('C', 9, AF2)>;
+	};
+};
+
+&timers1 {
+	status = "okay";
+	st,prescaler = <0>;
+
+	pwm1: pwm {
+		status = "okay";
+		pinctrl-0 = <&tim1_ch4n_pc5>;
+		pinctrl-names = "default";
+	};
+};
+
+&timers3 {
+	status = "okay";
+	st,prescaler = <0>;
+
+	pwm3: pwm {
+		status = "okay";
+		pinctrl-0 = <&tim3_ch1_pc6 &tim3_ch2_pa7 &tim3_ch4_pc9>;
+		pinctrl-names = "default";
+	};
+};

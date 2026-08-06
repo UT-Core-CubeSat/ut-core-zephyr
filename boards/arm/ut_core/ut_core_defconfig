@@ -62,4 +62,3 @@ CONFIG_PRINTK=y
 
 # If enabled, HSI48 can cause waits; disable if you don't need it right now
 #CONFIG_STM32_HSI48=n
-

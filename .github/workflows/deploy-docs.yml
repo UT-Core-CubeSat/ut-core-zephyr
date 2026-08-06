@@ -1,0 +1,65 @@
+name: Deploy Doxygen Docs
+on:
+  push:
+    branches: [master, unstable, doctest]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          path: master-checkout
+
+      - name: Checkout unstable
+        uses: actions/checkout@v4
+        with:
+          ref: unstable
+          path: unstable-checkout
+
+      - name: Checkout doctest
+        uses: actions/checkout@v4
+        with:
+          ref: doctest
+          path: doctest-checkout
+
+      - name: Install Doxygen
+        run: sudo apt-get update && sudo apt-get install -y doxygen make
+
+      - name: Build docs
+        run: |
+          make -C master-checkout   docs
+          make -C unstable-checkout docs || echo "::warning::unstable failed to build!"
+          make -C doctest-checkout  docs || echo "::warning::doctest failed to build!"
+
+      - name: Assemble combined site
+        run: |
+          mkdir -p combined/
+          mv master-checkout/build/docs/html   combined/stable/
+          mv unstable-checkout/build/docs/html combined/unstable/ ||
+                echo "::warning::unstable failed to copy!"
+          mv doctest-checkout/build/docs/html  combined/test/ ||
+                echo "::warning::doctest failed to copy!"
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: combined
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

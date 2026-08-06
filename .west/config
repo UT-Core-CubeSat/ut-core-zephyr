@@ -1,0 +1,10 @@
+[manifest]
+path = .west
+file = west.yml
+
+[zephyr]
+base = zephyr
+
+[build]
+board_warn = false
+

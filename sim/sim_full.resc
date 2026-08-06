@@ -1,0 +1,41 @@
+mach create "cdh"
+machine LoadPlatformDescription @boards/arm/ut_core/ut_core.repl
+machine StartGdbServer 3330
+showAnalyzer lpuart1
+sysbus LoadELF @build/apps/cdhMain/zephyr/zephyr.elf
+
+mach create "gnss"
+machine LoadPlatformDescription @boards/arm/ut_core/ut_core.repl
+machine StartGdbServer 3331
+showAnalyzer usart3
+sysbus LoadELF @build/apps/GNSS/zephyr/zephyr.elf
+
+mach create "eps"
+machine LoadPlatformDescription @boards/arm/ut_core/ut_core.repl
+machine StartGdbServer 3332
+showAnalyzer lpuart1
+sysbus LoadELF @build/apps/EPS/zephyr/zephyr.elf
+
+mach create "solar"
+machine LoadPlatformDescription @boards/arm/ut_core/ut_core.repl
+machine StartGdbServer 3333
+showAnalyzer lpuart1
+sysbus LoadELF @build/apps/solarconglomMain/zephyr/zephyr.elf
+
+emulation CreateCANHub "canHub"
+
+mach set "cdh"
+connector Connect sysbus.fdcan1 canHub
+
+mach set "gnss"
+connector Connect sysbus.fdcan1 canHub
+
+mach set "eps"
+connector Connect sysbus.fdcan1 canHub
+
+mach set "solar"
+connector Connect sysbus.fdcan1 canHub
+
+mach set "cdh"
+
+# start

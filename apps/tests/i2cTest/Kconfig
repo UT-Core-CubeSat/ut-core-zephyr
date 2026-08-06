@@ -1,0 +1,7 @@
+mainmenu "UT-Core Zephyr CubeSat"
+
+source "$(ZEPHYR_BASE)/Kconfig.zephyr"
+
+config APPLICATION
+    bool "UT-Core CubeSat Application"
+    default y
