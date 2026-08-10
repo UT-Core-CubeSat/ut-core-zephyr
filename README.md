@@ -220,6 +220,10 @@ make sim
 make simulate BUILD=build/<appname>
 ```
 
+Then run the simulation by either hooking into it with `gdb` via `make gdb`, or in the renode console type `start`.
+
+If you do not see any logging output on the simulation, then you may be using the wrong logging backend. Try building with `LOG_UART=1` or run `make build-sim` in the app directory.
+
 ---
 
 ## How to build and host docs

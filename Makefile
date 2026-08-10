@@ -97,6 +97,12 @@ WEST_BFLAGS += -b $(BOARD)
 endif
 
 
+# To quell weird sim errors
+export TERM := vt100
+
+
+
+
 help: all
 
 
@@ -167,8 +173,9 @@ build-can-tests:
 	$(MAKE) build BUILD=build/apps/test/CANloop APP=apps/tests/CANtest EXTRA_CFLAGS="-DLOOPBACK_TEST"
 
 
+# App must be built with UART as a logging backend. e.g. building with `LOG_UART=1`
 simulate:
-	renode -e 'include @boards/arm/ut_core/support/ut_core.resc; sysbus LoadELF @$(BUILD)/zephyr/zephyr.elf;'
+	renode -e 'include @sim/general.resc; sysbus LoadELF @$(BUILD)/zephyr/zephyr.elf;'
 
 
 # simulate-full:

@@ -1,0 +1,4 @@
+mach create "board"
+machine LoadPlatformDescription @boards/arm/ut_core/ut_core.repl
+machine StartGdbServer 3333
+showAnalyzer lpuart1
