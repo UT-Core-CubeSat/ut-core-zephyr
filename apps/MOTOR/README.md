@@ -1,4 +1,6 @@
-<!-- \page motor_readme MOTOR Readme -->
+See <u>Files</u> above for function documentation.
+
+Back to [Contents](@ref index)
 
 # BLDC Hall Commutation with ST L6234
 
@@ -105,7 +107,3 @@ This creates a rotating magnetic field that keeps the rotor spinning.
 <!-- ``` -->
 <!-- west build -p always -b ut_core ut-core\app\bldcHallL6234 -->
 <!-- ``` -->
-
-
-
-@todo many of the source files have shared code that should be moved to the common.c and common.h source file.

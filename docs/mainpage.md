@@ -2,14 +2,12 @@ Back to [UT-Core Docs Software](https://ut-core-cubesat.github.io/ut-core-docs/s
 
 # Contents
 
-- @ref getting-started
-    - @ref building
-    - @ref contributing
-    - @ref onboarding
-    - @ref zephyr
-- Code Docs
+- Getting Started
+    - [How to Build / Flash / Etc.](@ref readme)
+    - [How to Contribute](@ref contribute)
+- Generated Docs
     - @ref common
-    - @ref apps
+    - Apps
         - @ref adcs
         - @ref cdh
         - @ref eps

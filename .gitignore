@@ -30,4 +30,5 @@ zephyr-sdk*/
 /old/
 *.old
 *deleteme*
-*.ignore*
+*.ignore
+*.ignore.*

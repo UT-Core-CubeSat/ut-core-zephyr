@@ -1,0 +1,45 @@
+name: Feature / Task
+description: New work, a feature, or a task to be done
+labels: ["feature"]
+body:
+  - type: dropdown
+    id: subsystem
+    attributes:
+      label: Subsystem
+      options:
+        - adcs
+        - cdh
+        - comms
+        - eps
+        - gnss
+        - motor
+        - solar
+        - build-system
+        - docs
+        - other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What needs to be done, and why?
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria (optional)
+      description: How will you know this is done?
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Related issues, design notes, or anything else relevant.
+    validations:
+      required: false
