@@ -34,14 +34,14 @@ clean:
 	$(MAKE) -C $(GITROOT) clean
 
 help:
-	@echo "make build       build source for hardware"
-	@echo "make build-sim   build source for simulation"
-	@echo "make flash       flashes binary to board"
-	@echo "make sim         launches simulation"
-	@echo "make gdb         launches GDB client to debug board"
-	@echo "make debug       launches OpenOCD server to connect to board"
-	@echo "make listen      launches TCP client to view debug logs"
-	@echo "make clean       removes build files and binaries"
-	@echo "make help        print this help message"
+	@echo make help ........ print this help message
+	@echo make build ....... build source for hardware
+	@echo make build-sim ... build source for simulation
+	@echo make flash ....... flashes binary to board
+	@echo make sim ......... launches simulation
+	@echo make debug ....... launches OpenOCD server to connect to board
+	@echo make gdb ......... launches GDB client to debug board
+	@echo make listen ...... launches TCP client to view debug logs
+	@echo make clean ....... removes build files and binaries
 
 .PHONY: build debug flash sim gdb listen clean help

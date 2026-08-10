@@ -1,0 +1,146 @@
+name: Verify Build for all Core Apps
+on:
+  push:
+    branches: [master, unstable]
+  pull_request:
+    branches: [master, unstable]
+
+jobs:
+  # ---------------------------------------------------------------------
+  # SETUP JOB
+  # Runs once per workflow run. Installs system deps, builds/restores the
+  # Zephyr SDK + workspace cache, and only runs the (slow) `make setup`
+  # step if nothing usable was found in the cache. This guarantees the
+  # matrix jobs below never race each other to build the same cache.
+  # ---------------------------------------------------------------------
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      # Expose the cache key so the build matrix can restore the exact
+      # same cache entry without recomputing it (though recomputing via
+      # hashFiles() again would also work, since it's deterministic).
+      cache-key: ${{ steps.cache-key.outputs.key }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # System-level build dependencies required by Zephyr's toolchain.
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install --no-install-recommends git cmake ninja-build gperf \
+              ccache dfu-util device-tree-compiler wget python3-dev python3-venv python3-tk \
+              xz-utils file make gcc gcc-multilib g++-multilib libsdl2-dev libmagic1
+
+      # Build a cache key from the west.yml manifest — if the manifest
+      # (i.e. Zephyr module versions/deps) hasn't changed, we can reuse
+      # a previously cached SDK + workspace instead of rebuilding it.
+      - name: Compute cache key
+        id: cache-key
+        run: echo "key=zephyr-${{ runner.os }}-${{ hashFiles('**/west.yml') }}" >> "$GITHUB_OUTPUT"
+
+      # Try to restore a previous cache matching this key. `cache-hit`
+      # tells us whether we got a match (true) or a miss (false/empty).
+      - name: Cache Zephyr SDK and workspace
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/zephyr
+            zephyr
+            modules
+            .venv
+          key: ${{ steps.cache-key.outputs.key }}
+
+      # Only do the expensive Zephyr setup if we didn't get a cache hit.
+      # actions/cache automatically saves the paths above at the end of
+      # this job, so the next run (or a changed west.yml) will populate
+      # a fresh cache entry.
+      - name: Set up Zephyr
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: make setup
+
+  # ---------------------------------------------------------------------
+  # BUILD JOB (matrix)
+  # Depends on `setup` completing first, so the cache is guaranteed to
+  # exist by the time these jobs start — no redundant parallel installs.
+  # ---------------------------------------------------------------------
+  build:
+    needs: setup
+    runs-on: ubuntu-latest
+    strategy:
+      # Don't cancel other matrix jobs if one app fails to build.
+      fail-fast: false
+      matrix:
+        pp: [CDH, EPS, GNSS, MOTOR, SOLAR, ADCS]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Re-install system deps on this runner too — apt packages aren't
+      # part of the Zephyr cache and each matrix job gets its own fresh
+      # VM, but this is fast (mostly apt cache hits) compared to `make setup`.
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install --no-install-recommends git cmake ninja-build gperf \
+              ccache dfu-util device-tree-compiler wget python3-dev python3-venv python3-tk \
+              xz-utils file make gcc gcc-multilib g++-multilib libsdl2-dev libmagic1
+
+      # Restore the exact cache built by the `setup` job — this should
+      # always be a cache hit since `setup` ran and saved it already.
+      - name: Restore Zephyr SDK and workspace
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/zephyr
+            zephyr
+            modules
+            .venv
+          key: ${{ needs.setup.outputs.cache-key }}
+
+      # Build the specific app for this matrix entry.
+      - name: Build ${{ matrix.pp }}
+        run: make build APP=apps/${{ matrix.pp }}
+
+
+
+
+# name: Verify Build for all Core Apps
+# 
+# on:
+#   push:
+#     branches: [master, unstable]
+#   pull_request:
+#     branches: [master, unstable]
+# 
+# jobs:
+#   build:
+#     runs-on: ubuntu-latest
+#     strategy:
+#       fail-fast: false
+#       matrix:
+#         app: [CDH, EPS, GNSS, MOTOR, SOLAR, ADCS]
+#     steps:
+#       - uses: actions/checkout@v4
+# 
+#       - name: Install dependencies
+#         run: |
+#           sudo apt update
+#           sudo apt install --no-install-recommends git cmake ninja-build gperf \
+#               ccache dfu-util device-tree-compiler wget python3-dev python3-venv python3-tk \
+#               xz-utils file make gcc gcc-multilib g++-multilib libsdl2-dev libmagic1
+# 
+#       - name: Cache Zephyr SDK and workspace
+#         uses: actions/cache@v4
+#         with:
+#           path: |
+#             ~/.cache/zephyr
+#             zephyr
+#             modules
+#             .venv
+#           key: zephyr-${{ runner.os }}-${{ hashFiles('**/west.yml') }}
+# 
+#       - name: Set up Zephyr
+#         run: make setup
+# 
+#       - name: Build ${{ matrix.app }}
+#         run: make build APP=apps/${{ matrix.app }}

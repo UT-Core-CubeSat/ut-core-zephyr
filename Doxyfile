@@ -1,112 +1,116 @@
 #---------------------------------------------------------------------------
-# Project settings
+# Project Information
 #---------------------------------------------------------------------------
-PROJECT_NAME           = "UT Core CubeSat Firmware"
-PROJECT_BRIEF          = "Firmware documentation for all onboard subsystems"
-OUTPUT_DIRECTORY       = ./build/docs
-CREATE_SUBDIRS         = NO
-OUTPUT_LANGUAGE        = English
+PROJECT_NAME             = "UT Core CubeSat Firmware"
+PROJECT_BRIEF            = "Firmware documentation for all onboard subsystems"
+OUTPUT_LANGUAGE          = English
 
 #---------------------------------------------------------------------------
-# Input
+# Build / Input
 #---------------------------------------------------------------------------
-INPUT                   = .
-RECURSIVE               = YES
-FILE_PATTERNS           = *.c *.h *.cpp *.hpp */docs/*.md *.dox
-EXCLUDE_PATTERNS        = */build/* */.venv/* */__pycache__/* */zephyr/* */modules/* */bootloader/* \
-                          */zephyr-sdk/* */old/* *.old
-EXCLUDE                 = ./docs/doxygen-awesome-css
-USE_MDFILE_AS_MAINPAGE  = ./docs/mainpage.md
-LAYOUT_FILE             = ./docs/DoxygenLayout.xml
+INPUT                    = .
+RECURSIVE                = YES
+FILE_PATTERNS            = *.c *.h *.cpp *.hpp */docs/*.md *.dox
+EXCLUDE                  = ./docs/doxygen-awesome-css
+EXCLUDE_PATTERNS         = */build/* */.venv/* */__pycache__/* */zephyr/* */modules/* */bootloader/* \
+                           */zephyr-sdk/* */old/* *.old
+EXAMPLE_PATH             = .
+USE_MDFILE_AS_MAINPAGE   = ./docs/mainpage.md
+LAYOUT_FILE              = ./docs/DoxygenLayout.xml
+OUTPUT_DIRECTORY         = ./build/docs
+CREATE_SUBDIRS           = NO
 
 #---------------------------------------------------------------------------
-# Extraction — pull in everything, even undocumented/static items
+# Extraction & Visibility
 #---------------------------------------------------------------------------
-EXTRACT_ALL             = NO
-EXTRACT_STATIC          = YES
-EXTRACT_PRIVATE         = YES
-EXTRACT_LOCAL_METHODS   = YES
-EXTRACT_ANON_NSPACES    = YES
-HIDE_UNDOC_MEMBERS      = YES
-HIDE_UNDOC_CLASSES      = YES
+EXTRACT_ALL              = NO
+EXTRACT_STATIC           = YES
+EXTRACT_PRIVATE          = YES
+EXTRACT_LOCAL_METHODS    = YES
+EXTRACT_ANON_NSPACES     = YES
+HIDE_UNDOC_MEMBERS       = YES
+HIDE_UNDOC_CLASSES       = YES
+BRIEF_MEMBER_DESC        = NO
+JAVADOC_AUTOBRIEF        = NO
 
 #---------------------------------------------------------------------------
-# Warnings — helps you catch config problems (files not found, etc.)
+# Warnings
 #---------------------------------------------------------------------------
-QUIET                   = YES
-WARNINGS                = YES
-WARN_IF_UNDOCUMENTED    = YES
-WARN_IF_DOC_ERROR       = YES
-WARN_NO_PARAMDOC        = NO
+QUIET                    = YES
+WARNINGS                 = YES
+WARN_IF_UNDOCUMENTED     = YES
+WARN_IF_DOC_ERROR        = YES
+WARN_NO_PARAMDOC         = NO
 
 #---------------------------------------------------------------------------
-# Grouping — lets you organize by "app" via @defgroup / @ingroup
+# Grouping
 #---------------------------------------------------------------------------
-DISTRIBUTE_GROUP_DOC    = YES
+DISTRIBUTE_GROUP_DOC     = YES
+SHOW_GROUPED_MEMB_INC    = YES
 
 #---------------------------------------------------------------------------
-# Namespaces / classes — suppress C++-oriented sections not relevant to C
+# Namespaces / Files / Lists
 #---------------------------------------------------------------------------
-SHOW_NAMESPACES         = NO
-SHOW_FILES              = YES
-GENERATE_TESTLIST       = YES
-GENERATE_BUGLIST        = YES
-GENERATE_DEPRECATEDLIST = YES
-GENERATE_TODOLIST       = YES
+SHOW_NAMESPACES          = NO
+SHOW_FILES               = YES
+IMPLICIT_DIR_DOCS        = YES
+OPTIMIZE_OUTPUT_FOR_C    = YES
+GENERATE_TESTLIST        = YES
+GENERATE_BUGLIST         = YES
+GENERATE_DEPRECATEDLIST  = YES
+GENERATE_TODOLIST        = YES
 
 #---------------------------------------------------------------------------
-# HTML output
+# Source Browsing
 #---------------------------------------------------------------------------
-GENERATE_HTML           = YES
-GENERATE_LATEX          = NO
-GENERATE_TREEVIEW       = YES
-HTML_OUTPUT             = html
-DISABLE_INDEX           = NO
-FULL_SIDEBAR            = NO
-SORT_MEMBER_DOCS        = YES
-SORT_BRIEF_DOCS         = YES
+SOURCE_BROWSER           = YES
 
 #---------------------------------------------------------------------------
-# Custom Styling
+# HTML Output
 #---------------------------------------------------------------------------
-HTML_HEADER           = docs/src/header.html
-HTML_FOOTER           = docs/src/footer.html
-HTML_COLORSTYLE       = DARK
-HTML_EXTRA_STYLESHEET = docs/doxygen-awesome-css/doxygen-awesome.css \
-                        docs/doxygen-awesome-css/doxygen-awesome-sidebar-only.css \
-                        docs/doxygen-awesome-css/doxygen-awesome-sidebar-only-darkmode-toggle.css
-HTML_EXTRA_FILES      = docs/doxygen-awesome-css/doxygen-awesome-darkmode-toggle.js \
-                        docs/doxygen-awesome-css/doxygen-awesome-fragment-copy-button.js
+GENERATE_HTML            = YES
+GENERATE_LATEX           = NO
+GENERATE_TREEVIEW        = YES
+HTML_OUTPUT              = html
+DISABLE_INDEX            = NO
+FULL_SIDEBAR             = NO
+SORT_MEMBER_DOCS         = YES
+SORT_BRIEF_DOCS          = YES
+HTML_COPY_CLIPBOARD      = NO
 
 #---------------------------------------------------------------------------
-# Graphs — off by default; flip to YES + install graphviz if you want them
+# Custom Styling / Theme
 #---------------------------------------------------------------------------
-HAVE_DOT                = NO
-# CALL_GRAPH            = YES
-# CALLER_GRAPH          = YES
-# CLASS_GRAPH           = YES
-# INCLUDE_GRAPH         = YES
-# INCLUDED_BY_GRAPH     = YES
-# DOT_IMAGE_FORMAT      = svg
+HTML_HEADER              = docs/src/header.html
+HTML_FOOTER              = docs/src/footer.html
+HTML_COLORSTYLE          = DARK
+HTML_EXTRA_STYLESHEET    = docs/doxygen-awesome-css/doxygen-awesome.css \
+                           docs/doxygen-awesome-css/doxygen-awesome-sidebar-only.css \
+                           docs/doxygen-awesome-css/doxygen-awesome-sidebar-only-darkmode-toggle.css \
+                           docs/src/custom.css
+HTML_EXTRA_FILES         = docs/doxygen-awesome-css/doxygen-awesome-darkmode-toggle.js \
+                           docs/doxygen-awesome-css/doxygen-awesome-fragment-copy-button.js
 
 #---------------------------------------------------------------------------
-# Preprocessing (usually fine as-is for embedded C)
+# Graphs
 #---------------------------------------------------------------------------
-ENABLE_PREPROCESSING    = YES
-MACRO_EXPANSION         = NO
-SEARCH_INCLUDES         = YES
+HAVE_DOT                 = YES
+CALL_GRAPH               = YES
+CALLER_GRAPH             = YES
+CLASS_GRAPH              = YES
+INCLUDE_GRAPH            = YES
+INCLUDED_BY_GRAPH        = YES
+DOT_IMAGE_FORMAT         = svg
+INTERACTIVE_SVG          = NO
 
 #---------------------------------------------------------------------------
-# Performance / build settings
+# Preprocessing
 #---------------------------------------------------------------------------
-NUM_PROC_THREADS = 0
+ENABLE_PREPROCESSING     = YES
+MACRO_EXPANSION          = NO
+SEARCH_INCLUDES          = YES
 
-
-SHOW_GROUPED_MEMB_INC  = YES
-DISTRIBUTE_GROUP_DOC   = YES
-JAVADOC_AUTOBRIEF      = NO
-HTML_COPY_CLIPBOARD    = NO
-SOURCE_BROWSER         = YES
-IMPLICIT_DIR_DOCS      = YES
-OPTIMIZE_OUTPUT_FOR_C  = YES
-BRIEF_MEMBER_DESC      = NO
+#---------------------------------------------------------------------------
+# Performance / Build Settings
+#---------------------------------------------------------------------------
+NUM_PROC_THREADS         = 0

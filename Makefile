@@ -1,6 +1,15 @@
+# ============================================ #
+#                  IMPORTANT                   #
+# ============================================ #
+#                                              #
+# Keep in mind any changes made to this file   #
+# MUST work for both Windows CMD and Bash!     #
+#                                              #
+
 
 ZEPHYR_VERSION := 1.0.1
 
+# APPS := ADCS CDH EPS GNSS MOTOR SOLAR
 
 export ZEPHYR_BASE            := $(CURDIR)/zephyr
 export ZEPHYR_SDK_INSTALL_DIR := $(CURDIR)/zephyr/zephyr-sdk-1.0.1
@@ -10,9 +19,10 @@ export ROOT                   := $(CURDIR)
 
 WEST_BFLAGS :=
 # CMAKE_BFLAGS := -DCONFIG_LOG_DEFAULT_LEVEL=3
-CMAKE_BFLAGS :=
+CMAKE_BFLAGS := -DCMAKE_BUILD_PARALLEL_LEVEL=8
 
 
+# Platform specific variables
 ifeq ($(OS),Windows_NT)
 SYS_PYTHON	:= python
 PYBIN		:= .venv/Scripts
@@ -47,7 +57,7 @@ endif
 
 
 # Require BUILD variable be defined to run following rules
-ifneq ($(filter flash debug simulate gdb,$(MAKECMDGOALS)),)
+ifneq ($(filter flash simulate gdb,$(MAKECMDGOALS)),)
 ifndef BUILD
 $(error BUILD is not defined)
 endif
@@ -91,11 +101,24 @@ help: all
 
 
 all:
-	@echo make setup
-	@echo make update
-	@echo "make build APP=<APP>"
-	@echo make clean
-	@echo make clean-purge
+	@echo make ....................... print this help message
+	@echo make help .................. print this help message
+	@echo make setup ................. setup build environment
+	@echo make update ................ update zephyr after change to west config
+	@echo make build APP=path ........ build app located at path
+	@echo make build-full ............ build all core apps
+	@echo make flash BUILD=path ...... flash app binary to board
+	@echo make simulate BUILD=path ... launch simulation
+	@echo make simulate-full ......... simulate all core apps INCOMPLETE
+	@echo make debug ................. launch OpenOCD server to connect to board
+	@echo make gdb BUILD=path ........ launch GDB client to debug board
+	@echo make listen ................ launch TCP client to view debug logs
+	@echo make readme ................ HTTP server to preview GitHub README.md
+	@echo make docs .................. build code docs
+	@echo make host .................. host HTTP server to view docs
+	@echo make clean ................. remove build files and binaries
+	@echo make clean-purge ........... remove builds and zephyr environment
+
 
 
 update:
@@ -130,6 +153,13 @@ build-full:
 	$(MAKE) build APP=apps/GNSS
 	$(MAKE) build APP=apps/MOTOR
 	$(MAKE) build APP=apps/SOLAR
+
+
+# build-full: $(APPS)
+# 
+# $(APPS):
+# 	$(MAKE) build APP=apps/EPS
+
 
 build-can-tests:
 	$(MAKE) build BUILD=build/apps/test/CANtest1 APP=apps/tests/CANtest EXTRA_CFLAGS="-DNODE_ID=1"
@@ -182,7 +212,9 @@ docs:
 host:
 	$(SYS_PYTHON) -m http.server 8080 --directory build/docs/html
 
-.PHONY: setup update
-.PHONY: build build-full build-can-tests flash
+.PHONY: help all setup update
+# .PHONY: build build-full build-can-tests flash $(APPS)
+.PHONY: build build-full build-can-tests flash $(APPS)
 .PHONY: debug simulate simulate-full gdb listen
 .PHONY: clean clean-purge readme host docs
+
