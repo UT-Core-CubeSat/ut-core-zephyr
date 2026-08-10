@@ -27,3 +27,29 @@ Closes #
 
 <!-- What did you actually run, on what hardware/sim target, and what did
      you observe? -->
+
+
+
+
+## Summary
+
+<!-- What does this PR do, in a sentence or two? -->
+
+## Related Issues
+
+<!-- e.g. Closes #123, Related to #45 -->
+
+## Checklist
+
+Check off what's relevant to this PR. Leave irrelevant items unchecked.
+
+- [ ] Successfully builds with no errors
+- [ ] Tested on hardware
+- [ ] Cleaned up debug-only code (stray logging statements, hardcoded test values)
+- [ ] Changes to function behavior or prototype are documented via Doxygen
+- [ ] Structural or API changes are documented
+- [ ] If changes are made to the build system, that it builds for both Windows and Ubuntu/Debian
+
+## Notes for Reviewers
+
+<!-- Anything a reviewer should specifically look at, test, or be aware of? -->

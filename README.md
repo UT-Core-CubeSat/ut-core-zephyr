@@ -1,5 +1,6 @@
 # UT CubeSat - Zephyr RTOS Development
 
+
 Custom STM32U5A5RJTXQ6Q board firmware for our CubeSat project using Zephyr RTOS.
 Hardware
 
@@ -12,7 +13,33 @@ Hardware
 <!-- sudo docker run -it --rm -v $(pwd):/mnt debian:latest bash -->
 
 
+For contributing, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+For documentation, see [UT-Core Docs](https://ut-core-cubesat.github.io/ut-core-docs/).
+
+
+## Contents
+
+
+- [Project Structure](#project-structure)
+- [App Structure](#app-structure)
+- [How to Build](#how-to-build)
+    - [Install dependancies (Windows)](#install-dependancies-windows)
+    - [Install dependancies (Debian/Ubuntu)](#install-dependancies-debianubuntu)
+    - [Setup environment and install Zephyr)](#setup-environment-and-install-zephyr)
+    - [Build App](#build-app)
+- [How to Flash](#how-to-flash)
+- [How to view board logs](#how-to-view-board-logs)
+- [How to run GDB debugger](#how-to-run-gdb-debugger)
+- [How to simulate boards](#how-to-simulate-boards)
+- [How to build and host docs](#how-to-build-and-host-docs)
+- [Resources](#resources)
+
+
+---
+
 ## Project Structure
+<span id="project-structure"></span>
 
 ```
 ut-core-zephyr/             Git root
@@ -24,6 +51,7 @@ ut-core-zephyr/             Git root
 │       └── ut_core/        Zephyr board hardware definitions
 ├── build/                  Generated output where binary is located
 ├── common/                 Shared code between apps
+├── docs/                   Source files for documentation
 ├── sim/                    Location for simulation scripts
 ├── tools/                  Misc. tools for testing
 ├── .west/
@@ -46,6 +74,8 @@ apps/<appname>/             Application directory
 ```
 
 
+
+---
 
 ## How to Build
 
@@ -104,9 +134,11 @@ make build
 make build APP=apps/<appname>
 ```
 
-> [!IMPORTANT]  
+> [!IMPORTANT]
 > Keep in mind UART vs RTT as a logging backend! If you don't see logs outputs when listening to your board such as with `make listen`, then you may be using the wrong logging backend. Change the backend in the app's `prj.conf`, or specify `LOG_UART=1` or `LOG_RTT=1` to force the logging backend in the Makefile.
 
+
+---
 
 ## How to Flash
 
@@ -132,6 +164,8 @@ make flash BUILD=build/<appname>
 ```
 
 
+--- 
+
 ## How to view board logs
 
 Whilst connected to the board with the ST-Link cable, start a debug server over the link in the first terminal by running `make debug` or `openocd -f tools/openocd_semihost.cfg`. In a second terminal start a telnet client by running `make listen` or `telnet localhost 9090`, which if successful will print out the debug logs.
@@ -145,9 +179,11 @@ make listen
 ```
 
 
+---
+
 ## How to run GDB debugger
 
-Whilst connected to the board with the ST-Link cable, start a debug server over the link in the first terminal by running `make debug` or `openocd -f tools/openocd_semihost.cfg`. In a second terminal start a gdb client with `make gdb APP=apps/<appname>`.
+Whilst connected to the board with the ST-Link cable, start a debug server over the link in the first terminal by running `make debug` or `openocd -f tools/openocd_semihost.cfg`. In a second terminal start a gdb client with `make gdb BUILD=build/<appname>`.
 
 ```bash
 # in the first terminal
@@ -161,6 +197,8 @@ make gdb
 make gdb BUILD=build/<appname>
 ```
 
+
+---
 
 ## How to simulate boards
 
@@ -182,6 +220,7 @@ make sim
 make simulate BUILD=build/<appname>
 ```
 
+---
 
 ## How to build and host docs
 
@@ -189,10 +228,10 @@ make simulate BUILD=build/<appname>
 
 ```bash
 # Install doxygen (Ubuntu/Debian)
-sudo apt install doxygen
+sudo apt install doxygen graphviz
 ```
 
-If on windows, install doxygen from [here](https://www.doxygen.nl/download.html).
+If on windows, install doxygen from [here](https://www.doxygen.nl/download.html), and graphviz from [here](https://graphviz.org/download/).
 
 ### Building and hosting the docs
 
@@ -206,16 +245,41 @@ make host
 ```
 
 Pushing to the branches `master`, `unstable`, or `doctest` will trigger a GitHub Action, and will deploy the site to these URLS:
+
 - https://ut-core-cubesat.github.io/ut-core-zephyr/stable
 - https://ut-core-cubesat.github.io/ut-core-zephyr/unstable
 - https://ut-core-cubesat.github.io/ut-core-zephyr/test
 
 
+
+---
+
 ## Resources
 
-For more information on Zephyr, 
-https://docs.zephyrproject.org/latest/develop/getting_started/index.html
+### Zephyr Deep Dives
 
-Zephyr docs
-https://docs.zephyrproject.org/latest/index.html
+- [Zephyr's Getting Started Guide](https://docs.zephyrproject.org/latest/develop/getting_started/index.html)
+- [Zephyr Documentation Home](https://docs.zephyrproject.org/latest/index.html)
+- [West (Zephyr's meta-tool)](https://docs.zephyrproject.org/latest/develop/west/index.html)
+- [Zephyr Kernel Services](https://docs.zephyrproject.org/latest/kernel/services/index.html)
+- [Devicetree Guide](https://docs.zephyrproject.org/latest/build/dts/index.html)
+- [CAN Bus support in Zephyr](https://docs.zephyrproject.org/latest/hardware/peripherals/can/index.html)
 
+
+### Hardware Reference
+
+- [STM32U5 Series (ST)](https://www.st.com/en/microcontrollers-microprocessors/stm32u5-series.html)
+- [STM32CubeProgrammer](https://www.st.com/en/development-tools/stm32cubeprog.html)
+
+
+### Debugging & Simulation
+
+- [OpenOCD User's Guide](http://openocd.org/doc/html/index.html)
+- [GDB Documentation](https://sourceware.org/gdb/current/onlinedocs/gdb)
+- [Renode Documentation](https://renode.readthedocs.io/)
+
+
+### Git & Collaboration
+
+- [Git Handbook (GitHub)](https://guides.github.com/introduction/git-handbook/)
+- [Pro Git Book](https://git-scm.com/book/en/v2)

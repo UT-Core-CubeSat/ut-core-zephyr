@@ -1,4 +1,6 @@
-See <u>Files</u> for function documentation.
+See <u>Files</u> above for function documentation.
+
+Back to [Contents](@ref index)
 
 # SOLAR — Magnetorquer Driver Firmware
 
