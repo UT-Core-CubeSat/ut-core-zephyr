@@ -145,22 +145,13 @@ static inline int16_t unpack_be16(uint8_t msb, uint8_t lsb)
 /* ================= CAN TX ============================ */
 /* ===================================================== */
 
-static void send_simple(uint8_t dst, uint8_t cls, uint8_t op, uint8_t val)
-{
-    struct can_frame f = {0};
-    f.id    = CAN_ID_FULL(PRIO_LOW, NODE_ID, dst, cls);
-    f.flags = CAN_FRAME_IDE;
-    can_fill_payload(&f, NODE_ID, op, val, 0, 0, 0, 0, 0);
-    can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
-}
-
 /*
  * send_heartbeat() - Periodic heartbeat to CDH.
  * data[1] = 0x01 means "alive and nominal".
  */
 static void send_heartbeat(void)
 {
-    send_simple(CAN_BROADCAST, CLS_HEARTBEAT, 0x30, 0x00);
+    send_simple(can_dev, NODE_ID, CAN_BROADCAST, CLS_HEARTBEAT, 0x30, 0x00, PRIO_LOW);
     LOG_DBG("TX heartbeat");
 }
 
@@ -220,17 +211,6 @@ static void send_soh(void)
 /* ================= CAN RX ============================ */
 /* ===================================================== */
 
-static void can_decode(const struct can_frame *f, can_packet_t *pkt)
-{
-    uint32_t id    = f->id;
-    pkt->priority  = (id >> 26) & 0x07;
-    pkt->src       = (id >> 14) & 0xFF;
-    pkt->dst       = (id >>  6) & 0xFF;
-    pkt->msg_class =  id        & 0x3F;
-    pkt->dlc       = f->dlc;
-    memcpy(pkt->data, f->data, f->dlc);
-}
-
 static void handle_command(const can_packet_t *pkt)
 {
     uint8_t opcode = pkt->data[1];
@@ -260,7 +240,7 @@ static void handle_command(const can_packet_t *pkt)
                 mx, my, mz, x_pos, x_neg, y_pos, y_neg);
 
         /* ACK back to sender */
-        send_simple(pkt->src, CLS_CMD_RESP, OP_SET_MAG_DIPOLE, (uint8_t)current_duty_percent);
+        send_simple(can_dev, NODE_ID, pkt->src, CLS_CMD_RESP, OP_SET_MAG_DIPOLE, (uint8_t)current_duty_percent, PRIO_LOW);
         break;
     }
     default:
@@ -297,32 +277,6 @@ static void tcan3403_wakeup(void)
     LOG_INF("TCAN3403 Awake");
 }
 
-static void can_setup(void)
-{
-    if (!device_is_ready(can_dev)) {
-        LOG_ERR("CAN not ready");
-        return;
-    }
-
-    can_set_bitrate(can_dev, 500000);
-    can_set_mode(can_dev, CAN_MODE_NORMAL);
-    can_start(can_dev);
-
-    const struct can_filter to_me = {
-        .id    = CAN_DST(NODE_ID),
-        .mask  = CAN_DST_MASK_29,
-        .flags = CAN_FILTER_IDE
-    };
-    const struct can_filter bcast = {
-        .id    = CAN_DST(CAN_BROADCAST),
-        .mask  = CAN_DST_MASK_29,
-        .flags = CAN_FILTER_IDE
-    };
-
-    can_add_rx_filter_msgq(can_dev, &rxq, &to_me);
-    can_add_rx_filter_msgq(can_dev, &rxq, &bcast);
-    LOG_INF("CAN initialized (29-bit extended)");
-}
 
 /* ===================================================== */
 /* ================= CAN RX THREAD ===================== */
@@ -403,7 +357,11 @@ int main(void)
 
     /* CAN bus init */
     tcan3403_wakeup();
-    can_setup();
+    int err = can_setup(can_dev, NODE_ID, &rxq, NULL);
+    if (err) {
+        LOG_ERR("CAN Setup failed: %d", err);
+        return;
+    }
 
     LOG_INF("Running — MTQ outputs OFF, waiting for CAN commands");
 

@@ -30,6 +30,7 @@ extern "C" {
 
 #include <zephyr/drivers/can.h>
 #include <stdint.h>
+#include <zephyr/drivers/gpio.h>
 
 #define CAN_PRIO(p)    (((uint32_t)(p)  & 0x07U) << 26)
 #define CAN_SRC(s)     (((uint32_t)(s)  & 0xFFU) << 14)
@@ -151,6 +152,20 @@ static inline void can_fill_payload(struct can_frame *f,
     f->data[4] = p4; f->data[5] = p5;
     f->data[6] = p6; f->data[7] = p7;
 }
+
+typedef struct {
+    uint8_t  priority;
+    uint8_t  msg_class;
+    uint8_t  src;
+    uint8_t  dst;
+    uint16_t inst;
+    uint8_t  data[8];
+    uint8_t  dlc;
+} can_packet_t;
+
+int can_setup(const struct device *can_dev, uint8_t my_id_node, struct k_msgq *rxq, const struct gpio_dt_spec *can_stb);
+void can_decode(const struct can_frame *f, can_packet_t *pkt);
+void send_simple(const struct device *can_dev, uint8_t src, uint8_t dst, uint8_t cls, uint8_t op, uint8_t val, uint8_t prio);
 
 #ifdef __cplusplus
 }

@@ -190,14 +190,6 @@ static const struct device *gpioa   = DEVICE_DT_GET(TCAN_PORT);
 
 CAN_MSGQ_DEFINE(rxq, 16);
 
-static void send_simple(uint8_t dst, uint8_t op, uint8_t val)
-{
-    struct can_frame f = {0};
-    f.id = CAN_ID(PRIO_LOW, dst, CLS_CORE); 
-    can_fill_payload(&f, NODE_ID, op, val, 0, 0, 0, 0, 0);
-    can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
-}
-
 static void tcan330_wakeup(void)
 {
     if (!device_is_ready(gpioa)) {
@@ -252,7 +244,7 @@ int main(void)
         int64_t now = k_uptime_get();
         if (now - last_hb >= 1000) {
             last_hb = now;
-            send_simple(CAN_BROADCAST, OP_HEARTBEAT, 0);
+            send_simple(can_dev, NODE_ID, CAN_BROADCAST, OP_HEARTBEAT, 0, PRIO_LOW);
             LOG_INF("TX: Heartbeat");
         }
 
