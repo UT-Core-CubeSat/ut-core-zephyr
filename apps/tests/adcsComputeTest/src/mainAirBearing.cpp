@@ -92,7 +92,10 @@ static inline int16_t float_to_i16_rpm(float x)
 
 static void send_heartbeat(void)
 {
-	send_simple(can_dev, NODE_ID, CAN_BROADCAST, CLS_HEARTBEAT, OP_HEARTBEAT, 0x00, PRIO_LOW);
+	int err = send_simple(can_dev, NODE_ID, CAN_BROADCAST, CLS_HEARTBEAT, OP_HEARTBEAT, 0x00, PRIO_LOW);
+	if (err) {
+		LOG_WRN("Failed to send OP_SET_MODE: %d", err);
+}
 }
 
 static void send_soh_attitude(void)

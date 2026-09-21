@@ -112,7 +112,10 @@ CAN_MSGQ_DEFINE(rxq, 16);
  */
 static void send_heartbeat(void)
 {
-    send_simple(can_dev, NODE_ID, CAN_BROADCAST, CLS_HEARTBEAT, OP_HEARTBEAT, 0x00, PRIO_LOW);
+    int err = send_simple(can_dev, NODE_ID, CAN_BROADCAST, CLS_HEARTBEAT, OP_HEARTBEAT, 0x00, PRIO_LOW);
+    if (err) {
+        LOG_WRN("Failed to send OP_SET_MODE: %d", err);
+    }
     LOG_INF("TX heartbeat");
 }
 
@@ -254,7 +257,10 @@ static void handle_command(const can_packet_t *pkt)
     case OP_QUERY_POS:
         /* CDH asked for current position — reply immediately */
         send_gnss_position();
-        send_simple(can_dev, NODE_ID, pkt->src, CLS_CMD_RESP, OP_QUERY_POS, 0x01, PRIO_LOW);
+        int err = send_simple(can_dev, NODE_ID, pkt->src, CLS_CMD_RESP, OP_QUERY_POS, 0x01, PRIO_LOW);
+        if (err) {
+            LOG_WRN("Failed to send OP_SET_MODE: %d", err);
+        }
         LOG_INF("RX query position from 0x%02X", pkt->src);
         break;
 
@@ -263,7 +269,10 @@ static void handle_command(const can_packet_t *pkt)
         uint8_t rate = pkt->data[2];
         int rc = orion_driver_set_update_rate(&gnss_driver, rate);
         uint8_t ack_val = (rc == 1) ? rate : 0x00;
-        send_simple(can_dev, NODE_ID, pkt->src, CLS_CMD_RESP, OP_SET_UPDATE_RATE, ack_val, PRIO_LOW);
+        int err = send_simple(can_dev, NODE_ID, pkt->src, CLS_CMD_RESP, OP_SET_UPDATE_RATE, ack_val, PRIO_LOW);
+        if (err) {
+            LOG_WRN("Failed to send OP_SET_MODE: %d", err);
+        }
         LOG_INF("RX set update rate=%u Hz → %s", rate, rc == 1 ? "ACK" : "NACK");
         break;
     }

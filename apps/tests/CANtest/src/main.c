@@ -5,6 +5,7 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/can.h>
+#include "common/can_proto.h"
 
 /* LED aliases */
 #define LED0_NODE DT_ALIAS(led0)
@@ -244,7 +245,10 @@ int main(void)
         int64_t now = k_uptime_get();
         if (now - last_hb >= 1000) {
             last_hb = now;
-            send_simple(can_dev, NODE_ID, CAN_BROADCAST, OP_HEARTBEAT, 0, PRIO_LOW);
+            int err = send_simple(can_dev, NODE_ID, CAN_BROADCAST, CLS_HEARTBEAT, OP_HEARTBEAT, 0, PRIO_LOW);
+            if (err) {
+                LOG_WRN("Failed to send OP_SET_MODE: %d", err);
+            }
             LOG_INF("TX: Heartbeat");
         }
 

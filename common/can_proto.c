@@ -3,13 +3,6 @@
  * @ingroup common
  * @brief Shared UT-CORE CAN bus helpers: frame decode, simple frame send,
  *        and common transceiver/controller bring-up.
- *
- * Plans to Implement the CAN handling logic previously duplicated across CDH,
- * EPS, GNSS, MOTOR, and SOLAR (frame decoding, single-opcode frame
- * construction, TCAN3403 wakeup, and CAN controller/filter setup), so a
- * protocol-level fix only needs to be made in one place.
- *
- * @todo move shared can source code to this file.
  */
 
 #include "can_proto.h"
@@ -20,8 +13,7 @@ LOG_MODULE_REGISTER(can_proto, LOG_LEVEL_INF);
 /** @endcond */
 
 /**
- * @brief Configure bitrate/mode, start the CAN controller, and install
- *        RX filters for this node's address and broadcast.
+ * @brief Configure bitrate/mode, start the CAN controller
  */
 
 int can_setup(const struct device *can_dev, uint8_t my_id_node, struct k_msgq *rxq, const struct gpio_dt_spec *can_stb) {
@@ -108,9 +100,7 @@ int can_setup(const struct device *can_dev, uint8_t my_id_node, struct k_msgq *r
 }
 
 /**
- * @brief Unpack a raw CAN frame's 29-bit ID and payload into a can_packet_t.
- * @param f   Raw CAN frame as received from the driver.
- * @param pkt Output decoded packet.
+ * @brief Decode a packet from the can frame
  */
 
 void can_decode(const struct can_frame *f, can_packet_t *pkt)
@@ -124,8 +114,11 @@ void can_decode(const struct can_frame *f, can_packet_t *pkt)
     memcpy(pkt->data, f->data, f->dlc);
 }
 
+/**
+ * @brief Build and send a single-opcode CAN frame.
+ */
 
-void send_simple(const struct device *can_dev, uint8_t src, uint8_t dst,
+int send_simple(const struct device *can_dev, uint8_t src, uint8_t dst,
                   uint8_t cls, uint8_t op, uint8_t val, uint8_t prio)
 {
     struct can_frame f = {0};
@@ -139,4 +132,6 @@ void send_simple(const struct device *can_dev, uint8_t src, uint8_t dst,
     if (err) {
         LOG_ERR("can_send failed: %d", err);
     }
+
+    return err;
 }

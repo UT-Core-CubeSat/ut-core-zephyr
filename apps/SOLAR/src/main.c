@@ -213,7 +213,10 @@ static inline int16_t unpack_be16(uint8_t msb, uint8_t lsb)
  */
 static void send_heartbeat(void)
 {
-    send_simple(can_dev, NODE_ID, CAN_BROADCAST, CLS_HEARTBEAT, 0x30, 0x00, PRIO_LOW);
+    int err = send_simple(can_dev, NODE_ID, CAN_BROADCAST, CLS_HEARTBEAT, OP_HEARTBEAT, 0x00, PRIO_LOW);
+    if (err) {
+        LOG_WRN("Failed to send OP_SET_MODE: %d", err);
+    }
     LOG_DBG("TX heartbeat");
 }
 
@@ -327,7 +330,10 @@ static void handle_command(const can_packet_t *pkt)
                 mx, my, mz, x_pos, x_neg, y_pos, y_neg);
 
         /* ACK back to sender */
-        send_simple(can_dev, NODE_ID, pkt->src, CLS_CMD_RESP, OP_SET_MAG_DIPOLE, (uint8_t)current_duty_percent, PRIO_LOW);
+        int err = send_simple(can_dev, NODE_ID, pkt->src, CLS_CMD_RESP, OP_SET_MAG_DIPOLE, (uint8_t)current_duty_percent, PRIO_LOW);
+        if (err) {
+            LOG_WRN("Failed to send OP_SET_MODE: %d", err);
+        }
         break;
     }
     default:
