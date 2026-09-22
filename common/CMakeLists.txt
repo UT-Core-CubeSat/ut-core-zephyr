@@ -5,4 +5,4 @@ zephyr_library_sources(
     # Add more source files here as they are created
 )
 
-target_link_libraries(common PUBLIC zephyr_interface)
+add_dependencies(common zephyr_generated_headers)
