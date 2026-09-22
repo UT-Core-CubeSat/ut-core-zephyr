@@ -30,6 +30,7 @@ extern "C" {
 
 #include <zephyr/drivers/can.h>
 #include <stdint.h>
+#include <zephyr/drivers/gpio.h>
 
 #define CAN_PRIO(p)    (((uint32_t)(p)  & 0x07U) << 26)
 #define CAN_SRC(s)     (((uint32_t)(s)  & 0xFFU) << 14)
@@ -151,6 +152,56 @@ static inline void can_fill_payload(struct can_frame *f,
     f->data[4] = p4; f->data[5] = p5;
     f->data[6] = p6; f->data[7] = p7;
 }
+
+typedef struct {
+    uint8_t  priority;
+    uint8_t  msg_class;
+    uint8_t  src;
+    uint8_t  dst;
+    uint16_t inst;
+    uint8_t  data[8];
+    uint8_t  dlc;
+} can_packet_t;
+
+/**
+ * @brief Configure bitrate/mode, start the CAN controller, and install
+ *        RX filters for this node's address and broadcast.
+ * @param can_dev    CAN controller device.
+ * @param my_id_node This board's node ID (used for the to-me filter).
+ * @param rxq        Message queue to receive filtered frames into.
+ * @return 0 on success, negative errno on failure.
+ */
+
+int can_setup(const struct device *can_dev, uint8_t my_id_node, struct k_msgq *rxq, const struct gpio_dt_spec *can_stb);
+
+/**
+ * @brief Unpack a raw CAN frame's 29-bit ID and payload into a can_packet_t.
+ * @param f   Raw CAN frame as received from the driver.
+ * @param pkt Output decoded packet.
+ */
+void can_decode(const struct can_frame *f, can_packet_t *pkt);
+
+
+/**
+ * @brief Build and send a single-opcode CAN frame with the standard
+ *        [src, op, val, 0, 0, 0, 0, 0] payload layout.
+ * @param can_dev CAN controller device to send on.
+ * @param src     Source node ID (this board's own ID).
+ * @param dst     Destination node ID, or CAN_BROADCAST for all nodes.
+ * @param cls     Message class (see CLS_* macros).
+ * @param op      Opcode (see can_op_t).
+ * @param val     Single-byte opcode value, placed in payload byte p2.
+ * @param prio    Arbitration priority (0 = highest; see CAN_PRIO()).
+ *
+ * @note Always sends a full 8-byte frame (p3..p7 are zero-filled), even
+ *       though only p2 carries data — matches can_fill_payload()'s
+ *       fixed dlc=8 behavior.
+ * @warning Does not return a status code. If can_send() fails, the error
+ *          is logged via LOG_ERR but not otherwise surfaced to the
+ *          caller — callers that need to know send success/failure
+ *          cannot currently detect it from the return value alone.
+ */
+int send_simple(const struct device *can_dev, uint8_t src, uint8_t dst, uint8_t cls, uint8_t op, uint8_t val, uint8_t prio);
 
 #ifdef __cplusplus
 }

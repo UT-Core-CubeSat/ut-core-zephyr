@@ -57,17 +57,6 @@ LOG_MODULE_REGISTER(gnss_app, CONFIG_LOG_DEFAULT_LEVEL);
 #define OP_QUERY_POS       0x61   /* CDH requests current position    */
 #define OP_SET_UPDATE_RATE 0x62   /* CDH sets GNSS update rate        */
 
-/**
- * @brief Decoded CAN frame with routing fields unpacked from the 29-bit ID.
- */
-typedef struct {
-    uint8_t  priority;
-    uint8_t  src;
-    uint8_t  dst;
-    uint8_t  msg_class;
-    uint8_t  dlc;
-    uint8_t  data[8];
-} can_packet_t;
 
 /* @} */
 
@@ -115,14 +104,6 @@ CAN_MSGQ_DEFINE(rxq, 16);
  * @param op  Opcode.
  * @param val Single data byte payload.
  */
-static void send_simple(uint8_t dst, uint8_t cls, uint8_t op, uint8_t val)
-{
-    struct can_frame f = {0};
-    f.id    = CAN_ID_FULL(PRIO_LOW, NODE_ID, dst, cls);
-    f.flags = CAN_FRAME_IDE;
-    can_fill_payload(&f, NODE_ID, op, val, 0, 0, 0, 0, 0);
-    can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
-}
 
 /**
  * @brief Broadcast a CLS_HEARTBEAT frame announcing this node is alive.
@@ -131,7 +112,10 @@ static void send_simple(uint8_t dst, uint8_t cls, uint8_t op, uint8_t val)
  */
 static void send_heartbeat(void)
 {
-    send_simple(CAN_BROADCAST, CLS_HEARTBEAT, OP_HEARTBEAT, 0x00);
+    int err = send_simple(can_dev, NODE_ID, CAN_BROADCAST, CLS_HEARTBEAT, OP_HEARTBEAT, 0x00, PRIO_LOW);
+    if (err) {
+        LOG_WRN("Failed to send OP_SET_MODE: %d", err);
+    }
     LOG_INF("TX heartbeat");
 }
 
@@ -250,22 +234,6 @@ static void send_gnss_position(void)
  * @{
  */
 
-/**
- * @brief Unpack a raw CAN frame's 29-bit extended ID and payload into a
- *        can_packet_t.
- * @param f   Raw CAN frame as received from the driver.
- * @param pkt Output decoded packet.
- */
-static void can_decode(const struct can_frame *f, can_packet_t *pkt)
-{
-    uint32_t id    = f->id;
-    pkt->priority  = (id >> 26) & 0x07;
-    pkt->src       = (id >> 14) & 0xFF;
-    pkt->dst       = (id >>  6) & 0xFF;
-    pkt->msg_class =  id        & 0x3F;
-    pkt->dlc       = f->dlc;
-    memcpy(pkt->data, f->data, f->dlc);
-}
 
 /**
  * @brief Handle an incoming CLS_COMMAND frame from CDH.
@@ -289,7 +257,10 @@ static void handle_command(const can_packet_t *pkt)
     case OP_QUERY_POS:
         /* CDH asked for current position — reply immediately */
         send_gnss_position();
-        send_simple(pkt->src, CLS_CMD_RESP, OP_QUERY_POS, 0x01);
+        int err = send_simple(can_dev, NODE_ID, pkt->src, CLS_CMD_RESP, OP_QUERY_POS, 0x01, PRIO_LOW);
+        if (err) {
+            LOG_WRN("Failed to send OP_SET_MODE: %d", err);
+        }
         LOG_INF("RX query position from 0x%02X", pkt->src);
         break;
 
@@ -298,7 +269,10 @@ static void handle_command(const can_packet_t *pkt)
         uint8_t rate = pkt->data[2];
         int rc = orion_driver_set_update_rate(&gnss_driver, rate);
         uint8_t ack_val = (rc == 1) ? rate : 0x00;
-        send_simple(pkt->src, CLS_CMD_RESP, OP_SET_UPDATE_RATE, ack_val);
+        int err = send_simple(can_dev, NODE_ID, pkt->src, CLS_CMD_RESP, OP_SET_UPDATE_RATE, ack_val, PRIO_LOW);
+        if (err) {
+            LOG_WRN("Failed to send OP_SET_MODE: %d", err);
+        }
         LOG_INF("RX set update rate=%u Hz → %s", rate, rc == 1 ? "ACK" : "NACK");
         break;
     }
@@ -364,40 +338,6 @@ static void tcan3403_wakeup(void)
     LOG_INF("TCAN3403 Awake");
 }
 
-/**
- * @brief Configure bitrate/mode, start the CAN controller, and install RX
- *        filters for this node's address and broadcast.
- *
- * Sets 500 kbit/s normal mode, then adds two extended-ID filters routing
- * matching frames into rxq: one for frames addressed to NODE_ID, one for
- * CAN_BROADCAST.
- */
-static void can_setup(void)
-{
-    if (!device_is_ready(can_dev)) {
-        LOG_ERR("CAN not ready");
-        return;
-    }
-
-    can_set_bitrate(can_dev, 500000);
-    can_set_mode(can_dev, CAN_MODE_NORMAL);
-    can_start(can_dev);
-
-    const struct can_filter to_me = {
-        .id    = CAN_DST(NODE_ID),
-        .mask  = CAN_DST_MASK_29,
-        .flags = CAN_FILTER_IDE
-    };
-    const struct can_filter bcast = {
-        .id    = CAN_DST(CAN_BROADCAST),
-        .mask  = CAN_DST_MASK_29,
-        .flags = CAN_FILTER_IDE
-    };
-
-    can_add_rx_filter_msgq(can_dev, &rxq, &to_me);
-    can_add_rx_filter_msgq(can_dev, &rxq, &bcast);
-    LOG_INF("CAN initialized (29-bit extended)");
-}
 
 /* @} */
 
@@ -552,7 +492,11 @@ int main(void)
 
     /* ── CAN bus init ── */
     tcan3403_wakeup();
-    can_setup();
+    int err = can_setup(can_dev, NODE_ID, &rxq, NULL);
+    if (err) {
+        LOG_ERR("CAN Setup failed: %d", err);
+        return 0;
+    }
 
     LOG_INF("Running — GNSS + CAN active");
 

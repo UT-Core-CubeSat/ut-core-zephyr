@@ -93,21 +93,6 @@ typedef struct {
 /** @brief Liveness table for every remote satellite subsystem, indexed by node. */
 static node_heartbeat_t node_alive = {0};
 
-/**
- * can_packet_t — decoded CAN frame with routing fields unpacked from the ID.
- *
- * 29-bit ID layout (see can_proto.h):
- *   [28:26] priority | [21:14] src | [13:6] dst | [5:0] msg_class
- */
-typedef struct {
-    uint8_t  priority;
-    uint8_t  msg_class;
-    uint8_t  src;
-    uint8_t  dst;
-    uint16_t inst;
-    uint8_t  data[8];
-    uint8_t  dlc;
-} can_packet_t;
 
 /**
  * gnss_data_t — latest position fix received from the GNSS node.
@@ -242,14 +227,6 @@ static node_status_t *get_node_status(uint8_t node_id)
  * @param op  Opcode.
  * @param val Single data byte payload.
  */
-static void send_simple(uint8_t dst, uint8_t cls, uint8_t op, uint8_t val)
-{
-    struct can_frame f = {0};
-    f.id    = CAN_ID_FULL(PRIO_LOW, NODE_ID, dst, cls);
-    f.flags = CAN_FRAME_IDE;
-    can_fill_payload(&f, NODE_ID, op, val, 0, 0, 0, 0, 0);
-    can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
-}
 
 /**
  * @brief Bring the TCAN3403 transceiver out of shutdown/silent mode.
@@ -260,57 +237,6 @@ static void tcan3403_wakeup(void)
     gpio_pin_configure(gpioa, PIN_SILENT, GPIO_OUTPUT_INACTIVE);
     k_msleep(1);
     LOG_INF("TCAN3403 Awake");
-}
-
-/**
- * @brief Configure bitrate/mode, start the CAN controller, and install
- *        RX filters for this node's address and broadcast.
- */
-static void can_setup(void)
-{
-    if (!device_is_ready(can_dev)) {
-        LOG_ERR("CAN not ready");
-        return;
-    }
-
-    can_set_bitrate(can_dev, 500000);
-    can_set_mode(can_dev, CAN_MODE_NORMAL);
-    can_start(can_dev);
-
-    const struct can_filter to_me = {
-        .id    = CAN_DST(DST_ME),
-        .mask  = CAN_DST_MASK_29,
-        .flags = CAN_FILTER_IDE
-    };
-
-    const struct can_filter bcast = {
-        .id    = CAN_DST(CAN_BROADCAST),
-        .mask  = CAN_DST_MASK_29,
-        .flags = CAN_FILTER_IDE
-    };
-
-    can_add_rx_filter_msgq(can_dev, &rxq, &to_me);
-    can_add_rx_filter_msgq(can_dev, &rxq, &bcast);
-
-    LOG_INF("Filter to_me:  id=0x%08X mask=0x%08X", to_me.id, to_me.mask);
-    LOG_INF("Filter bcast:  id=0x%08X mask=0x%08X", bcast.id, bcast.mask);
-    LOG_INF("CAN Initialized (29-bit extended)");
-}
-
-/**
- * @brief Unpack a raw CAN frame's 29-bit ID and payload into a can_packet_t.
- * @param f   Raw CAN frame as received from the driver.
- * @param pkt Output decoded packet.
- */
-static void can_decode(const struct can_frame *f, can_packet_t *pkt)
-{
-    uint32_t id   = f->id;
-    pkt->priority  = (id >> 26) & 0x07;
-    pkt->src       = (id >> 14) & 0xFF;
-    pkt->dst       = (id >>  6) & 0xFF;
-    pkt->msg_class =  id        & 0x3F;
-    pkt->dlc       = f->dlc;
-    memcpy(pkt->data, f->data, f->dlc);
 }
 
 /**
@@ -563,7 +489,11 @@ static void setup_mode_init(void)
     }
 
     tcan3403_wakeup();
-    can_setup();
+    int err = can_setup(can_dev, NODE_ID, &rxq, NULL);
+    if (err) {
+        LOG_ERR("CAN Setup failed: %d", err);
+        return;
+    }
 
     LOG_INF("Setup complete — waiting 2 s for bus stabilisation");
     k_sleep(K_MSEC(2000));
@@ -641,7 +571,10 @@ void scheduler_thread(void *a, void *b, void *c)
 
             if (now - last_hb >= 1000) {
                 last_hb = now;
-                send_simple(CAN_BROADCAST, CLS_HEARTBEAT, OP_HEARTBEAT, 0);
+                int err = send_simple(can_dev, NODE_ID, CAN_BROADCAST, CLS_HEARTBEAT, OP_HEARTBEAT, 0, PRIO_LOW);
+                if (err) {
+                    LOG_WRN("Failed to send OP_SET_MODE: %d", err);
+                }
             }
         }
 
@@ -705,7 +638,10 @@ void gnss_thread(void *a, void *b, void *c)
         {
             /* Request position from GNSS node — it responds with OP_GNSS_POS
                on CLS_TELEMETRY, which handle_telemetry() parses above */
-            send_simple(GNSS_ID, CLS_COMMAND, 0x61 /* OP_QUERY_POS */, 0);
+            int err = send_simple(can_dev, NODE_ID, GNSS_ID, CLS_COMMAND, 0x61 /* OP_QUERY_POS*/, 0, PRIO_LOW);
+            if (err) {
+                LOG_WRN("Failed to send OP_SET_MODE: %d", err);
+            }
             LOG_INF("GNSS position request sent");
         }
 
