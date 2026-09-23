@@ -705,7 +705,7 @@ void gnss_thread(void *a, void *b, void *c)
         {
             /* Request position from GNSS node — it responds with OP_GNSS_POS
                on CLS_TELEMETRY, which handle_telemetry() parses above */
-            send_simple(GNSS_ID, CLS_COMMAND, 0x61 /* OP_QUERY_POS */, 0);
+            send_simple(GNSS_ID, CLS_COMMAND, OP_GET_POS, 0);
             LOG_INF("GNSS position request sent");
         }
 
