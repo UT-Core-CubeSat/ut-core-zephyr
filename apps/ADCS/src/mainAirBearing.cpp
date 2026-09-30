@@ -814,7 +814,7 @@ int main(void)
 	int err = can_setup(can_dev, NODE_ID, &rxq, NULL);
     if (err) {
         LOG_ERR("CAN Setup failed: %d", err);
-        return;
+        return err;
     }
 
 	k_thread_create(&adcs_loop_thread, adcs_loop_stack,
