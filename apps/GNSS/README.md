@@ -31,6 +31,7 @@ On boot, the firmware verifies GPIOA is ready, initializes and starts the GNSS d
 ## Software Requirements 9-28-26 (Cason)
 - Process lat/long
     - **Complete** The code gets this from the orion chip, converts it to 1e-4 degree units
+- Process speed
     - **Incomplete** The code never extracts this from orion_nav_data_t. In theory this should be fairly easy to implement.
 - Send data to CDH
     - **Incomplete** Lat/long are sent, but speed isn't for the simple reason that speed isn't extracted. We'll have to consider if we want to shrink the lat/lon data and squeeze the speed data into that same frame, or have a separate frame specifically for speed. My recommendation would be the second option, but I'm by no means an expert. We'll also have to decide what velocity metric we want to send to CDH, as right now it's only a raw set of components. 
