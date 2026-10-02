@@ -243,7 +243,7 @@ static void handle_command(const can_packet_t *pkt)
                 mx, my, mz, x_pos, x_neg, y_pos, y_neg);
 
         /* ACK back to sender */
-        int err = send_simple(can_dev, NODE_ID, pkt->src, CLS_CMD_REST, OP_SET_MAG_DIPOLE, (uint8_t)current_duty_percent, PRIO_LOW);
+        int err = send_simple(can_dev, NODE_ID, pkt->src, CLS_CMD_RESP, OP_SET_MAG_DIPOLE, (uint8_t)current_duty_percent, PRIO_LOW);
         if (err) {
             LOG_WRN("Failed to send OP_SET_MODE: %d", err);
         }
