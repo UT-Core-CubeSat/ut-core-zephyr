@@ -54,6 +54,9 @@ LOG_MODULE_REGISTER(gnss_app, CONFIG_LOG_DEFAULT_LEVEL);
 /* GNSS-specific opcodes */
 #define OP_GNSS_SOH        0x01   /* periodic state-of-health        */
 #define OP_GNSS_POS        0x02   /* position telemetry               */
+#define OP_GNSS_VX         0x03   /* ECEF x velocity telemetry        */
+#define OP_GNSS_VY         0x04   /* ECEF y velocity telemetry        */
+#define OP_GNSS_VZ         0x05   /* ECEF z velocity telemetry        */
 #define OP_QUERY_POS       0x61   /* CDH requests current position    */
 #define OP_SET_UPDATE_RATE 0x62   /* CDH sets GNSS update rate        */
 
@@ -204,18 +207,11 @@ static void send_gnss_soh(void)
  *   [2..4] latitude  × 1e4, signed 24-bit big-endian  (~11m resolution)
  *   [5..7] longitude × 1e4, signed 24-bit big-endian
  */
-static void send_gnss_position(void)
+static void send_gnss_position(orion_nav_data_t *nav)
 {
-    orion_nav_data_t nav;
-    orion_driver_get_nav(&gnss_driver, &nav);
-
-    if (!nav.valid) {
-        return;  /* don't send garbage */
-    }
-
     /* lat/lon are in 1e-7 degrees; divide by 1000 → 1e-4 degrees */
-    int32_t lat_1e4 = nav.latitude_1e7  / 1000;
-    int32_t lon_1e4 = nav.longitude_1e7 / 1000;
+    int32_t lat_1e4 = nav->latitude_1e7  / 1000;
+    int32_t lon_1e4 = nav->longitude_1e7 / 1000;
 
     struct can_frame f = {0};
     f.id    = CAN_ID_FULL(PRIO_MED, NODE_ID, NODE_CDH, CLS_TELEMETRY);
@@ -234,11 +230,46 @@ static void send_gnss_position(void)
 
     can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
 
-    double lat = ORION_DEG_FROM_1E7(nav.latitude_1e7);
-    double lon = ORION_DEG_FROM_1E7(nav.longitude_1e7);
+    double lat = ORION_DEG_FROM_1E7(nav->latitude_1e7);
+    double lon = ORION_DEG_FROM_1E7(nav->longitude_1e7);
     LOG_INF("TX POS  lat=%.6f lon=%.6f", lat, lon);
 }
 
+
+static void send_gnss_velocity(int32_t v_data, uint8_t op)
+{
+    struct can_frame f = {0};
+    f.id    = CAN_ID_FULL(PRIO_MED, NODE_ID, NODE_CDH, CLS_TELEMETRY);
+    f.flags = CAN_FRAME_IDE;
+    f.dlc   = 8;
+    f.data[0] = NODE_ID;
+    f.data[1] = op;
+
+    /*velocity: 32-bit big-endian*/
+    f.data[2] = (v_data >> 24) & 0xFF;
+    f.data[3] = (v_data >> 16) & 0xFF;
+    f.data[4] = (v_data >> 8) & 0xFF;
+    f.data[5] = (v_data     ) & 0xFF;
+
+    can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+
+    LOG_INF("TX VEL  op=0x%02X v=%d cm/s", op, v_data);
+}
+
+static void send_gnss_master(void)
+{
+    orion_nav_data_t nav;
+    orion_driver_get_nav(&gnss_driver, &nav);
+
+    if (!nav.valid) {
+        return;  /* don't send garbage */
+    }
+
+    send_gnss_position(&nav);
+    send_gnss_velocity(nav.ecef_vx_cms, OP_GNSS_VX);
+    send_gnss_velocity(nav.ecef_vy_cms, OP_GNSS_VY);
+    send_gnss_velocity(nav.ecef_vz_cms, OP_GNSS_VZ);
+}
 /* @} */
 
 /* ===================================================== */
@@ -288,7 +319,7 @@ static void handle_command(const can_packet_t *pkt)
     switch (opcode) {
     case OP_QUERY_POS:
         /* CDH asked for current position — reply immediately */
-        send_gnss_position();
+        send_gnss_master();
         send_simple(pkt->src, CLS_CMD_RESP, OP_QUERY_POS, 0x01);
         LOG_INF("RX query position from 0x%02X", pkt->src);
         break;
@@ -457,8 +488,8 @@ K_THREAD_DEFINE(can_rx_tid, CAN_RX_STACK_SIZE,
  * @param nav  Latest nav fix data from the GNSS driver.
  * @param user Unused user-data pointer (registered as NULL).
  *
- * Logs fix mode, position, altitude, and satellite count when the fix is
- * valid; logs a warning and returns early otherwise.
+ * Logs fix mode, position, altitude, velocity, and satellite count when
+ * the fix is valid; logs a warning and returns early otherwise.
  */
 static void on_nav_update(const orion_nav_data_t *nav, void *user)
 {
@@ -481,8 +512,9 @@ static void on_nav_update(const orion_nav_data_t *nav, void *user)
         default:                fix_str = "NONE";      break;
     }
 
-    LOG_INF("FIX %s | lat=%.6f lon=%.6f alt=%.2fm | SVs=%u",
-            fix_str, lat, lon, alt, nav->sv_count);
+    LOG_INF("FIX %s | lat=%.6f lon=%.6f alt=%.2fm | SVs=%u | vx=%d vy=%d vz=%d cm/s",
+            fix_str, lat, lon, alt, nav->sv_count,
+            nav->ecef_vx_cms, nav->ecef_vy_cms, nav->ecef_vz_cms);
 }
 
 /* @} */
@@ -575,7 +607,7 @@ int main(void)
         }
 
         if ((now - last_pos) >= POS_INTERVAL_MS) {
-            send_gnss_position();
+            send_gnss_master();
 
             /* Print detailed nav + stats on the same 5s cadence */
             orion_nav_data_t nav;
@@ -584,8 +616,9 @@ int main(void)
                 double lat = ORION_DEG_FROM_1E7(nav.latitude_1e7);
                 double lon = ORION_DEG_FROM_1E7(nav.longitude_1e7);
                 double alt = ORION_M_FROM_CM(nav.msl_alt_cm);
-                LOG_INF("NAV fix=%u sv=%u lat=%.6f lon=%.6f alt=%.2fm",
-                        nav.fix_mode, nav.sv_count, lat, lon, alt);
+                LOG_INF("NAV fix=%u sv=%u lat=%.6f lon=%.6f alt=%.2fm vx=%d vy=%d vz=%d cm/s",
+                        nav.fix_mode, nav.sv_count, lat, lon, alt,
+                        nav.ecef_vx_cms, nav.ecef_vy_cms, nav.ecef_vz_cms);
             } else {
                 LOG_INF("No valid fix yet.");
             }

@@ -118,8 +118,17 @@ typedef struct {
     int32_t  lat_deg_e7;
     int32_t  lon_deg_e7;
     int32_t  alt_mm;
-    uint32_t timestamp_ms;
-    bool     valid;
+    int32_t  vel_x;
+    int32_t  vel_y;
+    int32_t  vel_z;
+    uint32_t timestamp_pos_ms;
+    uint32_t timestamp_vel_x_ms;
+    uint32_t timestamp_vel_y_ms;
+    uint32_t timestamp_vel_z_ms;
+    bool     valid_pos;
+    bool     valid_vel_x;
+    bool     valid_vel_y;
+    bool     valid_vel_z;
 } gnss_data_t;
 
 /**
@@ -384,13 +393,48 @@ static void handle_telemetry(const can_packet_t *pkt)
 
         gnss_latest.lat_deg_e7  = lat_1e4 * 1000;  /* back to 1e-7 */
         gnss_latest.lon_deg_e7  = lon_1e4 * 1000;
-        gnss_latest.timestamp_ms = k_uptime_get_32();
-        gnss_latest.valid        = true;
-
+        gnss_latest.timestamp_pos_ms = k_uptime_get_32();
+        gnss_latest.valid_pos    = true;
+        
         LOG_INF("GNSS fix: lat=%d lon=%d (1e-7 deg)",
                 gnss_latest.lat_deg_e7, gnss_latest.lon_deg_e7);
         return;
-    }
+    } else if (pkt->src == GNSS_ID && pkt->data[1] == 0x03 /*OP_GNSS_VX*/) {
+        int32_t vel_x = (int32_t)((uint32_t)pkt->data[2] << 24 |
+                                  (uint32_t)pkt->data[3] << 16 |
+                                  (uint32_t)pkt->data[4] << 8  |
+                                  (uint32_t)pkt->data[5]);
+        
+        gnss_latest.vel_x         = vel_x;
+        gnss_latest.timestamp_vel_x_ms = k_uptime_get_32();
+        gnss_latest.valid_vel_x       = true;
+        LOG_INF("GNSS fix: VX=%d", gnss_latest.vel_x);
+        return;
+
+    } else if (pkt->src == GNSS_ID && pkt->data[1] == 0x04 /*OP_GNSS_VY*/) {
+        int32_t vel_y = (int32_t)((uint32_t)pkt->data[2] << 24 |
+                                  (uint32_t)pkt->data[3] << 16 |
+                                  (uint32_t)pkt->data[4] << 8  |
+                                  (uint32_t)pkt->data[5]);
+        
+        gnss_latest.vel_y         = vel_y;
+        gnss_latest.timestamp_vel_y_ms = k_uptime_get_32();
+        gnss_latest.valid_vel_y       = true;
+        LOG_INF("GNSS fix: VY=%d", gnss_latest.vel_y);
+        return;
+
+    } else if (pkt->src == GNSS_ID && pkt->data[1] == 0x05 /*OP_GNSS_VZ*/) {
+        int32_t vel_z = (int32_t)((uint32_t)pkt->data[2] << 24 |
+                                  (uint32_t)pkt->data[3] << 16 |
+                                  (uint32_t)pkt->data[4] << 8  |
+                                  (uint32_t)pkt->data[5]);
+        
+        gnss_latest.vel_z         = vel_z;
+        gnss_latest.timestamp_vel_z_ms = k_uptime_get_32();
+        gnss_latest.valid_vel_z       = true;
+        LOG_INF("GNSS fix: VZ=%d", gnss_latest.vel_z);
+        return;
+    } 
 
     LOG_INF("Telemetry from node 0x%x", pkt->src);
 }
