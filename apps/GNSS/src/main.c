@@ -488,8 +488,8 @@ K_THREAD_DEFINE(can_rx_tid, CAN_RX_STACK_SIZE,
  * @param nav  Latest nav fix data from the GNSS driver.
  * @param user Unused user-data pointer (registered as NULL).
  *
- * Logs fix mode, position, altitude, and satellite count when the fix is
- * valid; logs a warning and returns early otherwise.
+ * Logs fix mode, position, altitude, velocity, and satellite count when
+ * the fix is valid; logs a warning and returns early otherwise.
  */
 static void on_nav_update(const orion_nav_data_t *nav, void *user)
 {
@@ -512,8 +512,9 @@ static void on_nav_update(const orion_nav_data_t *nav, void *user)
         default:                fix_str = "NONE";      break;
     }
 
-    LOG_INF("FIX %s | lat=%.6f lon=%.6f alt=%.2fm | SVs=%u",
-            fix_str, lat, lon, alt, nav->sv_count);
+    LOG_INF("FIX %s | lat=%.6f lon=%.6f alt=%.2fm | SVs=%u | vx=%d vy=%d vz=%d cm/s",
+            fix_str, lat, lon, alt, nav->sv_count,
+            nav->ecef_vx_cms, nav->ecef_vy_cms, nav->ecef_vz_cms);
 }
 
 /* @} */
@@ -615,8 +616,9 @@ int main(void)
                 double lat = ORION_DEG_FROM_1E7(nav.latitude_1e7);
                 double lon = ORION_DEG_FROM_1E7(nav.longitude_1e7);
                 double alt = ORION_M_FROM_CM(nav.msl_alt_cm);
-                LOG_INF("NAV fix=%u sv=%u lat=%.6f lon=%.6f alt=%.2fm",
-                        nav.fix_mode, nav.sv_count, lat, lon, alt);
+                LOG_INF("NAV fix=%u sv=%u lat=%.6f lon=%.6f alt=%.2fm vx=%d vy=%d vz=%d cm/s",
+                        nav.fix_mode, nav.sv_count, lat, lon, alt,
+                        nav.ecef_vx_cms, nav.ecef_vy_cms, nav.ecef_vz_cms);
             } else {
                 LOG_INF("No valid fix yet.");
             }
