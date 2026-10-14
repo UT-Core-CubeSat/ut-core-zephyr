@@ -196,12 +196,32 @@ void can_decode(const struct can_frame *f, can_packet_t *pkt);
  * @note Always sends a full 8-byte frame (p3..p7 are zero-filled), even
  *       though only p2 carries data — matches can_fill_payload()'s
  *       fixed dlc=8 behavior.
- * @warning Does not return a status code. If can_send() fails, the error
- *          is logged via LOG_ERR but not otherwise surfaced to the
- *          caller — callers that need to know send success/failure
- *          cannot currently detect it from the return value alone.
+ * @note Returns as soon as the frame is handed to the CAN driver, not once
+ *       it is acknowledged on the bus. A 0 return means the frame was
+ *       queued for transmission; it does not mean a peer received it. If
+ *       no peer acknowledges the frame, the failure instead shows up as a
+ *       TX error reported asynchronously to can_tx_done(), which counts it
+ *       in can_proto_tx_error_count() rather than blocking this call.
+ * @return 0 if the frame was queued successfully, negative errno if the
+ *         driver rejected it outright (e.g. invalid CAN ID, no free TX
+ *         mailbox within the K_NO_WAIT timeout).
  */
 int send_simple(const struct device *can_dev, uint8_t src, uint8_t dst, uint8_t cls, uint8_t op, uint8_t val, uint8_t prio);
+
+/**
+ * @brief Number of CAN sends that failed to complete since boot, as
+ *        reported asynchronously by the CAN driver after send_simple()
+ *        has already returned.
+ *
+ * A failure here most often means a frame went unacknowledged on the bus
+ * (no other node received it) rather than a local driver error. Intended
+ * for future SOH/diagnostics reporting.
+ *
+ * @return Rolling count of failed sends. Wraps like any other 32-bit
+ *         counter; treat it as a diagnostic value, not a one-time
+ *         threshold to alarm on directly.
+ */
+uint32_t can_proto_tx_error_count(void);
 
 #ifdef __cplusplus
 }
