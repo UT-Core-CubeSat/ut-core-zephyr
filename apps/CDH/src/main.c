@@ -631,7 +631,11 @@ static void setup_mode_init(void)
     }
 
     tcan3403_wakeup();
-    can_setup();
+    int err = can_setup(can_dev, NODE_ID, &rxq, NULL);
+    if (err) {
+        LOG_ERR("CAN Setup failed: %d", err);
+        return;
+    }
 
     LOG_INF("Setup complete — waiting 2 s for bus stabilisation");
     k_sleep(K_MSEC(2000));
@@ -725,7 +729,10 @@ void scheduler_thread(void *a, void *b, void *c)
             if (now - last_hb >= 1000)
             {
                 last_hb = now;
-                send_simple(CAN_BROADCAST, CLS_HEARTBEAT, OP_HEARTBEAT, 0);
+                int err = send_simple(can_dev, NODE_ID, CAN_BROADCAST, CLS_HEARTBEAT, OP_HEARTBEAT, 0, PRIO_LOW);
+                if (err) {
+                    LOG_WRN("Failed to send OP_SET_MODE: %d", err);
+                }
             }
         }
 
@@ -905,7 +912,10 @@ void gnss_thread(void *a, void *b, void *c)
         {
             /* Request position from GNSS node — it responds with OP_GNSS_POS
                on CLS_TELEMETRY, which handle_telemetry() parses above */
-            send_simple(GNSS_ID, CLS_COMMAND, 0x61 /* OP_QUERY_POS */, 0);
+            int err = send_simple(can_dev, NODE_ID, GNSS_ID, CLS_COMMAND, 0x61 /* OP_QUERY_POS*/, 0, PRIO_LOW);
+            if (err) {
+                LOG_WRN("Failed to send OP_SET_MODE: %d", err);
+            }
             LOG_INF("GNSS position request sent");
         }
 

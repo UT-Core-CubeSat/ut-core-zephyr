@@ -351,13 +351,6 @@ K_MSGQ_DEFINE(can_proc_q, sizeof(struct can_frame), 16, 4);
 /**
  * @brief Decoded CAN frame with routing fields unpacked from the ID.
  */
-typedef struct {
-    uint8_t msg_class;
-    uint8_t src;
-    uint8_t dst;
-    uint8_t data[8];
-    uint8_t dlc;
-} can_packet_t;
 
 static struct gpio_callback hall_cb_gpiod;
 static struct gpio_callback hall_cb_gpioe;
@@ -1097,21 +1090,6 @@ static void handle_can_command(const struct can_frame *f)
     }
 }
 
-/**
- * @brief Unpack a raw CAN frame's ID and payload into a can_packet_t.
- * @param f   Raw CAN frame as received from the driver.
- * @param pkt Output decoded packet.
- */
-static void decode_can_packet(const struct can_frame *f, can_packet_t *pkt)
-{
-    const uint32_t id = f->id;
-
-    pkt->src = (uint8_t)((id >> 14) & 0xFFU);
-    pkt->dst = (uint8_t)((id >> 6) & 0xFFU);
-    pkt->msg_class = (uint8_t)(id & 0x3FU);
-    pkt->dlc = f->dlc;
-    memcpy(pkt->data, f->data, f->dlc);
-}
 
 /**
  * @brief Bring up the CAN transceiver and controller, and install RX
@@ -1130,114 +1108,6 @@ static void decode_can_packet(const struct can_frame *f, can_packet_t *pkt)
  *       block) — likely an accidental copy-paste duplication rather
  *       than intentional.
  */
-static int can_setup(void)
-{
-    if (!device_is_ready(can_dev)) {
-        printk("ERR: CAN device not ready\n");
-        printk("CAN node: %s\n", can_dev->name);
-#if DT_NODE_HAS_STATUS(DT_NODELABEL(fdcan1), okay)
-        printk("DT fdcan1 status: okay\n");
-#else
-        printk("DT fdcan1 status: not okay\n");
-#endif
-        printk("CAN node: %s\n", can_dev->name);
-#if DT_NODE_HAS_STATUS(DT_NODELABEL(fdcan1), okay)
-        printk("DT fdcan1 status: okay\n");
-#else
-        printk("DT fdcan1 status: not okay\n");
-#endif
-        return -ENODEV;
-    }
-
-#if DT_NODE_HAS_STATUS(CAN_STB_NODE, okay)
-    if (!device_is_ready(can_stb.port)) {
-        printk("ERR: CAN STB GPIO device not ready\n");
-        return -ENODEV;
-    }
-
-    /* Default try: STB active-high -> drive low to leave standby. */
-    (void)gpio_pin_configure_dt(&can_stb, GPIO_OUTPUT_INACTIVE);
-    (void)gpio_pin_set_dt(&can_stb, 0);
-    k_msleep(5);
-#else
-    printk("WARN: CAN STB alias missing (canstb)\n");
-#endif
-
-    int ret = can_set_bitrate(can_dev, 500000);
-
-    if (ret != 0) {
-        printk("ERR: CAN bitrate cfg failed (%d)\n", ret);
-        return ret;
-    }
-
-    ret = can_set_mode(can_dev, CAN_MODE_NORMAL);
-    if (ret != 0) {
-        printk("ERR: CAN mode cfg failed (%d)\n", ret);
-        return ret;
-    }
-
-    ret = can_start(can_dev);
-    if (ret != 0) {
-#if DT_NODE_HAS_STATUS(CAN_STB_NODE, okay)
-        /*
-         * Some transceivers use opposite standby polarity.
-         * Retry once with STB high to detect that case.
-         */
-        printk("CAN start failed (%d), retrying with STB=1\n", ret);
-        (void)gpio_pin_set_dt(&can_stb, 1);
-        k_msleep(5);
-        ret = can_start(can_dev);
-        if (ret == 0) {
-            printk("CAN recovered with STB=1 (transceiver standby polarity is inverted)\n");
-        }
-#endif
-    }
-    if (ret != 0) {
-#if DT_NODE_HAS_STATUS(CAN_STB_NODE, okay)
-        /*
-         * Some transceivers use opposite standby polarity.
-         * Retry once with STB high to detect that case.
-         */
-        printk("CAN start failed (%d), retrying with STB=1\n", ret);
-        (void)gpio_pin_set_dt(&can_stb, 1);
-        k_msleep(5);
-        ret = can_start(can_dev);
-        if (ret == 0) {
-            printk("CAN recovered with STB=1 (transceiver standby polarity is inverted)\n");
-        }
-#endif
-    }
-    if (ret != 0) {
-        printk("ERR: CAN start failed (%d)\n", ret);
-        return ret;
-    }
-
-    const struct can_filter to_me = {
-        .id = CAN_DST(MOTOR_ID),
-        .mask = CAN_DST_MASK_29,
-        .flags = CAN_FILTER_IDE,
-    };
-    const struct can_filter bcast = {
-        .id = CAN_DST(CAN_BROADCAST),
-        .mask = CAN_DST_MASK_29,
-        .flags = CAN_FILTER_IDE,
-    };
-
-    ret = can_add_rx_filter_msgq(can_dev, &can_rx_q, &to_me);
-    if (ret < 0) {
-        printk("ERR: CAN to_me filter failed (%d)\n", ret);
-        return ret;
-    }
-
-    ret = can_add_rx_filter_msgq(can_dev, &can_rx_q, &bcast);
-    if (ret < 0) {
-        printk("ERR: CAN bcast filter failed (%d)\n", ret);
-        return ret;
-    }
-
-    printk("CAN ready: node=0x%02X, ADCS cmd opcode=0x%02X\n", MOTOR_ID, OP_SET_WHEEL_RPM);
-    return 0;
-}
 
 /**
  * @brief Broadcast a CLS_HEARTBEAT frame with a rolling sequence number.
@@ -1517,7 +1387,7 @@ static void can_process_thread(void *arg1, void *arg2, void *arg3)
             continue;
         }
 
-        decode_can_packet(&frame, &pkt);
+        can_decode(&frame, &pkt);
         if (pkt.dst != MOTOR_ID && pkt.dst != CAN_BROADCAST) {
             continue;
         }
@@ -1773,9 +1643,15 @@ int main(void)
         }
     }
 
-    if (can_setup() != 0) {
-        return -1;
-    }
+    #if DT_NODE_HAS_STATUS(CAN_STB_NODE, okay)
+        const struct gpio_dt_spec *stb_ptr = &can_stb;
+    #else
+        const struct gpio_dt_spec *stb_ptr = NULL;
+    #endif
+
+        if (can_setup(can_dev, MOTOR_ID, &can_rx_q, stb_ptr) != 0) {
+            return -1;
+        }
 
     printk("\n============================================\n");
     printk("  BLDC - ISR 6-step  (%u motors)\n", NMOTORS);

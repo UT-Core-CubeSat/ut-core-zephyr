@@ -61,15 +61,6 @@ static const struct device *gpioa = DEVICE_DT_GET(DT_NODELABEL(gpioa));
 CAN_MSGQ_DEFINE(rxq, 16);
 
 typedef struct {
-	uint8_t priority;
-	uint8_t src;
-	uint8_t dst;
-	uint8_t msg_class;
-	uint8_t dlc;
-	uint8_t data[8];
-} can_packet_t;
-
-typedef struct {
 	bool valid;
 	float attitude_q[4];
 	float wheel_rpm[4];
@@ -99,18 +90,12 @@ static inline int16_t float_to_i16_rpm(float x)
 	return (int16_t)lrintf(clamped);
 }
 
-static void send_simple(uint8_t dst, uint8_t cls, uint8_t op, uint8_t val)
-{
-	struct can_frame f = {0};
-	f.id = CAN_ID_FULL(PRIO_LOW, NODE_ID, dst, cls);
-	f.flags = CAN_FRAME_IDE;
-	can_fill_payload(&f, NODE_ID, op, val, 0, 0, 0, 0, 0);
-	can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
-}
-
 static void send_heartbeat(void)
 {
-	send_simple(CAN_BROADCAST, CLS_HEARTBEAT, OP_HEARTBEAT, 0x00);
+	int err = send_simple(can_dev, NODE_ID, CAN_BROADCAST, CLS_HEARTBEAT, OP_HEARTBEAT, 0x00, PRIO_LOW);
+	if (err) {
+		LOG_WRN("Failed to send OP_SET_MODE: %d", err);
+}
 }
 
 static void send_soh_attitude(void)
@@ -220,44 +205,6 @@ static void tcan3403_wakeup(void)
 	gpio_pin_configure(gpioa, PIN_SILENT, GPIO_OUTPUT_INACTIVE);
 	k_msleep(1);
 	LOG_INF("TCAN3403 Awake");
-}
-
-static void can_decode(const struct can_frame *f, can_packet_t *pkt)
-{
-	uint32_t id = f->id;
-	pkt->priority = (id >> 26) & 0x07;
-	pkt->src = (id >> 14) & 0xFF;
-	pkt->dst = (id >> 6) & 0xFF;
-	pkt->msg_class = id & 0x3F;
-	pkt->dlc = f->dlc;
-	memcpy(pkt->data, f->data, f->dlc);
-}
-
-static void can_setup(void)
-{
-	if (!device_is_ready(can_dev)) {
-		LOG_ERR("CAN not ready");
-		return;
-	}
-
-	can_set_bitrate(can_dev, 500000);
-	can_set_mode(can_dev, CAN_MODE_NORMAL);
-	can_start(can_dev);
-
-	const struct can_filter to_me = {
-		.id = CAN_DST(NODE_ID),
-		.mask = CAN_DST_MASK_29,
-		.flags = CAN_FILTER_IDE,
-	};
-	const struct can_filter bcast = {
-		.id = CAN_DST(CAN_BROADCAST),
-		.mask = CAN_DST_MASK_29,
-		.flags = CAN_FILTER_IDE,
-	};
-
-	can_add_rx_filter_msgq(can_dev, &rxq, &to_me);
-	can_add_rx_filter_msgq(can_dev, &rxq, &bcast);
-	LOG_INF("CAN initialized (29-bit extended), node=0x%02X", NODE_ID);
 }
 
 static void can_dispatch(const can_packet_t *pkt)
@@ -857,7 +804,11 @@ int main(void)
 		return 0;
 	}
 	tcan3403_wakeup();
-	can_setup();
+	int err = can_setup(can_dev, NODE_ID, &rxq, NULL);
+    if (err) {
+        LOG_ERR("CAN Setup failed: %d", err);
+        return;
+    }
 
 	k_thread_create(&adcs_loop_thread, adcs_loop_stack,
 			K_THREAD_STACK_SIZEOF(adcs_loop_stack),
