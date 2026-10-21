@@ -18,7 +18,7 @@
  * Sensors:  Up to 6 I2C temperature sensors (TMP1xx-family, 0x48-0x4D).
  *
  * Thread overview (highest to lowest priority):
- *   PRIO 0  watchdog_thread     — kicks hardware watchdog; must never starve
+ *   PRIO 0  watchdog_thread     — supervises thread check-ins; must never starve
  *   PRIO 1  can_rx_thread       — drains hardware FIFO into SW queue
  *   PRIO 2  can_process_thread  — decodes & dispatches frames
  *   PRIO 3  scheduler_thread    — heartbeat + future mission scheduling
@@ -37,12 +37,15 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/logging/log.h>
-//#include <stm32u5xx.h>
+#include <zephyr/sys/atomic.h>
+#include <zephyr/task_wdt/task_wdt.h>
+// #include <stm32u5xx.h>
 #include <stdbool.h>
 #include <string.h>
 
 #include "board_config.h"
 #include "common/can_proto.h"
+#include "common/health.h"
 #include "common/temp_telemetry.h"
 
 /** @cond */ /* Hidden from Doxygen, or it will mistake this as a function */
@@ -51,12 +54,12 @@ LOG_MODULE_REGISTER(cdh, LOG_LEVEL_INF);
 
 /* ================= DEVICE HANDLES ================= */
 
-static const struct device          *can_dev  = DEVICE_DT_GET(CAN_NODE);
-static const struct device          *gpioa    = DEVICE_DT_GET(GPIOA_NODE);
-static const struct device          *i2c_bus  = DEVICE_DT_GET(I2C_BUS_NODE);
-static const struct gpio_dt_spec     led0     = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
-static const struct gpio_dt_spec     led1     = GPIO_DT_SPEC_GET(LED1_NODE, gpios);
-static const struct gpio_dt_spec     led2     = GPIO_DT_SPEC_GET(LED2_NODE, gpios);
+static const struct device *can_dev = DEVICE_DT_GET(CAN_NODE);
+static const struct device *gpioa = DEVICE_DT_GET(GPIOA_NODE);
+static const struct device *i2c_bus = DEVICE_DT_GET(I2C_BUS_NODE);
+static const struct gpio_dt_spec led0 = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
+static const struct gpio_dt_spec led1 = GPIO_DT_SPEC_GET(LED1_NODE, gpios);
+static const struct gpio_dt_spec led2 = GPIO_DT_SPEC_GET(LED2_NODE, gpios);
 
 /** @cond */ /* Hidden from Doxygen, or it will mistake this as a function */
 /** Hardware-backed CAN RX queue — the driver ISR deposits frames here. */
@@ -74,12 +77,14 @@ K_MSGQ_DEFINE(can_proc_q, sizeof(struct can_frame), CAN_PROC_Q_LEN, 4);
  * node_status_t — liveness record for one remote satellite subsystem.
  * Written by handle_heartbeat(), read by check_node_timeouts().
  */
-typedef struct {
-    bool    alive;
+typedef struct
+{
+    bool alive;
     int64_t last_seen_ms;
 } node_status_t;
 
-typedef struct {
+typedef struct
+{
     node_status_t cdh;
     node_status_t eps;
     node_status_t comms;
@@ -93,18 +98,18 @@ typedef struct {
 /** @brief Liveness table for every remote satellite subsystem, indexed by node. */
 static node_heartbeat_t node_alive = {0};
 
-
 /**
  * gnss_data_t — latest position fix received from the GNSS node.
  *
  * @todo TODO: populate fields once the GNSS CAN telemetry format is defined.
  */
-typedef struct {
-    int32_t  lat_deg_e7;
-    int32_t  lon_deg_e7;
-    int32_t  alt_mm;
+typedef struct
+{
+    int32_t lat_deg_e7;
+    int32_t lon_deg_e7;
+    int32_t alt_mm;
     uint32_t timestamp_ms;
-    bool     valid;
+    bool valid;
 } gnss_data_t;
 
 /**
@@ -114,13 +119,13 @@ typedef struct {
  */
 static gnss_data_t gnss_latest = {0};
 
-
 /* ================= MODE STATE MACHINE ================= */
 
 /**
  * @brief Current CDH operating mode.
  */
-typedef enum {
+typedef enum
+{
     MODE_SETUP,
     MODE_STANDARD,
     MODE_MISSION,
@@ -129,14 +134,35 @@ typedef enum {
 
 volatile cdh_mode_t current_mode = MODE_SETUP;
 
+/**
+ * @brief Set while a ground-station downlink pass is in progress, so the
+ *        supervisor can defer recovery instead of cutting off the pass.
+ * @todo Set and clear this from telemetry_thread once downlink windows are
+ *       implemented. Until then it is always 0.
+ */
+static atomic_t downlink_active = ATOMIC_INIT(0);
+
+/* ================= THREAD HEALTH ================= */
+
+/* health.h ids for each supervised thread, assigned in health_init(). */
+static int hb_can_rx;
+static int hb_can_proc;
+static int hb_sched;
+static int hb_soh;
+static int hb_gnss;
+static int hb_telemetry;
+
+/** Times the supervisor's own task watchdog channel expired (see supervisor_wdt_expired()). */
+static atomic_t supervisor_wdt_expiries = ATOMIC_INIT(0);
+
 /* ================= THREAD STACKS ================= */
 
-K_THREAD_STACK_DEFINE(watchdog_stack,  STACK_SIZE);
-K_THREAD_STACK_DEFINE(can_stack,       STACK_SIZE);
-K_THREAD_STACK_DEFINE(sched_stack,     STACK_SIZE);
-K_THREAD_STACK_DEFINE(soh_stack,       STACK_SIZE);
-K_THREAD_STACK_DEFINE(can_proc_stack,  STACK_SIZE);
-K_THREAD_STACK_DEFINE(gnss_stack,      STACK_SIZE);
+K_THREAD_STACK_DEFINE(watchdog_stack, STACK_SIZE);
+K_THREAD_STACK_DEFINE(can_stack, STACK_SIZE);
+K_THREAD_STACK_DEFINE(sched_stack, STACK_SIZE);
+K_THREAD_STACK_DEFINE(soh_stack, STACK_SIZE);
+K_THREAD_STACK_DEFINE(can_proc_stack, STACK_SIZE);
+K_THREAD_STACK_DEFINE(gnss_stack, STACK_SIZE);
 K_THREAD_STACK_DEFINE(telemetry_stack, STACK_SIZE);
 
 static struct k_thread watchdog_thread_data;
@@ -203,16 +229,26 @@ static void leds_init(void)
  */
 static node_status_t *get_node_status(uint8_t node_id)
 {
-    switch (node_id) {
-        case CDH_ID:   return &node_alive.cdh;
-        case EPS_ID:   return &node_alive.eps;
-        case COMMS_ID: return &node_alive.comms;
-        case ADCS_ID:  return &node_alive.adcs;
-        case MOTOR_ID: return &node_alive.motor;
-        case GNSS_ID:  return &node_alive.gnss;
-        case STAR_ID:  return &node_alive.star;
-        case SOLAR_ID: return &node_alive.solar;
-        default:       return NULL;
+    switch (node_id)
+    {
+    case CDH_ID:
+        return &node_alive.cdh;
+    case EPS_ID:
+        return &node_alive.eps;
+    case COMMS_ID:
+        return &node_alive.comms;
+    case ADCS_ID:
+        return &node_alive.adcs;
+    case MOTOR_ID:
+        return &node_alive.motor;
+    case GNSS_ID:
+        return &node_alive.gnss;
+    case STAR_ID:
+        return &node_alive.star;
+    case SOLAR_ID:
+        return &node_alive.solar;
+    default:
+        return NULL;
     }
 }
 
@@ -221,19 +257,11 @@ static node_status_t *get_node_status(uint8_t node_id)
 /* ===================================================== */
 
 /**
- * @brief Build and send a single-opcode CAN frame with one data byte.
- * @param dst Destination node ID (or CAN_BROADCAST).
- * @param cls Message class.
- * @param op  Opcode.
- * @param val Single data byte payload.
- */
-
-/**
  * @brief Bring the TCAN3403 transceiver out of shutdown/silent mode.
  */
 static void tcan3403_wakeup(void)
 {
-    gpio_pin_configure(gpioa, PIN_SHDN,   GPIO_OUTPUT_INACTIVE);
+    gpio_pin_configure(gpioa, PIN_SHDN, GPIO_OUTPUT_INACTIVE);
     gpio_pin_configure(gpioa, PIN_SILENT, GPIO_OUTPUT_INACTIVE);
     k_msleep(1);
     LOG_INF("TCAN3403 Awake");
@@ -245,15 +273,26 @@ static void tcan3403_wakeup(void)
  */
 static void can_dispatch(const can_packet_t *pkt)
 {
-    switch (pkt->msg_class) {
-        case CLS_HEARTBEAT:  handle_heartbeat(pkt);    break;
-        case CLS_COMMAND:    handle_command(pkt);      break;
-        case CLS_CMD_RESP:   handle_cmd_response(pkt); break;
-        case CLS_TELEMETRY:  handle_telemetry(pkt);    break;
-        case CLS_HEALTH:     handle_health(pkt);       break;
-        default:
-            LOG_WRN("Unhandled class: %d", pkt->msg_class);
-            break;
+    switch (pkt->msg_class)
+    {
+    case CLS_HEARTBEAT:
+        handle_heartbeat(pkt);
+        break;
+    case CLS_COMMAND:
+        handle_command(pkt);
+        break;
+    case CLS_CMD_RESP:
+        handle_cmd_response(pkt);
+        break;
+    case CLS_TELEMETRY:
+        handle_telemetry(pkt);
+        break;
+    case CLS_HEALTH:
+        handle_health(pkt);
+        break;
+    default:
+        LOG_WRN("Unhandled class: %d", pkt->msg_class);
+        break;
     }
 }
 
@@ -270,15 +309,20 @@ static void handle_cmd_response(const can_packet_t *pkt)
 {
     uint8_t op = pkt->data[1];
 
-    switch (op) {
-    case OP_SET_PWR_STATE: {
+    switch (op)
+    {
+    case OP_SET_PWR_STATE:
+    {
         uint8_t load_num = pkt->data[2];
-        uint8_t state    = pkt->data[3];
-        uint8_t status   = pkt->data[4];  /* 0x00 = success, 0x01 = error */
-        if (status == 0x00) {
+        uint8_t state = pkt->data[3];
+        uint8_t status = pkt->data[4]; /* 0x00 = success, 0x01 = error */
+        if (status == 0x00)
+        {
             LOG_INF("EPS confirmed: load %d %s",
                     load_num, state ? "ENABLED" : "DISABLED");
-        } else {
+        }
+        else
+        {
             LOG_ERR("EPS rejected: load %d state=%d (error)", load_num, state);
         }
         break;
@@ -296,22 +340,25 @@ static void handle_cmd_response(const can_packet_t *pkt)
  */
 static void handle_telemetry(const can_packet_t *pkt)
 {
-    if (pkt->src == GNSS_ID && pkt->data[1] == 0x02 /* OP_GNSS_POS */) {
+    if (pkt->src == GNSS_ID && pkt->data[1] == 0x02 /* OP_GNSS_POS */)
+    {
         /* Unpack signed 24-bit big-endian lat/lon (units: 1e-4 degrees) */
         int32_t lat_1e4 = (int32_t)((uint32_t)pkt->data[2] << 16 |
-                                    (uint32_t)pkt->data[3] << 8  |
+                                    (uint32_t)pkt->data[3] << 8 |
                                     (uint32_t)pkt->data[4]);
-        if (lat_1e4 & 0x800000) lat_1e4 |= 0xFF000000;  /* sign-extend */
+        if (lat_1e4 & 0x800000)
+            lat_1e4 |= 0xFF000000; /* sign-extend */
 
         int32_t lon_1e4 = (int32_t)((uint32_t)pkt->data[5] << 16 |
-                                    (uint32_t)pkt->data[6] << 8  |
+                                    (uint32_t)pkt->data[6] << 8 |
                                     (uint32_t)pkt->data[7]);
-        if (lon_1e4 & 0x800000) lon_1e4 |= 0xFF000000;
+        if (lon_1e4 & 0x800000)
+            lon_1e4 |= 0xFF000000;
 
-        gnss_latest.lat_deg_e7  = lat_1e4 * 1000;  /* back to 1e-7 */
-        gnss_latest.lon_deg_e7  = lon_1e4 * 1000;
+        gnss_latest.lat_deg_e7 = lat_1e4 * 1000; /* back to 1e-7 */
+        gnss_latest.lon_deg_e7 = lon_1e4 * 1000;
         gnss_latest.timestamp_ms = k_uptime_get_32();
-        gnss_latest.valid        = true;
+        gnss_latest.valid = true;
 
         LOG_INF("GNSS fix: lat=%d lon=%d (1e-7 deg)",
                 gnss_latest.lat_deg_e7, gnss_latest.lon_deg_e7);
@@ -338,14 +385,17 @@ static void handle_health(const can_packet_t *pkt)
 static void send_set_board_pwr(uint8_t load_num, uint8_t state)
 {
     struct can_frame f = {0};
-    f.id    = CAN_ID_FULL(PRIO_LOW, NODE_ID, EPS_ID, CLS_COMMAND);
+    f.id = CAN_ID_FULL(PRIO_LOW, NODE_ID, EPS_ID, CLS_COMMAND);
     f.flags = CAN_FRAME_IDE;
     can_fill_payload(&f, NODE_ID, OP_SET_PWR_STATE, load_num, state, 0, 0, 0, 0);
     int ret = can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
-    if (ret) {
+    if (ret)
+    {
         LOG_ERR("Failed to send SET_PWR_STATE (load=%d state=%d): %d",
                 load_num, state, ret);
-    } else {
+    }
+    else
+    {
         LOG_INF("TX SET_PWR_STATE load=%d state=%d -> EPS", load_num, state);
     }
 }
@@ -365,31 +415,32 @@ static void send_set_board_pwr(uint8_t load_num, uint8_t state)
 static void handle_command(const can_packet_t *pkt)
 {
     uint8_t opcode = pkt->data[1];
-    uint8_t val    = pkt->data[2];
+    uint8_t val = pkt->data[2];
 
-    switch (opcode) {
-        case OP_SET_MODE:
-            current_mode = val;
-            break;
+    switch (opcode)
+    {
+    case OP_SET_MODE:
+        current_mode = val;
+        break;
 
-        case OP_REBOOT:
-            /* NVIC_SystemReset(); — enable after watchdog sequencing confirmed */
-            break;
+    case OP_REBOOT:
+        /* NVIC_SystemReset(); — enable after watchdog sequencing confirmed */
+        break;
 
-        case OP_SET_LED:
-            LOG_INF("LED command: led2 -> %d", val);
-            gpio_pin_set_dt(&led2, val);
-            break;
+    case OP_SET_LED:
+        LOG_INF("LED command: led2 -> %d", val);
+        gpio_pin_set_dt(&led2, val);
+        break;
 
-        case OP_SET_PWR_STATE:
-            LOG_INF("Forwarding SET_PWR_STATE load=%d state=%d to EPS",
-            pkt->data[2], pkt->data[3]);
-            send_set_board_pwr(pkt->data[2], pkt->data[3]);
-            break;
+    case OP_SET_PWR_STATE:
+        LOG_INF("Forwarding SET_PWR_STATE load=%d state=%d to EPS",
+                pkt->data[2], pkt->data[3]);
+        send_set_board_pwr(pkt->data[2], pkt->data[3]);
+        break;
 
-        default:
-            LOG_WRN("Unknown opcode: %d", opcode);
-            break;
+    default:
+        LOG_WRN("Unknown opcode: %d", opcode);
+        break;
     }
 }
 
@@ -401,12 +452,13 @@ static void handle_heartbeat(const can_packet_t *pkt)
 {
     node_status_t *node = get_node_status(pkt->src);
 
-    if (node == NULL) {
+    if (node == NULL)
+    {
         LOG_WRN("Heartbeat from unknown node: 0x%02X", pkt->src);
         return;
     }
 
-    node->alive        = true;
+    node->alive = true;
     node->last_seen_ms = k_uptime_get();
 
     LOG_INF("Heartbeat from 0x%02X - alive", pkt->src);
@@ -421,28 +473,32 @@ static void check_node_timeouts(void)
 {
     int64_t now = k_uptime_get();
 
-    struct {
-        uint8_t        id;
-        const char    *name;
+    struct
+    {
+        uint8_t id;
+        const char *name;
         node_status_t *status;
     } nodes[] = {
-        { EPS_ID,   "EPS",   &node_alive.eps   },
-        { COMMS_ID, "COMMS", &node_alive.comms },
-        { ADCS_ID,  "ADCS",  &node_alive.adcs  },
-        { MOTOR_ID, "MOTOR", &node_alive.motor },
-        { GNSS_ID,  "GNSS",  &node_alive.gnss  },
-        { STAR_ID,  "STAR",  &node_alive.star  },
-        { SOLAR_ID, "SOLAR", &node_alive.solar },
+        {EPS_ID, "EPS", &node_alive.eps},
+        {COMMS_ID, "COMMS", &node_alive.comms},
+        {ADCS_ID, "ADCS", &node_alive.adcs},
+        {MOTOR_ID, "MOTOR", &node_alive.motor},
+        {GNSS_ID, "GNSS", &node_alive.gnss},
+        {STAR_ID, "STAR", &node_alive.star},
+        {SOLAR_ID, "SOLAR", &node_alive.solar},
     };
 
-    for (int i = 0; i < ARRAY_SIZE(nodes); i++) {
+    for (int i = 0; i < ARRAY_SIZE(nodes); i++)
+    {
         node_status_t *n = nodes[i].status;
 
-        if (!n->alive) {
+        if (!n->alive)
+        {
             continue;
         }
 
-        if ((now - n->last_seen_ms) > HEARTBEAT_TIMEOUT_MS) {
+        if ((now - n->last_seen_ms) > HEARTBEAT_TIMEOUT_MS)
+        {
             LOG_WRN("Node %s (0x%02X) timed out!", nodes[i].name, nodes[i].id);
             n->alive = false;
         }
@@ -482,15 +538,19 @@ static void setup_mode_init(void)
     bool pin_is_mcu2 = (role_pin == 1);
 
     if ((uid_is_mcu1 && pin_is_mcu1) ||
-        (uid_is_mcu2 && pin_is_mcu2)) {
+        (uid_is_mcu2 && pin_is_mcu2))
+    {
         LOG_INF("MCU Identity Verified");
-    } else {
+    }
+    else
+    {
         LOG_ERR("UID and PA6 MISMATCH — trusting PA6 hardware pin.");
     }
 
     tcan3403_wakeup();
     int err = can_setup(can_dev, NODE_ID, &rxq, NULL);
-    if (err) {
+    if (err)
+    {
         LOG_ERR("CAN Setup failed: %d", err);
         return;
     }
@@ -514,19 +574,26 @@ void can_rx_thread(void *a, void *b, void *c)
     LOG_INF("can_rx_thread started");
     struct can_frame rx;
 
-    while (1) {
+    while (1)
+    {
+        health_checkin(hb_can_rx);
+
         if (current_mode == MODE_STANDARD ||
             current_mode == MODE_MISSION)
         {
-            if (k_msgq_get(&rxq, &rx, K_FOREVER) == 0) {
+            if (k_msgq_get(&rxq, &rx, K_MSEC(CAN_RX_WAIT_MS)) == 0)
+            {
                 LOG_INF("RX: id=0x%08X dlc=%d d0=0x%02X d1=0x%02X",
                         rx.id, rx.dlc, rx.data[0], rx.data[1]);
 
-                if (k_msgq_put(&can_proc_q, &rx, K_NO_WAIT) != 0) {
+                if (k_msgq_put(&can_proc_q, &rx, K_NO_WAIT) != 0)
+                {
                     LOG_WRN("CAN proc queue full — frame dropped");
                 }
             }
-        } else {
+        }
+        else
+        {
             k_sleep(K_MSEC(200));
         }
     }
@@ -541,12 +608,17 @@ void can_process_thread(void *a, void *b, void *c)
     struct can_frame frame;
     can_packet_t pkt;
 
-    while (1) {
-        if (k_msgq_get(&can_proc_q, &frame, K_FOREVER) == 0) {
+    while (1)
+    {
+        health_checkin(hb_can_proc);
+
+        if (k_msgq_get(&can_proc_q, &frame, K_MSEC(CAN_RX_WAIT_MS)) == 0)
+        {
             led_can_activity();
             can_decode(&frame, &pkt);
 
-            if (pkt.dst != NODE_ID && pkt.dst != CAN_BROADCAST) {
+            if (pkt.dst != NODE_ID && pkt.dst != CAN_BROADCAST)
+            {
                 continue;
             }
 
@@ -563,16 +635,21 @@ void scheduler_thread(void *a, void *b, void *c)
     LOG_INF("scheduler_thread started");
     int64_t last_hb = 0;
 
-    while (1) {
+    while (1)
+    {
+        health_checkin(hb_sched);
+
         if (current_mode == MODE_STANDARD ||
             current_mode == MODE_MISSION)
         {
             int64_t now = k_uptime_get();
 
-            if (now - last_hb >= 1000) {
+            if (now - last_hb >= 1000)
+            {
                 last_hb = now;
                 int err = send_simple(can_dev, NODE_ID, CAN_BROADCAST, CLS_HEARTBEAT, OP_HEARTBEAT, 0, PRIO_LOW);
-                if (err) {
+                if (err)
+                {
                     LOG_WRN("Failed to send OP_SET_MODE: %d", err);
                 }
             }
@@ -590,7 +667,10 @@ void soh_thread(void *a, void *b, void *c)
 {
     LOG_INF("soh_thread started");
 
-    while (1) {
+    while (1)
+    {
+        health_checkin(hb_soh);
+
         if (current_mode == MODE_STANDARD ||
             current_mode == MODE_MISSION)
         {
@@ -605,18 +685,128 @@ void soh_thread(void *a, void *b, void *c)
 }
 
 /**
- * @brief Highest-priority thread; kicks the hardware watchdog on a fixed
- *        interval so it must never be starved by other threads.
+ * @brief Register every supervised thread and start the task watchdog.
+ *        Must run before any thread is created.
+ */
+static void health_init(void)
+{
+    hb_can_rx = health_register("can_rx", HEALTH_TIMEOUT_CAN_RX_MS);
+    hb_can_proc = health_register("can_proc", HEALTH_TIMEOUT_CAN_PROC_MS);
+    hb_sched = health_register("scheduler", HEALTH_TIMEOUT_SCHED_MS);
+    hb_soh = health_register("soh", HEALTH_TIMEOUT_SOH_MS);
+    hb_gnss = health_register("gnss", HEALTH_TIMEOUT_GNSS_MS);
+    hb_telemetry = health_register("telemetry", HEALTH_TIMEOUT_TELEMETRY_MS);
+
+    /* NULL = no hardware watchdog fallback yet (see prj.conf). */
+    int ret = task_wdt_init(NULL);
+
+    if (ret != 0)
+    {
+        LOG_ERR("task_wdt_init failed: %d", ret);
+    }
+}
+
+/**
+ * @brief Task watchdog callback for the supervisor's own channel. Fires only
+ *        if watchdog_thread stops running, i.e. the supervisor itself hung.
+ *
+ * Runs in timer interrupt context: it must not block, sleep, or log.
+ * Fires once per expiry; the channel re-arms on the next task_wdt_feed().
+ */
+static void supervisor_wdt_expired(int channel_id, void *user_data)
+{
+    ARG_UNUSED(channel_id);
+    ARG_UNUSED(user_data);
+
+    atomic_inc(&supervisor_wdt_expiries);
+
+    /** @todo Reset logic for a hung supervisor is not decided yet. */
+}
+
+/**
+ * @brief Called on every supervisor pass while a supervised thread is late.
+ * @param id health.h id of a thread that has missed its check-in.
+ */
+static void handle_thread_failure(int id)
+{
+    ARG_UNUSED(id);
+
+    if (atomic_get(&downlink_active) != 0)
+    {
+        /* Recovering now could cut off the ground pass. This runs again on
+         * the next supervisor pass, so recovery happens once the pass ends. */
+        return;
+    }
+
+    /** @todo Recovery action is not decided yet, e.g. save the failed thread
+     *        and reset cause to FRAM, then sys_reboot(SYS_REBOOT_COLD). */
+}
+
+/**
+ * @brief Highest-priority thread: supervises the other threads' check-ins.
+ *
+ * Each pass it feeds its own task watchdog channel (proving the supervisor
+ * itself is running), checks every thread in the health table, logs when a
+ * thread goes late or recovers, and calls handle_thread_failure() while any
+ * thread is late.
  */
 void watchdog_thread(void *a, void *b, void *c)
 {
     LOG_INF("watchdog_thread started");
 
-    while (1) {
-        /** @todo TODO: Replace with correct kick sequence for your watchdog IC */
-        /* gpio_pin_toggle(gpioa, WATCHDOG_PIN); */
+    int wdt_channel = task_wdt_add(SUPERVISOR_WDT_TIMEOUT_MS,
+                                   supervisor_wdt_expired, NULL);
+    if (wdt_channel < 0)
+    {
+        LOG_ERR("task_wdt_add failed: %d", wdt_channel);
+    }
 
-        LOG_DBG("watchdog kick");
+    bool was_late[HEALTH_MAX_ENTRIES] = {false};
+    atomic_val_t expiries_reported = 0;
+
+    while (1)
+    {
+        task_wdt_feed(wdt_channel);
+
+        int first_late = -1;
+
+        for (int id = 0; id < health_count(); id++)
+        {
+            bool late = health_is_late(id);
+
+            if (late && !was_late[id])
+            {
+                LOG_ERR("Thread %s missed its check-in: last seen %u ms ago (limit %u ms)",
+                        health_name(id), health_ms_since_checkin(id),
+                        health_timeout_ms(id));
+            }
+            else if (!late && was_late[id])
+            {
+                LOG_WRN("Thread %s is checking in again", health_name(id));
+            }
+            was_late[id] = late;
+
+            if (late && first_late < 0)
+            {
+                first_late = id;
+            }
+        }
+
+        if (first_late >= 0)
+        {
+            handle_thread_failure(first_late);
+        }
+
+        atomic_val_t expiries = atomic_get(&supervisor_wdt_expiries);
+
+        if (expiries != expiries_reported)
+        {
+            LOG_ERR("Supervisor task watchdog expired (%ld total)", (long)expiries);
+            expiries_reported = expiries;
+        }
+
+        /** @todo Kick the external watchdog IC here (gpio_pin_toggle(gpioa,
+         *        WATCHDOG_PIN)) once EE confirms its kick requirements. */
 
         k_sleep(K_MSEC(WATCHDOG_KICK_MS));
     }
@@ -632,14 +822,18 @@ void gnss_thread(void *a, void *b, void *c)
 {
     LOG_INF("gnss_thread started");
 
-    while (1) {
+    while (1)
+    {
+        health_checkin(hb_gnss);
+
         if (current_mode == MODE_STANDARD ||
             current_mode == MODE_MISSION)
         {
             /* Request position from GNSS node — it responds with OP_GNSS_POS
                on CLS_TELEMETRY, which handle_telemetry() parses above */
             int err = send_simple(can_dev, NODE_ID, GNSS_ID, CLS_COMMAND, 0x61 /* OP_QUERY_POS*/, 0, PRIO_LOW);
-            if (err) {
+            if (err)
+            {
                 LOG_WRN("Failed to send OP_SET_MODE: %d", err);
             }
             LOG_INF("GNSS position request sent");
@@ -659,7 +853,10 @@ void telemetry_thread(void *a, void *b, void *c)
 {
     LOG_INF("telemetry_thread started");
 
-    while (1) {
+    while (1)
+    {
+        health_checkin(hb_telemetry);
+
         if (current_mode == MODE_STANDARD ||
             current_mode == MODE_MISSION)
         {
@@ -685,6 +882,7 @@ int main(void)
     LOG_INF("UT-CORE CDH Booting...");
 
     leds_init();
+    health_init();
 
     k_thread_create(&watchdog_thread_data, watchdog_stack, STACK_SIZE,
                     watchdog_thread, NULL, NULL, NULL,
@@ -716,7 +914,8 @@ int main(void)
 
     setup_mode_init();
 
-    while (1) {
+    while (1)
+    {
         k_sleep(K_FOREVER);
     }
 }

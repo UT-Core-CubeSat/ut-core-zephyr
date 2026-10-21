@@ -12,7 +12,6 @@
 
 #pragma once
 
-
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/can.h>
@@ -20,28 +19,25 @@
 
 /* ================= Node Identity ================= */
 
-#define NODE_ID     0x01    /**< This board's CAN node address (== CDH_ID).          */
-#define DST_ME      NODE_ID /**< Alias for this board's own CAN destination address. */
-#define PRIO_LOW    3       /**< Default CAN priority for outbound frames.           */
-
+#define NODE_ID 0x01   /**< This board's CAN node address (== CDH_ID).          */
+#define DST_ME NODE_ID /**< Alias for this board's own CAN destination address. */
+#define PRIO_LOW 3     /**< Default CAN priority for outbound frames.           */
 
 /* ================= Devicetree Nodes ================= */
 
-#define CAN_NODE     DT_NODELABEL(fdcan1)   /**< FDCAN1 devicetree node.    */
-#define I2C_BUS_NODE DT_NODELABEL(i2c1)     /**< I2C1 devicetree node.      */
-#define GPIOA_NODE   DT_NODELABEL(gpioa)    /**< GPIOA devicetree node.     */
-#define LED0_NODE    DT_ALIAS(led0)
-#define LED1_NODE    DT_ALIAS(led1)
-#define LED2_NODE    DT_ALIAS(led2)
-
+#define CAN_NODE DT_NODELABEL(fdcan1)   /**< FDCAN1 devicetree node.    */
+#define I2C_BUS_NODE DT_NODELABEL(i2c1) /**< I2C1 devicetree node.      */
+#define GPIOA_NODE DT_NODELABEL(gpioa)  /**< GPIOA devicetree node.     */
+#define LED0_NODE DT_ALIAS(led0)
+#define LED1_NODE DT_ALIAS(led1)
+#define LED2_NODE DT_ALIAS(led2)
 
 /* ================= GPIO Pin Assignments ================= */
 
-#define PIN_SILENT   9        /**< TCAN3403 silent-mode control (active high).  */
-#define PIN_SHDN     10       /**< TCAN3403 shutdown control (active high).     */
-#define PIN_ROLE     6        /**< MCU role strap — 0 = MCU1, 1 = MCU2.         */
-#define WATCHDOG_PIN 2        /**< Hardware watchdog kick pin (PA2).            */
-
+#define PIN_SILENT 9   /**< TCAN3403 silent-mode control (active high).  */
+#define PIN_SHDN 10    /**< TCAN3403 shutdown control (active high).     */
+#define PIN_ROLE 6     /**< MCU role strap — 0 = MCU1, 1 = MCU2.         */
+#define WATCHDOG_PIN 2 /**< Hardware watchdog kick pin (PA2).            */
 
 /* ================= STM32U5 96-bit Factory UIDs ================= */
 /*
@@ -58,28 +54,41 @@
 #define UID2_WORD1 0x41425007
 #define UID2_WORD2 0x20363651
 
-
 /* ================= Thread Configuration ================= */
 
-#define PRIO_WATCHDOG   0     /**< Highest — hardware watchdog kick           */
-#define PRIO_CAN_RX     1     /**< Drain hardware FIFO immediately            */
-#define PRIO_CAN_PROC   2     /**< Decode & dispatch frames from SW queue     */
-#define PRIO_SCHED      3     /**< Heartbeat + mission scheduling             */
-#define PRIO_GNSS       4     /**< Request & store GNSS position data         */
-#define PRIO_SOH        5     /**< Read temps & check node timeouts           */
-#define PRIO_TELEMETRY  6     /**< Lowest — assemble & downlink telemetry     */
+#define PRIO_WATCHDOG 0  /**< Highest — hardware watchdog kick           */
+#define PRIO_CAN_RX 1    /**< Drain hardware FIFO immediately            */
+#define PRIO_CAN_PROC 2  /**< Decode & dispatch frames from SW queue     */
+#define PRIO_SCHED 3     /**< Heartbeat + mission scheduling             */
+#define PRIO_GNSS 4      /**< Request & store GNSS position data         */
+#define PRIO_SOH 5       /**< Read temps & check node timeouts           */
+#define PRIO_TELEMETRY 6 /**< Lowest — assemble & downlink telemetry     */
 
 #define STACK_SIZE 1024
 
-
 /* ================= Timing Constants ================= */
 
-#define HEARTBEAT_TIMEOUT_MS  5000  /**< Node declared dead after this silence */
-#define WATCHDOG_KICK_MS      15    /**< Must be < half HW watchdog timeout    */
-#define GNSS_POLL_MS          5000  /**< How often to request a GNSS fix       */
-#define TELEMETRY_CHECK_MS    1000  /**< Downlink window / SOH check cadence   */
+#define HEARTBEAT_TIMEOUT_MS 5000 /**< Node declared dead after this silence */
+#define WATCHDOG_KICK_MS 15       /**< Supervisor pass period; must be < half HW watchdog timeout */
+#define GNSS_POLL_MS 5000         /**< How often to request a GNSS fix       */
+#define TELEMETRY_CHECK_MS 1000   /**< Downlink window / SOH check cadence   */
 
+/* ================= Thread Health Monitoring ================= */
+/*
+ * Longest allowed gap between a thread's check-ins before the supervisor
+ * reports it as late. These are generous first guesses based on each
+ * thread's loop period; measure real loop times on hardware and tighten.
+ */
+#define HEALTH_TIMEOUT_CAN_RX_MS 1000U
+#define HEALTH_TIMEOUT_CAN_PROC_MS 1000U
+#define HEALTH_TIMEOUT_SCHED_MS 1000U
+#define HEALTH_TIMEOUT_SOH_MS 2000U
+#define HEALTH_TIMEOUT_GNSS_MS (3U * GNSS_POLL_MS)
+#define HEALTH_TIMEOUT_TELEMETRY_MS (3U * TELEMETRY_CHECK_MS)
+
+#define CAN_RX_WAIT_MS 100              /**< Max time a CAN thread blocks waiting for a frame, so it still checks in on a quiet bus */
+#define SUPERVISOR_WDT_TIMEOUT_MS 1000U /**< Task watchdog timeout for the supervisor thread itself */
 
 /* ================= CAN Processing Queue ================= */
 
-#define CAN_PROC_Q_LEN 32    /**< SW queue depth between RX and process threads */
+#define CAN_PROC_Q_LEN 32 /**< SW queue depth between RX and process threads */

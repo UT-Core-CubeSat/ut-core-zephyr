@@ -25,7 +25,7 @@ Seven threads, priority order (highest to lowest):
 
 | Priority | Thread | Role |
 |---|---|---|
-| 0 | `watchdog_thread` | Kicks hardware watchdog; must never starve |
+| 0 | `watchdog_thread` | Supervises the other threads' check-ins (`common/health.h`) and feeds the task watchdog; must never starve |
 | 1 | `can_rx_thread` | Drains hardware FIFO into SW queue |
 | 2 | `can_process_thread` | Decodes and dispatches frames |
 | 3 | `scheduler_thread` | Heartbeat broadcast + future mission scheduling |
