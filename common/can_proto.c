@@ -7,10 +7,48 @@
 
 #include "can_proto.h"
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/atomic.h>
 
 /** @cond */ /* Hidden from Doxygen, or it will mistake this as a function */
 LOG_MODULE_REGISTER(can_proto, LOG_LEVEL_INF);
 /** @endcond */
+
+/**
+ * Count of CAN sends that did not complete successfully, as reported by
+ * can_tx_done(). Exposed read-only via can_proto_tx_error_count() for
+ * future SOH/diagnostics use. A 32-bit counter wraps harmlessly; treat it
+ * as a rolling diagnostic value, not a one-time threshold.
+ */
+static atomic_t tx_error_count;
+
+/**
+ * @brief TX-complete callback passed to can_send() so it returns as soon
+ *        as the frame is queued, instead of blocking until the frame is
+ *        acknowledged on the bus or the driver reports a TX error.
+ *
+ * Without a callback, can_send() blocks on an internal semaphore that is
+ * only given once the CAN hardware reports the send complete. If nothing
+ * on the bus acknowledges the frame (e.g. a peer board is absent, hung,
+ * or not yet booted), the controller keeps retrying automatically and
+ * that wait never returns, hanging the calling thread indefinitely.
+ *
+ * @warning Runs in interrupt context (the CAN driver's TX-complete ISR
+ *          context): must not block, sleep, or log.
+ */
+static void can_tx_done(const struct device *dev, int error, void *user_data)
+{
+    ARG_UNUSED(dev);
+    ARG_UNUSED(user_data);
+
+    if (error != 0) {
+        atomic_inc(&tx_error_count);
+    }
+}
+
+uint32_t can_proto_tx_error_count(void)
+{
+    return (uint32_t)atomic_get(&tx_error_count);
+}
 
 /**
  * @brief Configure bitrate/mode, start the CAN controller
@@ -128,9 +166,11 @@ int send_simple(const struct device *can_dev, uint8_t src, uint8_t dst,
 
     can_fill_payload(&f, src, op, val, 0, 0, 0, 0, 0);
 
-    int err = can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+    /* can_tx_done makes this non-blocking: see its doc comment for why a
+     * NULL callback here could hang the calling thread indefinitely. */
+    int err = can_send(can_dev, &f, K_NO_WAIT, can_tx_done, NULL);
     if (err) {
-        LOG_ERR("can_send failed: %d", err);
+        LOG_ERR("can_send failed to queue frame: %d", err);
     }
 
     return err;
