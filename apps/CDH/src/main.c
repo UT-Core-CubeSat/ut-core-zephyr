@@ -70,12 +70,22 @@ K_MSGQ_DEFINE(can_proc_q, sizeof(struct can_frame), CAN_PROC_Q_LEN, 4);
 
 /* ================= DATA STRUCTURES ================= */
 
+/** @brief Represents the heartbeat communication status of a CubeSat subsystem. */
+
+typedef enum {
+    NODE_NOT_SEEN,
+    NODE_ALIVE,
+    NODE_TIMED_OUT
+} node_health_state_t;
+
+
 /**
  * node_status_t — liveness record for one remote satellite subsystem.
  * Written by handle_heartbeat(), read by check_node_timeouts().
  */
+
 typedef struct {
-    bool    alive;
+    node_health_state_t state;
     int64_t last_seen_ms;
 } node_status_t;
 
