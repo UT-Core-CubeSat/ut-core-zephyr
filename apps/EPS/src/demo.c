@@ -250,35 +250,6 @@ static void send_heartbeat(void)
 /* ── CAN RX ──────────────────────────────────────────────────────── */
 
 /**
- * @brief Decoded CAN frame with routing fields unpacked from the 29-bit ID.
- */
-typedef struct {
-    uint8_t priority;
-    uint8_t src;
-    uint8_t dst;
-    uint8_t msg_class;
-    uint8_t dlc;
-    uint8_t data[8];
-} can_packet_t;
-
-/**
- * @brief Unpack a raw CAN frame's 29-bit extended ID and payload into a
- *        can_packet_t.
- * @param f   Raw CAN frame as received from the driver.
- * @param pkt Output decoded packet.
- */
-static void can_decode(const struct can_frame *f, can_packet_t *pkt)
-{
-    uint32_t id    = f->id;
-    pkt->priority  = (id >> 26) & 0x07;
-    pkt->src       = (id >> 14) & 0xFF;
-    pkt->dst       = (id >>  6) & 0xFF;
-    pkt->msg_class =  id        & 0x3F;
-    pkt->dlc       = f->dlc;
-    memcpy(pkt->data, f->data, f->dlc);
-}
-
-/**
  * @brief Handle a received CLS_HEARTBEAT frame.
  * @param pkt Decoded CAN packet.
  *
@@ -409,32 +380,6 @@ static void tcan3403_wakeup(void)
  * matching frames into rxq: one for frames addressed to NODE_ID, one for
  * CAN_BROADCAST.
  */
-static void can_setup(void)
-{
-    if (!device_is_ready(can_dev)) {
-        LOG_ERR("CAN not ready");
-        return;
-    }
-
-    can_set_bitrate(can_dev, 500000);
-    can_set_mode(can_dev, CAN_MODE_NORMAL);
-    can_start(can_dev);
-
-    const struct can_filter to_me = {
-        .id    = CAN_DST(NODE_ID),
-        .mask  = CAN_DST_MASK_29,
-        .flags = CAN_FILTER_IDE,
-    };
-    const struct can_filter bcast = {
-        .id    = CAN_DST(CAN_BROADCAST),
-        .mask  = CAN_DST_MASK_29,
-        .flags = CAN_FILTER_IDE,
-    };
-
-    can_add_rx_filter_msgq(can_dev, &rxq, &to_me);
-    can_add_rx_filter_msgq(can_dev, &rxq, &bcast);
-    LOG_INF("CAN initialized (29-bit extended), node=0x%02X", NODE_ID);
-}
 
 /* ── GPIO initialization ─────────────────────────────────────────── */
 
@@ -516,7 +461,11 @@ int main(void)
 
     /* CAN bus init */
     tcan3403_wakeup();
-    can_setup();
+    err = can_setup(can_dev, NODE_ID, &rxq, NULL);
+    if (err) {
+        LOG_ERR("CAN Setup failed: %d", err);
+        return err;
+    }
 
     LOG_INF("Running — heartbeat every %d ms", HEARTBEAT_INTERVAL_MS);
 

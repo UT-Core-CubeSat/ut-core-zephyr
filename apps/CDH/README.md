@@ -33,4 +33,41 @@ Seven threads, priority order (highest to lowest):
 | 5 | `soh_thread` | Reads temps, checks node-alive timeouts |
 | 6 | `telemetry_thread` | Assembles and downlinks telemetry (placeholder) |
 
-On boot, the firmware verifies MCU identity, brings up the CAN bus, then hands off to the threads above, which coordinate over CAN with the other satellite subsystems (EPS, COMMS, ADCS, MOTOR, GNSS, STAR, SOLAR).
+On boot, the firmware verifies MCU identity, brings up the CAN bus, then hands off to the threads above, which coordinate over CAN with the other satellite subsystems (EPS, COMMS, ADCS, MOTOR, GNSS, STAR, SOLAR).  
+
+## Known Software Requirements - 9/23/26 (Cason)
+
+- Manage CAN BUS Tx/Rx
+    - **Complete** can_rx_thread, can_process_thread, can_dispatch, send_set_board_pwr, and tcan3403_wakeup are all functional.
+- Compile SOH (State of Health) for subsystems
+    - **Incomplete** soh_thread reads sensor data, but nothing else happens with said data. telemetry_thread should do that , but it's unimplemented currently.
+- Handle data routing
+    - **Complete** can_dispatch routes data by message class. can_process_thread filters by destination node/broadcast.
+- Read Internal sensor data
+    - **Incomplete** soh_thread does real I2C reads of the onboard temperature sensors via temp_telemetry_read_all. Temperature is covered, but no other internal sensor types are wired in.
+- Determine Uplink/downlink schedule
+    - **Incomplete** telemetry_thread is just a placeholder.
+- Determine experiment pass time (determine when we want to take the photos)
+    - **Incomplete** No code related to this exists.
+- Based off GNSS data determine if we are where we need to be to take our photos, update mode etc.
+    - **Incomplete** The gnss_thread only requests position. handle_telemetry parses and stores the fix into gnss_latest. Further decision logic needs to be added, as nothing evaluates that position or triggers any change.
+- Tell subsystems what to do/when to do it
+    - **Incomplete** send_set_board_pwr sends commands to EPS, but only when told by ground. Needs autonomous subsystem commanding
+- Respond to ground commands from COMMS board
+    - **Incomplete** handle_command mostly is complete, but needs two adjustments. OP_SET_MODE needs guardrails for the value. OP_REBOOT is a no-op, to be implemented after the watchdog sequence is confirmed.
+- Determine modes (ex: standby, sleep, deep sleep, low power)
+    - **Incomplete** cdh_mode_t defines setup, standard, mission, and error modes. standby, sleep, deep sleep, and low power don't exist.
+- Monitor watchdog/pings
+    - **Incomplete** the kick sequence is commented out and flagged @todo, and it only sends a line to the log. The node pings, which include handle_heartbeat and check_node_timeouts are fully working.
+- Schedule downlinks
+    - **Incomplete** This should fall under telemetry_thread, which is incomplete.
+
+## Interactions with other subsystems
+- EPS - CDH sets the power via OP_SET_PWR_STATE and reads back a CLS_CMD_RESP confirmation.
+- GNSS - polls GNSS every GNSS_POLL_MS (defined in board_config.h) using op code OP_GET_POS. This response is parsed in the handle_telemetry function, which currently does nothing with it.
+- COMMS - Inbound commands come via CLS_COMMAND and get handled via the class_command function. No outgoing path back through COMMS exists. This will need to be implemented when we get start on the COMMS board.
+- ADCS - Currently gets heartbeat and checks for node timeouts. OP codes are defined for OP_ADCS_SOH_ATTITUDE, OP_ADCS_WHEEL_RPM, and OP_ADCS_MTQ_DIPOLE but CDH never sends any of these.
+- MOTOR - Currently gets heartbeat and checks for node timeouts.
+- SOLAR - Currently gets heartbeat and checks for node timeouts.
+
+**Takeaway** Inter-board communication seems solid. I know they had it working at the end of Spring 2026, so that makes sense. What we need to do is implement inter-board commands, and get sensor/telemetry data from all the boards. And do stuff with COMMS, but we probably need to start on that board's code before we implement anything for it in CDH.
