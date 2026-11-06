@@ -6,11 +6,11 @@ Back to [Contents](@ref index)
 
 CDH is the UT-CORE CubeSat's central board, running Zephyr on an STM32U5 and coordinating with the rest of the satellite (EPS, COMMS, ADCS, motor, GNSS, star tracker, solar) over a 500 kbit/s FDCAN bus.
 
-It's built as seven priority-ordered threads: a watchdog kicker at the top so the board can't hang, a CAN RX thread that drains incoming frames into a queue, and a processing thread that decodes and dispatches those frames by message class.
+It's built as eight priority-ordered threads: a watchdog kicker at the top so the board can't hang, a CAN RX thread that drains incoming frames into a queue, and a processing thread that decodes and dispatches those frames by message class.
 
 Lower-priority threads broadcast heartbeats, poll GNSS position, read onboard temperature sensors and track other nodes' liveness, and assemble telemetry for downlink.
 
-On boot it verifies its own MCU identity, brings up the CAN transceiver and bus, then runs all seven threads concurrently, driving the satellite's command routing and state-of-health monitoring for the rest of the mission.
+On boot it verifies its own MCU identity, brings up the CAN transceiver and bus, then runs all eight threads concurrently, driving the satellite's command routing and state-of-health monitoring for the rest of the mission.
 
 ## Hardware
 
@@ -21,14 +21,15 @@ On boot it verifies its own MCU identity, brings up the CAN transceiver and bus,
 
 ## Architecture
 
-Seven threads, priority order (highest to lowest):
+Eight threads, priority order (highest to lowest):
 
 | Priority | Thread | Role |
 |---|---|---|
 | 0 | `watchdog_thread` | Supervises the other threads' check-ins (`common/health.h`) and feeds the task watchdog; must never starve |
 | 1 | `can_rx_thread` | Drains hardware FIFO into SW queue |
 | 2 | `can_process_thread` | Decodes and dispatches frames |
-| 3 | `scheduler_thread` | Heartbeat broadcast + future mission scheduling |
+| 3 | `scheduler_thread` | Heartbeat broadcast (carries current mode) + future mission scheduling |
+| 3 | `mode_manager_thread` | Mode state machine (SAFE / STANDBY / DOWNLINK / EXPERIMENT / PHOENIX); only writer of `current_mode` |
 | 4 | `gnss_thread` | Requests and stores GNSS position data |
 | 5 | `soh_thread` | Reads temps, checks node-alive timeouts |
 | 6 | `telemetry_thread` | Assembles and downlinks telemetry (placeholder) |
@@ -54,9 +55,9 @@ On boot, the firmware verifies MCU identity, brings up the CAN bus, then hands o
 - Tell subsystems what to do/when to do it
     - **Incomplete** send_set_board_pwr sends commands to EPS, but only when told by ground. Needs autonomous subsystem commanding
 - Respond to ground commands from COMMS board
-    - **Incomplete** handle_command mostly is complete, but needs two adjustments. OP_SET_MODE needs guardrails for the value. OP_REBOOT is a no-op, to be implemented after the watchdog sequence is confirmed.
+    - **Incomplete** handle_command mostly is complete, but needs one adjustment. OP_SET_MODE is now validated (ground may request SAFE or STANDBY only). OP_REBOOT is a no-op, to be implemented after the watchdog sequence is confirmed.
 - Determine modes (ex: standby, sleep, deep sleep, low power)
-    - **Incomplete** cdh_mode_t defines setup, standard, mission, and error modes. standby, sleep, deep sleep, and low power don't exist.
+    - **In progress** cdh_mode_t defines SAFE, STANDBY, DOWNLINK, EXPERIMENT, and PHOENIX per `sat-controls/cdh_state_machine.drawio`; `mode_manager_thread` runs the transitions. FRAM, PHOENIX recovery steps, the critical-fault list, DOWNLINK, and EXPERIMENT are placeholders.
 - Monitor watchdog/pings
     - **Incomplete** the kick sequence is commented out and flagged @todo, and it only sends a line to the log. The node pings, which include handle_heartbeat and check_node_timeouts are fully working.
 - Schedule downlinks
