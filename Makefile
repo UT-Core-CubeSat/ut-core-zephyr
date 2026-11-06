@@ -46,8 +46,8 @@ WEST	:= $(PYBIN)/west
 GDB		:= $(GNU)/bin/arm-zephyr-eabi-gdb
 
 
-# Require APP variable be defined to run build
-ifeq ($(MAKECMDGOALS),build)
+# Require APP variable be defined to run build or test
+ifneq ($(filter build test,$(MAKECMDGOALS)),)
 ifndef APP
 $(error APP is not defined)
 else
@@ -113,6 +113,8 @@ all:
 	@echo make update ................ update zephyr after change to west config
 	@echo make build APP=path ........ build app located at path
 	@echo make build-full ............ build all core apps
+	@echo make test APP=path ......... build and run a host test app, Linux or WSL only
+	@echo make test-full ............. run all host test apps
 	@echo make flash BUILD=path ...... flash app binary to board
 	@echo make simulate BUILD=path ... launch simulation
 	@echo make simulate-full ......... simulate all core apps INCOMPLETE
@@ -165,6 +167,22 @@ build-full:
 # 
 # $(APPS):
 # 	$(MAKE) build APP=apps/EPS
+
+
+# Host tests: ztest apps for native_sim. They run on this computer, not on a board, so there is
+# nothing to flash. native_sim does not run on Windows, so there the rules only say so.
+ifeq ($(OS),Windows_NT)
+test test-full:
+	@echo Host tests need Linux or WSL: native_sim does not run on Windows
+else
+test:
+	$(MAKE) build APP=$(APP)
+	$(BUILD)/zephyr/zephyr.exe
+
+test-full:
+	$(MAKE) test APP=apps/tests/commsTest
+	$(MAKE) test APP=apps/tests/rfm26wEmulTest
+endif
 
 
 build-can-tests:
@@ -222,6 +240,7 @@ host:
 .PHONY: help all setup update
 # .PHONY: build build-full build-can-tests flash $(APPS)
 .PHONY: build build-full build-can-tests flash $(APPS)
+.PHONY: test test-full
 .PHONY: debug simulate simulate-full gdb listen
 .PHONY: clean clean-purge readme host docs
 

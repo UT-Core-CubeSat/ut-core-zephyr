@@ -1,0 +1,46 @@
+/* PLACEHOLDER: empty, as in CDH. COMMS hardware is still being designed; add overrides as concrete data comes in. */
+
+/*
+ * Hardware RNG for key generation / nonces (PSA Crypto).
+ * HSI48 is disabled in ut_core-common.dtsi, but the RNG kernel clock
+ * defaults to it, so enable it here and select it explicitly.
+ * Move to the COMMS board .dts once that board exists.
+ */
+&clk_hsi48 {
+	status = "okay";
+};
+
+&rng {
+	status = "okay";
+	clocks = <&rcc STM32_CLOCK(AHB2, 18)>,
+		 <&rcc STM32_SRC_HSI48 RNG_SEL(0)>;
+};
+
+/*
+ * [PLACEHOLDER] UHF radio node (RFM26W). The COMMS board does not exist yet. The chip select and pins below
+ * are the same placeholders as apps/tests/rfm26wTest: chosen only because they are unused in ut_core.dts and
+ * ut_core-common.dtsi. Replace them with the real COMMS wiring and move the node into the COMMS board
+ * devicetree. Adding a fourth chip select means restating the whole cs-gpios list: the first three entries
+ * are the existing FRAM chip selects from ut_core.dts.
+ */
+&spi2 {
+	cs-gpios = <&gpiob 10 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>,
+		   <&gpiob 8  (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>,
+		   <&gpiob 4  (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>,
+		   <&gpioa 0  (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>; /* PLACEHOLDER: radio CS */
+
+	rfm26w0: rfm26w@3 {
+		compatible = "hoperf,rfm26w";
+		reg = <3>;
+		spi-max-frequency = <1000000>; /* PLACEHOLDER: the radio allows up to 10 MHz */
+		int-gpios = <&gpioa 1 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>; /* PLACEHOLDER: nIRQ */
+		sdn-gpios = <&gpioa 2 GPIO_ACTIVE_HIGH>;                 /* PLACEHOLDER: SDN */
+		block-length = <223>;
+		/*
+		 * ASSUMPTION, MAY NEED ADJUSTING: 30 MHz crystal. Not confirmed for the module.
+		 * If the module uses another crystal, or a TCXO (add `xo-tcxo;`), change this AND
+		 * regenerate the radio profile (PLANNED.md section 5.4, "Regenerating the radio profile").
+		 */
+		xo-frequency-hz = <30000000>;
+	};
+};

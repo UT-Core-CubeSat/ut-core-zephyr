@@ -1,0 +1,18 @@
+/*
+ * The RFM26W node on native_sim's emulated SPI controller and emulated GPIO port. Both the driver
+ * and the software model in src/rfm26w_emul.c bind to this node (compatible "hoperf,rfm26w").
+ * The pins are arbitrary: nothing is wired.
+ */
+&spi0 {
+	rfm26w0: rfm26w@0 {
+		compatible = "hoperf,rfm26w";
+		reg = <0>;
+		spi-max-frequency = <1000000>;
+		int-gpios = <&gpio0 1 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+		sdn-gpios = <&gpio0 2 GPIO_ACTIVE_HIGH>;
+		tx-ant-gpios = <&gpio0 3 GPIO_ACTIVE_HIGH>;
+		rx-ant-gpios = <&gpio0 4 GPIO_ACTIVE_HIGH>;
+		block-length = <223>;
+		xo-frequency-hz = <30000000>;
+	};
+};

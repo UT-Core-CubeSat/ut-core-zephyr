@@ -1,0 +1,10 @@
+# COMMS application options
+#
+# None yet. The options of the superseded firmware (self-test, dev key, radio stub, FRAM, compression
+# stub) are gone, and new ones are added by the stage that uses them (see PLANNED.md):
+#   stage 3: per-test switches for the MVP bench tests
+#   stage 4: development key, key size
+
+mainmenu "UT-CORE COMMS"
+
+source "Kconfig.zephyr"
