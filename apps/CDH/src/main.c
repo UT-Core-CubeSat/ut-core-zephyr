@@ -114,6 +114,12 @@ typedef struct {
     bool     valid_vel_x;
     bool     valid_vel_y;
     bool     valid_vel_z;
+    /** Sequence number of the GNSS update each velocity axis came from.
+     *  Equal on all three axes means they are from the same snapshot
+     *  (see gnss_vel_coherent()). */
+    uint8_t  vel_seq_x;
+    uint8_t  vel_seq_y;
+    uint8_t  vel_seq_z;
 } gnss_data_t;
 
 /**
@@ -122,6 +128,19 @@ typedef struct {
  *       finalized.
  */
 static gnss_data_t gnss_latest = {0};
+
+/**
+ * @brief True if VX/VY/VZ are all valid and came from the same GNSS update.
+ *        Sequence numbers are compared for equality only, so the uint8_t
+ *        wrap from 255 to 0 needs no special handling.
+ */
+static bool gnss_vel_coherent(void)
+{
+    return gnss_latest.valid_vel_x && gnss_latest.valid_vel_y &&
+           gnss_latest.valid_vel_z &&
+           gnss_latest.vel_seq_x == gnss_latest.vel_seq_y &&
+           gnss_latest.vel_seq_y == gnss_latest.vel_seq_z;
+}
 
 
 /* ================= MODE STATE MACHINE ================= */
@@ -299,9 +318,19 @@ static void handle_cmd_response(const can_packet_t *pkt)
 }
 
 /**
- * @brief Handle a CLS_TELEMETRY frame; parses GNSS position reports and
- *        logs anything else.
+ * @brief Handle a CLS_TELEMETRY frame; parses GNSS position, velocity and
+ *        time reports and logs anything else.
  * @param pkt Decoded CAN packet.
+ *
+ * GNSS opcodes handled (data[1]):
+ *   0x02 position   - lat/lon, signed 24-bit big-endian each
+ *   0x03/04/05 velocity VX/VY/VZ - signed 32-bit big-endian cm/s in
+ *                data[2..5], sequence number in data[6]. The check for a
+ *                mismatched sequence runs after VZ, which is sent last.
+ *   0x06 time    - GPS week (data[2..3]) and time-of-week in centiseconds
+ *                (data[4..7]), big-endian. This is GPS time, not UTC;
+ *                on-board UTC conversion is deliberately not implemented
+ *                (ground converts using the current leap-second offset).
  */
 static void handle_telemetry(const can_packet_t *pkt)
 {
@@ -332,6 +361,7 @@ static void handle_telemetry(const can_packet_t *pkt)
                                   (uint32_t)pkt->data[5]);
         
         gnss_latest.vel_x         = vel_x;
+        gnss_latest.vel_seq_x     = pkt->data[6];
         gnss_latest.timestamp_vel_x_ms = k_uptime_get_32();
         gnss_latest.valid_vel_x       = true;
         LOG_INF("GNSS fix: VX=%d", gnss_latest.vel_x);
@@ -344,6 +374,7 @@ static void handle_telemetry(const can_packet_t *pkt)
                                   (uint32_t)pkt->data[5]);
         
         gnss_latest.vel_y         = vel_y;
+        gnss_latest.vel_seq_y     = pkt->data[6];
         gnss_latest.timestamp_vel_y_ms = k_uptime_get_32();
         gnss_latest.valid_vel_y       = true;
         LOG_INF("GNSS fix: VY=%d", gnss_latest.vel_y);
@@ -356,11 +387,35 @@ static void handle_telemetry(const can_packet_t *pkt)
                                   (uint32_t)pkt->data[5]);
         
         gnss_latest.vel_z         = vel_z;
+        gnss_latest.vel_seq_z     = pkt->data[6];
         gnss_latest.timestamp_vel_z_ms = k_uptime_get_32();
         gnss_latest.valid_vel_z       = true;
         LOG_INF("GNSS fix: VZ=%d", gnss_latest.vel_z);
+
+        /* VZ is sent last, so by now all three axes should share a seq */
+        if (!gnss_vel_coherent()) {
+            /* TODO: decide whether a VX/VY/VZ sequence mismatch matters
+             * (e.g. discard the set, or keep using the latest values).
+             * For now we only log it. */
+            LOG_WRN("GNSS velocity seq mismatch: x=%u y=%u z=%u",
+                    gnss_latest.vel_seq_x, gnss_latest.vel_seq_y,
+                    gnss_latest.vel_seq_z);
+        }
         return;
-    } 
+    } else if (pkt->src == GNSS_ID && pkt->data[1] == 0x06 /*OP_GNSS_TIME*/) {
+        uint16_t week = (uint16_t)((uint16_t)pkt->data[2] << 8 | pkt->data[3]);
+        uint32_t tow_cs = (uint32_t)pkt->data[4] << 24 | (uint32_t)pkt->data[5] << 16 |
+                          (uint32_t)pkt->data[6] << 8 | (uint32_t)pkt->data[7];
+        
+        if(tow_cs >= 60480000u) { /*Maximum centiseconds per week in GPS time*/
+            LOG_WRN("GNSS GPS time out of range: tow_cs=%u", tow_cs);
+            return;
+        }
+
+        /* TODO: use this to discipline the CDH clock (GPS time, not UTC). */
+        LOG_INF("GNSS time (GPS): week=%u tow=%u.%02u s", week, tow_cs / 100, tow_cs % 100);
+        return;
+    }
 
     LOG_INF("Telemetry from node 0x%x", pkt->src);
 }
