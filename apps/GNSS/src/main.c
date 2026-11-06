@@ -287,7 +287,7 @@ static void handle_command(const can_packet_t *pkt)
     switch (opcode) {
     case OP_QUERY_POS:
         /* CDH asked for current position — reply immediately */
-        send_gnss_position();
+        send_gnss_master();
         int err = send_simple(can_dev, NODE_ID, pkt->src, CLS_CMD_RESP, OP_QUERY_POS, 0x01, PRIO_LOW);
         if (err) {
             LOG_WRN("Failed to send OP_SET_MODE: %d", err);
