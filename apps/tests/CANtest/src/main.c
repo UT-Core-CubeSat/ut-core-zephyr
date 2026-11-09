@@ -5,6 +5,7 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/can.h>
+#include "common/can_proto.h"
 
 /* LED aliases */
 #define LED0_NODE DT_ALIAS(led0)
@@ -190,14 +191,6 @@ static const struct device *gpioa   = DEVICE_DT_GET(TCAN_PORT);
 
 CAN_MSGQ_DEFINE(rxq, 16);
 
-static void send_simple(uint8_t dst, uint8_t op, uint8_t val)
-{
-    struct can_frame f = {0};
-    f.id = CAN_ID(PRIO_LOW, dst, CLS_CORE); 
-    can_fill_payload(&f, NODE_ID, op, val, 0, 0, 0, 0, 0);
-    can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
-}
-
 static void tcan330_wakeup(void)
 {
     if (!device_is_ready(gpioa)) {
@@ -252,7 +245,10 @@ int main(void)
         int64_t now = k_uptime_get();
         if (now - last_hb >= 1000) {
             last_hb = now;
-            send_simple(CAN_BROADCAST, OP_HEARTBEAT, 0);
+            int err = send_simple(can_dev, NODE_ID, CAN_BROADCAST, CLS_HEARTBEAT, OP_HEARTBEAT, 0, PRIO_LOW);
+            if (err) {
+                LOG_WRN("Failed to send OP_SET_MODE: %d", err);
+            }
             LOG_INF("TX: Heartbeat");
         }
 
