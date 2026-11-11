@@ -416,7 +416,7 @@ static void handle_heartbeat(const can_packet_t *pkt)
         return;
     }
 
-    node->alive        = true;
+    node->state        = NODE_ALIVE;
     node->last_seen_ms = k_uptime_get();
 
     LOG_INF("Heartbeat from 0x%02X - alive", pkt->src);
@@ -448,13 +448,13 @@ static void check_node_timeouts(void)
     for (int i = 0; i < ARRAY_SIZE(nodes); i++) {
         node_status_t *n = nodes[i].status;
 
-        if (!n->alive) {
+        if (n->state != NODE_ALIVE) {
             continue;
         }
 
         if ((now - n->last_seen_ms) > HEARTBEAT_TIMEOUT_MS) {
             LOG_WRN("Node %s (0x%02X) timed out!", nodes[i].name, nodes[i].id);
-            n->alive = false;
+            n->state = NODE_TIMED_OUT;
         }
     }
 }
