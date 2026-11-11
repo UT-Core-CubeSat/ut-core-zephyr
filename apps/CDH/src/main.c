@@ -86,9 +86,16 @@ K_MSGQ_DEFINE(can_proc_q, sizeof(struct can_frame), CAN_PROC_Q_LEN, 4);
  * node_status_t — liveness record for one remote satellite subsystem.
  * Written by handle_heartbeat(), read by check_node_timeouts().
  */
+typedef enum
+{
+    NODE_NOT_SEEN = 0,
+    NODE_ALIVE,
+    NODE_TIMED_OUT
+} node_health_state_t;
+
 typedef struct
 {
-    bool alive;
+    node_health_state_t state;
     int64_t last_seen_ms;
 } node_status_t;
 
@@ -593,8 +600,7 @@ static void handle_heartbeat(const can_packet_t *pkt)
         LOG_WRN("Heartbeat from unknown node: 0x%02X", pkt->src);
         return;
     }
-
-    node->alive = true;
+    node->state = NODE_ALIVE;
     node->last_seen_ms = k_uptime_get();
 
     LOG_INF("Heartbeat from 0x%02X - alive", pkt->src);
@@ -628,7 +634,7 @@ static void check_node_timeouts(void)
     {
         node_status_t *n = nodes[i].status;
 
-        if (!n->alive)
+        if (n->state != NODE_ALIVE)
         {
             continue;
         }
@@ -636,7 +642,7 @@ static void check_node_timeouts(void)
         if ((now - n->last_seen_ms) > HEARTBEAT_TIMEOUT_MS)
         {
             LOG_WRN("Node %s (0x%02X) timed out!", nodes[i].name, nodes[i].id);
-            n->alive = false;
+            n->state = NODE_TIMED_OUT;
         }
     }
 }
