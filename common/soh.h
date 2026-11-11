@@ -7,6 +7,37 @@
  * and the functions to pack/unpack them. Used by every board and by
  * host-side tests. Must not depend on Zephyr.
  *
+ * CAN framing (defined in can_proto.h):
+ *   - SOH Core uses CLS_SOH_CORE.
+ *   - SOH CAN Stats uses CLS_SOH_CAN_STATS.
+ * Both use extended CAN IDs built with CAN_ID_FULL(priority, source,
+ * destination, message_class). The source node is carried in the ID;
+ * all 8 payload bytes belong to SOH, with no source/opcode prefix.
+ *
+ * Firmware example (include both can_proto.h and soh.h; core and stats
+ * are populated soh_core_t and soh_can_t values):
+ * @code{.c}
+ * struct can_frame core_frame = {0};
+ * core_frame.id = CAN_ID_FULL(priority, node_id, CAN_BROADCAST, CLS_SOH_CORE);
+ * core_frame.flags = CAN_FRAME_IDE;
+ * core_frame.dlc = SOH_FRAME_LEN;
+ * soh_pack_core(&core, core_frame.data);
+ *
+ * struct can_frame stats_frame = {0};
+ * stats_frame.id = CAN_ID_FULL(priority, node_id, CAN_BROADCAST, CLS_SOH_CAN_STATS);
+ * stats_frame.flags = CAN_FRAME_IDE;
+ * stats_frame.dlc = SOH_FRAME_LEN;
+ * soh_pack_can(&stats, stats_frame.data);
+ * @endcode
+ *
+ * On receive, use can_decode() to extract the source and message class
+ * from the CAN ID. Dispatch CLS_SOH_CORE to soh_unpack_core() and
+ * CLS_SOH_CAN_STATS to soh_unpack_can(), passing the decoded payload
+ * and length and checking the unpacker's return value. The unpackers
+ * validate payloads only; callers must check the frame class first.
+ * Do not use can_fill_payload() or send_simple() for SOH: those helpers
+ * write the standard source/opcode prefix over SOH payload fields.
+ *
  * SOH Core payload:
  *   Bytes 0-3  uptime_s      (u32, seconds since boot)
  *   Bytes 4-5  vdd_mv        (u16, mV; SOH_VDD_INVALID = read failed)
@@ -91,7 +122,7 @@ typedef struct {
 } soh_can_t;
 
 /**
- * @brief Pack an SOH Core struct into an 8-byte CAN payload.
+ * @brief Pack an SOH Core struct into an 8-byte CLS_SOH_CORE CAN payload.
  *
  * The version nibble is always written as SOH_SCHEMA_VERSION;
  * in->version is ignored.
@@ -117,7 +148,7 @@ void soh_pack_core(const soh_core_t *in, uint8_t out[SOH_FRAME_LEN]);
 bool soh_unpack_core(const uint8_t *in, size_t len, soh_core_t *out);
 
 /**
- * @brief Pack an SOH CAN Stats struct into an 8-byte CAN payload.
+ * @brief Pack an SOH CAN Stats struct into an 8-byte CLS_SOH_CAN_STATS CAN payload.
  *
  * @param in  Values to pack. Must not be NULL.
  * @param out Destination buffer of SOH_FRAME_LEN bytes. Must not be NULL.
