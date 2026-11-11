@@ -1,10 +1,27 @@
 # COMMS application options
 #
-# None yet. The options of the superseded firmware (self-test, dev key, radio stub, FRAM, compression
-# stub) are gone, and new ones are added by the stage that uses them (see PLANNED.md):
-#   stage 3: per-test switches for the MVP bench tests
+# The options of the superseded firmware (self-test, dev key, radio stub, FRAM, compression stub) are gone,
+# and new ones are added by the stage that uses them (see PLANNED.md):
+#   stage 3: per-test switches for the MVP bench tests (the TLM switch comes with stage 3b)
 #   stage 4: development key, key size
 
 mainmenu "UT-CORE COMMS"
+
+menu "COMMS MVP bench tests"
+
+config COMMS_MVP_PING
+	bool "PING test: answer ping requests (APID 0x0F0)"
+	default y
+	help
+	  When off, ping requests are counted and dropped, as if the board did not know the APID.
+
+config COMMS_MVP_CAN_CMD
+	bool "CAN_CMD test: put uplinked command records on the CAN bus (APID 0x010)"
+	default y
+	help
+	  When off, command packets are counted and dropped. Records that are on can still only get
+	  through the allowlist in src/can/uplink_policy.c.
+
+endmenu
 
 source "Kconfig.zephyr"

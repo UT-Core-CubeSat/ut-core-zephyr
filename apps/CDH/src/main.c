@@ -351,6 +351,25 @@ static void send_set_board_pwr(uint8_t load_num, uint8_t state)
 }
 
 /**
+ * @brief Answer an OP_PING with an OP_PONG to whoever sent it.
+ * @param pkt Decoded CAN packet; data[2..7] are echoed back unchanged so the sender can match the reply.
+ *
+ * Read-only and harmless. COMMS uses it for its bench CAN_CMD test (the sender is then GROUND_ID).
+ */
+static void send_pong(const can_packet_t *pkt)
+{
+    struct can_frame f = {0};
+    f.id    = CAN_ID_FULL(PRIO_LOW, NODE_ID, pkt->src, CLS_CMD_RESP);
+    f.flags = CAN_FRAME_IDE;
+    can_fill_payload(&f, NODE_ID, OP_PONG, pkt->data[2], pkt->data[3], pkt->data[4],
+                     pkt->data[5], pkt->data[6], pkt->data[7]);
+    int ret = can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+    if (ret) {
+        LOG_ERR("Failed to send PONG to 0x%02X: %d", pkt->src, ret);
+    }
+}
+
+/**
  * @brief Handle an incoming ground/CAN command and act on its opcode.
  * @param pkt Decoded CAN packet; data[1] is the opcode, data[2..] are args.
  * @bug OP_SET_MODE assigns the raw uint8_t payload directly to
@@ -368,6 +387,10 @@ static void handle_command(const can_packet_t *pkt)
     uint8_t val    = pkt->data[2];
 
     switch (opcode) {
+        case OP_PING:
+            send_pong(pkt);
+            break;
+
         case OP_SET_MODE:
             current_mode = val;
             break;

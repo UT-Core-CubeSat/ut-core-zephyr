@@ -14,8 +14,8 @@ ZTEST(can_record, test_wire_layout_matches_the_spec)
 	struct can_record r = {
 		/* priority 1, src 0x10, dst 0x03, class 2:
 		 * 1<<26 = 0x04000000, 0x10<<14 = 0x00040000, 3<<6 = 0xC0, class 2 */
-		.id = CAN_ID_FULL(1, 0x10, COMMS_ID, CLS_COMMAND),
-		.data = {0x10, OP_PING, 1, 2, 3, 4, 5, 6},
+		.id = CAN_ID_FULL(1, GROUND_ID, COMMS_ID, CLS_COMMAND),
+		.data = {GROUND_ID, OP_PING, 1, 2, 3, 4, 5, 6},
 	};
 	uint8_t wire[CAN_RECORD_LEN];
 
@@ -25,7 +25,7 @@ ZTEST(can_record, test_wire_layout_matches_the_spec)
 	zassert_equal(wire[1], 0x04);
 	zassert_equal(wire[2], 0x00);
 	zassert_equal(wire[3], 0xC2);
-	zassert_equal(wire[4], 0x10, "data byte 0 is src");
+	zassert_equal(wire[4], GROUND_ID, "data byte 0 is src");
 	zassert_equal(wire[5], OP_PING, "data byte 1 is the opcode");
 	zassert_equal(wire[6], 1);
 	zassert_equal(wire[11], 6);
@@ -114,9 +114,9 @@ ZTEST(can_record, test_frame_conversion_round_trip)
 	struct can_record r;
 	struct can_record s;
 
-	f.id = CAN_ID_FULL(2, 0x10, EPS_ID, CLS_COMMAND);
+	f.id = CAN_ID_FULL(2, GROUND_ID, EPS_ID, CLS_COMMAND);
 	f.flags = CAN_FRAME_IDE;
-	can_fill_payload(&f, 0x10, OP_SET_EPS_LOAD, 3, 1, 0, 0, 0, 0);
+	can_fill_payload(&f, GROUND_ID, OP_SET_EPS_LOAD, 3, 1, 0, 0, 0, 0);
 
 	zassert_equal(can_record_from_frame(&f, &r), REC_OK);
 	zassert_equal(r.id, f.id);
@@ -140,8 +140,8 @@ ZTEST(can_record, test_only_classic_extended_8_byte_data_frames_become_records)
 	struct can_frame f = {0};
 	struct can_record r;
 
-	f.id = CAN_ID_FULL(1, 0x10, 0x03, 2);
-	can_fill_payload(&f, 0x10, OP_PING, 0, 0, 0, 0, 0, 0);
+	f.id = CAN_ID_FULL(1, GROUND_ID, 0x03, 2);
+	can_fill_payload(&f, GROUND_ID, OP_PING, 0, 0, 0, 0, 0, 0);
 	zassert_equal(can_record_from_frame(&f, &r), REC_OK);
 
 	f.flags = 0; /* standard ID */

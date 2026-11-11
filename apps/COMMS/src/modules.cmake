@@ -15,6 +15,16 @@ set(COMMS_MODULE_SOURCES
     ${COMMS_SRC_DIR}/link/space_packet.c
     ${COMMS_SRC_DIR}/link/dl_block.c
     ${COMMS_SRC_DIR}/can/can_record.c
+    # stage 2: pipeline against the radio driver, and ping
+    # stage 3a: CAN_CMD path
+    ${COMMS_SRC_DIR}/can/uplink_policy.c
+    ${COMMS_SRC_DIR}/can/can_ping.c
+    ${COMMS_SRC_DIR}/can/can_bridge.c
+    ${COMMS_SRC_DIR}/app/ping.c
+    ${COMMS_SRC_DIR}/app/router.c
+    ${COMMS_SRC_DIR}/app/radio_port.c
+    ${COMMS_SRC_DIR}/app/downlink.c
+    ${COMMS_SRC_DIR}/app/uplink.c
 )
 
 set(COMMS_TARGET_ONLY_SOURCES

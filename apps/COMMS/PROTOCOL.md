@@ -238,8 +238,10 @@ minus 1).
 src, dst, class), then the 8 payload bytes (`src, op, p2..p7`). DLC is always 8 and is not sent.
 
 **Uplink record rules** (checked by COMMS before anything is put on the CAN bus):
-- `src` must equal GROUND_ID, `0x10` **(proposed)**. Node IDs `0x01`-`0x08` are already used.
-- `dst`, `class` and `op` must be on an allowlist (to be defined).
+- `src` must equal GROUND_ID, `0x10` (`common/can_proto.h`). Node IDs `0x01`-`0x08` are already used.
+- `dst` must be a real board (not COMMS itself, not broadcast), `class` must be `CLS_COMMAND`, and `(dst, class, op)`
+  must be on the allowlist in `src/can/uplink_policy.c`. Default deny. MVP: one entry, `OP_PING` to CDH. COMMS also forces
+  the CAN priority to a fixed low value, whatever the record says.
 - The current system state must allow the command (section 7).
 
 ## 7. Routing on the CAN bus
@@ -444,13 +446,17 @@ this layer.
 receiver uses it to count lost packets.
 
 **Payload layouts:**
-- **Ping request/reply data field** (deviation): `ping_id` (4, counts up from 0), `payload` (0-200 bytes, ground's
+- **Ping request/reply data field** (deviation): `ping_id` (4, big-endian, counts up from 0), `payload` (0-200 bytes, ground's
   choice, default 32). The reply returns `ping_id` and the payload unchanged, so ground can check them. The board adds
   nothing else. RSSI is read by ground.
 - **Telemetry/beacon data field** (the counter is a deviation): `tlm_counter` (4), then N x 12-byte CAN-equivalent
   records. In the MVP the records may be fixed test values (for example an incrementing value from COMMS_ID) so ground
   can check content.
-- **Command data field** (direct subset): N x 12-byte CAN records.
+- **Command data field** (direct subset): N x 12-byte CAN records. The MVP accepts exactly one record per packet.
+- **CAN ping and pong** (MVP CAN_CMD test, `src/can/can_ping.h`), using the existing `OP_PING` (0x01) and `OP_PONG` (0x02):
+  ping record: `src` GROUND_ID, `dst` the board, class `CLS_COMMAND`, data `{GROUND_ID, OP_PING, t0..t5}`. Pong record:
+  `src` the board, `dst` GROUND_ID, class `CLS_CMD_RESP`, data `{board, OP_PONG, t0..t5}`. The six token bytes come back
+  unchanged. COMMS sends the pong down as a telemetry packet (APID `0x020`, `tlm_counter` then the 12-byte record).
 
 ## 15. Ground-station decoding
 

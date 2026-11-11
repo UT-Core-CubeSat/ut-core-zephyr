@@ -10,6 +10,13 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
+
+#include <zephyr/kernel.h>
+
+#include "comms_config.h"
+#include "link/space_packet.h"
+#include "link/tc_frame.h"
 
 /** CRC-16/CCITT-FALSE, bit by bit: poly 0x1021, init 0xFFFF, no reflection, no final XOR. */
 static inline uint16_t ref_crc16(const uint8_t *buf, size_t len)
@@ -52,6 +59,39 @@ static inline void test_seal_crc(uint8_t *buf, size_t len)
 
 	buf[len - 2] = (uint8_t)(c >> 8);
 	buf[len - 1] = (uint8_t)(c & 0xFF);
+}
+
+/** Wait up to `ms` milliseconds for `cond` (needs CONFIG_SYS_CLOCK_TICKS_PER_SEC=10000 on native_sim). */
+#define WAIT_UNTIL(cond, ms)                                                                       \
+	do {                                                                                       \
+		for (int _i = 0; !(cond) && _i < (ms); _i++) {                                     \
+			k_msleep(1);                                                               \
+		}                                                                                  \
+	} while (0)
+
+/** Uplink Space Packet (command type) with the given data field, into `pkt`. Returns its length. */
+static inline size_t test_make_ul_packet(uint8_t *pkt, size_t cap, uint16_t apid, const uint8_t *data,
+					 size_t len)
+{
+	return (size_t)sp_build(pkt, cap, true, false, apid, 0, data, len);
+}
+
+/** Uplink block carrying a ping request: `ping_id` big-endian, then `n` payload bytes. */
+static inline void test_make_ping_block(uint8_t *block, uint32_t id, const uint8_t *payload, size_t n)
+{
+	uint8_t data[4 + 200];
+	uint8_t pkt[COMMS_UL_MAX_PACKET_CLEAR];
+	size_t plen;
+
+	data[0] = (uint8_t)(id >> 24);
+	data[1] = (uint8_t)(id >> 16);
+	data[2] = (uint8_t)(id >> 8);
+	data[3] = (uint8_t)id;
+	if (n) {
+		memcpy(&data[4], payload, n);
+	}
+	plen = test_make_ul_packet(pkt, sizeof(pkt), APID_UL_PING, data, 4 + n);
+	(void)tc_frame_build(block, COMMS_TC_SCID, COMMS_TC_VCID, pkt, plen);
 }
 
 #endif /* COMMS_TEST_UTIL_H_ */

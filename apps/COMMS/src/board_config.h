@@ -57,6 +57,7 @@
 #define STACK_SIZE    1024
 #define STACK_UPLINK  3072
 #define STACK_RADIO_TX 2048
+#define STACK_CAN_PROC 2048
 
 /* ================= Timing ================= */
 

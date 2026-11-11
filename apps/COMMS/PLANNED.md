@@ -2,7 +2,7 @@
 
 The build plan for the COMMS firmware: what is done, what the stages are, what to do next, the bench test
 that is the first hardware milestone, the radio driver notes, and the open decisions. Last updated
-2026-11-04.
+2026-11-09.
 
 Where things are: the board overview and architecture are in [README.md](README.md), the wire format and its
 rationale are in [PROTOCOL.md](PROTOCOL.md), and this file holds everything about progress and next steps.
@@ -15,11 +15,11 @@ checked. Radio facts come from the RFM26W datasheet and AN625 (Si446x API descri
 
 | | |
 |---|---|
-| Firmware | **Stage 1 of 7 done.** The link-layer codecs exist and are tested. `src/main.c` is a stage 0 scaffold that only brings up CAN and logs a heartbeat. There is no protocol traffic yet |
+| Firmware | **Stage 3a of 7 done** (stage 3 is split in two). The link-layer codecs, the pipeline against the radio driver (PING) and the CAN_CMD path (uplink policy, CAN bridge, CAN ping and pong, answers back down on 0x020) exist and are tested, including end to end through the radio model with a fake CAN bus. `src/main.c` starts the radio and the `uplink`, `radio_tx` and `can_proc` threads. CDH answers `OP_PING` with `OP_PONG`. Nothing has run on hardware. No telemetry cache, TLM, beacon, scheduler or watchdog yet |
 | Radio driver | Complete enough for the MVP: SPI command layer, start/shutdown/configure, block TX and RX through the FIFOs with nIRQ handling in its own work queue, RSSI, statistics. Stubs: the continuous-wave test and the PM action (phase 4) |
-| Tests | 51 firmware host tests (`apps/tests/commsTest`) and 27 radio driver tests (`apps/tests/rfm26wEmulTest`), all passing on `native_sim` |
+| Tests | 124 firmware host tests (`apps/tests/commsTest`) and 27 radio driver tests (`apps/tests/rfm26wEmulTest`), all passing on `native_sim` |
 | Hardware | Not available for at least 2 months. Nothing has run on a real board or radio. The radio profile table is an empty placeholder until WDS output exists (section 5.4) |
-| Next | **Stage 2**: the uplink and downlink pipeline against the radio driver, and PING (section 3) |
+| Next | **Stage 3b**: telemetry cache, TLM and beacon, scheduler, watchdog (section 3). Needs the beacon period and contents, and the callsign decision (open item 3) |
 
 ## 2. Firmware stages
 
@@ -27,8 +27,9 @@ checked. Radio facts come from the RFM26W datasheet and AN625 (Si446x API descri
 |---|---|---|
 | 0 | Foundations: docs, module layout, build config, minimal `main.c`, shared radio model, test app, Make rules | **done** 2026-11-02 |
 | 1 | Link-layer codecs with tests: CRC, TC frame, Space Packet, downlink block, CAN record | **done** 2026-11-02 (51 tests, 14 mutation checks all caught) |
-| 2 | Pipeline against the radio driver: `radio_port`, uplink, router, downlink queue, PING. Integration tests with the radio model | todo |
-| 3 | CAN bridge and MVP completion: GROUND_ID filter, uplink policy, CAN_CMD, telemetry cache, TLM and beacon, scheduler, watchdog, test switches. MVP acceptance tests with CAN loopback | todo |
+| 2 | Pipeline against the radio driver: `radio_port`, uplink, router, downlink queue, PING. Integration tests with the radio model | **done** 2026-11-09 (86 tests in total, 17 mutation checks all caught) |
+| 3a | CAN_CMD path: GROUND_ID filter, uplink policy (allowlist), CAN bridge, CAN ping and pong, CDH `OP_PING` handler, test switches for PING and CAN_CMD | **done** 2026-11-09 (124 tests in total) |
+| 3b | Telemetry cache, TLM and beacon, scheduler, watchdog, TLM test switch. MVP acceptance tests with CAN loopback | todo |
 | 4 | Security: SDLS AES-GCM (256-bit), replay window, development key flag | todo |
 | 5 | CFDP Class 2 receive subset, staging interface | todo |
 | 6 | Firmware push to other boards over CAN, image signature check | todo |
@@ -74,9 +75,79 @@ frame length without the minus 1, bypass and control bits swapped, SCID check re
 or not wrapping, downlink CRC over the wrong length, length limits removed, reflected CRC `crc16_ccitt`, CAN
 reserved bits allowed, CAN ID little-endian) were each put in, caught by at least one test, and restored.
 
-## 3. Next: stage 2, the pipeline against the radio driver
+### Stage 2 notes (done)
 
-Needs nothing from the user.
+Modules are under `src/app/`, listed in `src/modules.cmake`. None of them includes `board_config.h` (it needs the
+CAN node, which the host tests lack): queues, stacks and the device are given by `main.c`.
+- **`radio_port`:** the driver's receive callback copies the block into the uplink queue with `K_NO_WAIT` and counts
+  `rx_dropped` if full, `rx_bad_len` for any length but 223. `radio_port_send()` is the only transmit call. The driver
+  calls sit behind `struct radio_port_ops` so unit tests can fake them. There is **no `radio_rx` thread**: the
+  callback already runs in the driver's work queue, so a thread would only add a copy (priority 4 is unused).
+- **`uplink`:** `uplink_handle_block()` (frame, packet, router) has no threads and counts every drop reason
+  (`tc_drop[]`, `sp_drop[]`, `not_tc` for a telemetry-type packet on the uplink). `uplink_service_one()` is the thread
+  body. SDLS goes at the marked spot between frame and packet in stage 4.
+- **`router`:** APID 0x0F0 only. Everything else, including 0x7FF, is `ROUTE_UNKNOWN` and counted.
+- **`ping`:** `ping_id` is **big-endian** (decided 2026-11-09, now in PROTOCOL.md section 14). The reply is the request
+  data field unchanged, 4 to 204 bytes, anything else is dropped as `bad_ping`.
+- **`downlink`:** `downlink_submit()` only queues (`queue_full` counted). `downlink_service_one()` builds the packet
+  with `sp_seq_next` (touched by the radio_tx thread only), packs the block and sends. A bad item is counted and does
+  not use a sequence count. A packet whose send fails does use one, so ground sees the gap. `COMMS_RADIO_SEND_TIMEOUT_MS`
+  (1000) covers air time plus waiting for a block being received (open item 22).
+- **`main.c`:** init order is radio start, `rfm26w_configure` (placeholder frequency 433.92 MHz and -40 dBm, both in
+  `comms_config.h`), then `radio_port_start`. Threads are static and wait on their queues until then.
+- **Not covered:** the real threads and priorities (tests call the `*_service_one()` functions from the test thread),
+  and the real timing. Both are board checks.
+
+**Stage 2 tests** (35 new, 86 in `commsTest`): `ping` 6, `router` 3, `uplink` 9, `radio_port` 6, `downlink` 8,
+`pipeline` 9. The pipeline suite injects blocks into the radio model and decodes what the model transmits: ping
+round trip, 0 and 200 byte payloads, a lost block, a corrupt block, wrong spacecraft ID, back-to-back pings, a full
+TX queue, a full uplink queue, and 300 pings in a row (the model runs at 50 us per byte for speed). After each test
+the model must report no command while busy, no bad command, no antenna error, no FIFO under or overflow.
+**Mutation checks:** 17 deliberate bugs (echo with a changed id or a short payload, ping length limits loosened,
+reply on the request APID, uncounted drops in `router`, `uplink`, `downlink` and `radio_port`, telemetry-type uplink
+packet accepted, packet-layer error ignored, sequence count stuck at 0, downlink sent as command type, oversize item
+accepted, receive callback that waits, wrong-length block queued) were each put in and each failed at least one test
+of its own module. Lesson: after restoring a mutated file, touch it, or make keeps the mutated object file.
+
+### Stage 3a notes (done)
+
+Decided 2026-11-09: CDH is the CAN target, the test command is the existing `OP_PING` (0x01) answered by `OP_PONG`
+(0x02), `GROUND_ID` (0x10) comes from `common/can_proto.h` (`COMMS_GROUND_ID` is gone), the callsign stays a
+placeholder.
+- **`can/uplink_policy`:** default deny. A record passes only if `src` is `GROUND_ID`, `dst` is a real board (not
+  COMMS, not broadcast), class is `CLS_COMMAND`, and `(dst, class, op)` is in the table. The table has one entry,
+  `{CDH, CLS_COMMAND, OP_PING}`. `OP_SET_LED` to CDH is the suggested next entry (visible, harmless) and is left
+  out. `OP_REBOOT`, `OP_SET_MODE`, `OP_SET_PWR_STATE`, `OP_SET_EPS_LOAD`, `OP_SET_WHEEL_RPM`, `OP_SET_MAG_DIPOLE` stay
+  off until state gating exists (stage 7). A test walks every (dst, class, op) and requires exactly one to pass.
+- **`can/can_bridge`:** `can_bridge_forward()` forces the CAN priority to `COMMS_CAN_UPLINK_PRIO` (3, placeholder) so
+  ground cannot win arbitration over flight traffic, and sends through an ops struct (fake bus in tests).
+  `can_bridge_add_ground_filter()` is the third RX filter (`dst` = `GROUND_ID`). `can_bridge_on_frame()` turns a
+  frame for ground into an item for APID `0x020`: `tlm_counter` (4, big-endian, an `atomic_t` that stage 3b shares)
+  then the 12-byte record. Frames for anyone else are ignored and use no counter value.
+- **`can/can_ping`:** `comms_can_ping_record()` and `comms_can_pong_check()`. The six bytes p2..p7 are a token that
+  the pong echoes. Layout is in PROTOCOL.md section 14.
+- **`app/router`** is now a context struct (counters, `can_bridge`, switches). APID `0x010` takes exactly one record,
+  checks the policy, forwards it, and returns `ROUTE_DONE`: the reply comes later over CAN. Counters per policy
+  reason, bad record, CAN error, and `disabled`. Switches `COMMS_MVP_PING` and `COMMS_MVP_CAN_CMD` (Kconfig, default y)
+  feed `struct mvp_switches`, also settable at runtime.
+- **`main.c`:** one `can_proc` thread (priority 2). There is no `can_rx` thread, for the same reason as `radio_rx`.
+  Other frames (heartbeats and so on) are ignored until the telemetry cache exists.
+- **CDH (`apps/CDH/src/main.c`):** new `send_pong()` and `case OP_PING` in `handle_command`. It replies to the frame's
+  `src` on `CLS_CMD_RESP` with p2..p7 echoed. Built, not run. CDH reads CAN only in STANDARD or MISSION mode.
+- **Not covered:** the real CDH reply, the FDCAN filter on real hardware, bus load, and a rate limit on uplinked
+  commands (stage 7). `tools/ground_station/can_proto.py` still has no `GROUND_ID`.
+
+**Stage 3a tests** (38 new, 124 in `commsTest`): `uplink_policy` 7, `can_ping` 5, `can_bridge` 9, `router` 6 more,
+`pipeline` 5 more (a fake CDH answers the ping, written separately from the firmware handler). **Mutation checks:**
+19 deliberate bugs (each policy rule removed or loosened, reboot on the allowlist, priority not forced or masked too
+narrowly, uncounted errors, frames for others sent down, counter not advancing or wrong byte order, wrong APID,
+switch ignored, policy result ignored, wrong denial reason, token not compared, ping with the pong opcode) were each
+put in and each failed a test of its own module. The restored files were touched, so no stale object files.
+
+## 3. Next: stage 3b, telemetry, beacon, scheduler, watchdog
+
+**Stage 3b needs from the user:** the beacon period and contents and the callsign decision (open item 3).
+The stage 2 steps below are kept for reference:
 1. `app/radio_port`: a thin layer over `ut/drivers/rfm26w.h`. The receive callback copies the block into a queue
    with `K_NO_WAIT` and counts a drop if full. Send goes through one function so `radio_tx` is the only sender.
    Make it replaceable in tests.
@@ -104,16 +175,16 @@ threads, init order). Merging the modules into `main.c` was considered and would
 pipeline, can_bridge, sec, cfdp) is a possible later step if the file count becomes a nuisance.
 
 **What each later stage needs from the user first:**
-- Stage 3: the CAN target board, a harmless request-and-reply command and the allowlist (open item 26), and how the
-  callsign is carried (open item 3).
+- Stage 3b: the beacon period and contents, and how the callsign is carried (open item 3, still a placeholder:
+  `COMMS_CALLSIGN` is `NOCALL` and `COMMS_CALLSIGN_IN_PACKETS` is 0, nothing is transmitted).
 - Stage 4: where the replay counter is stored across resets (open item 1), and key provisioning (item 5).
 - Stage 5: where the staging flash is (item 1).
 - Stage 6: the CAN firmware-transfer protocol (item 10). Needs the user's decisions.
 - Stage 7: the state-gating table from CDH, and the board.
 
-**Stage 3 scope:** `can/can_bridge`, `uplink_policy`, `telemetry`. The common `can_setup()` installs filters only for
-this node's ID and broadcast, so COMMS also needs a filter for `dst` = `COMMS_GROUND_ID` (replies from boards are
-addressed to the ground). Add it in stage 3, not in `common/`.
+**Stage 3b scope:** `can/telemetry` (cache of what the boards broadcast), the TLM packet on `0x020` and the beacon on
+`0x021` (both share the `tlm_counter` that `can_bridge` already uses, an `atomic_t` owned by `main.c`), the scheduler
+(takes over the heartbeat thread), the hardware watchdog, and the TLM test switch (`COMMS_MVP_TLM`).
 
 **Stage 4 notes:** AES-GCM goes through PSA (`psa_aead_decrypt`) with a 256-bit key. The old self-test used a
 128-bit key, so it changes. Uplink order in code: cheap IV check, then decrypt and verify, then commit the new IV
@@ -182,11 +253,11 @@ slower period (placeholder 60 s) with 1-3 records. Ground checks `tlm_counter` a
 for gaps and checks that record contents match. *Pass (proposal):* 10 minutes with no missing counter values.
 
 **CAN_CMD (command to the CAN bus and back).** Ground sends a command packet on `0x010` containing a CAN record.
-COMMS checks it: `src` equals GROUND_ID (proposed `0x10`) and `dst`/`class`/`op` are on a small allowlist. A failing
+COMMS checks it: `src` equals GROUND_ID (`0x10`) and `dst`/`class`/`op` are on a small allowlist. A failing
 record is dropped and counted. COMMS puts the record on CAN with `src` = GROUND_ID and `dst` = the target board
 (which must accept `src` = GROUND_ID). The target's reply is addressed to GROUND_ID. COMMS picks it up with a CAN
-filter and sends it down on `0x020`. The bench uses the existing ad-hoc CAN network with the other boards. Pick a
-harmless request-and-reply command (for example a status or telemetry request). *Pass (proposal):* a command sent
+filter and sends it down on `0x020`. The bench uses the existing ad-hoc CAN network with the other boards. The command
+is `OP_PING` to CDH, answered by `OP_PONG` with the six token bytes echoed (PROTOCOL.md section 14). *Pass (proposal):* a command sent
 from ground produces the expected CAN frame on the bus (seen on the target or a bus logger), and the reply arrives
 at ground intact.
 
@@ -234,6 +305,15 @@ at each stage.
    decoder. Stage 1 checked them only against the spec text and hand-built vectors.
 4. A TC frame sent by an independent implementation passes `tc_frame_parse` (spacecraft ID and virtual channel as
    configured on both ends).
+5. The ping reply block from the real radio is accepted by an independent ground decoder, and `ping_id` byte order
+   (big-endian) matches the ground software.
+7. CDH answers `OP_PING` with `OP_PONG` on the real bus (new `send_pong` in `apps/CDH/src/main.c`, only built, never run).
+   CDH reads CAN only in STANDARD or MISSION mode. COMMS and CDH must use the same bit rate (500 kbit/s in
+   `can_setup`), and the COMMS FDCAN filter for `dst` = `GROUND_ID` must really pass the pong.
+8. A CAN frame sent by COMMS for ground carries the forced priority (`COMMS_CAN_UPLINK_PRIO`) and `src` = `GROUND_ID`
+   as seen on a bus logger.
+6. The `uplink` and `radio_tx` threads keep up on the real board with the radio driver's work queue and CAN running
+   (stack use with `CONFIG_THREAD_STACK_INFO`, `STACK_UPLINK` and `STACK_RADIO_TX` are placeholders).
 
 ### Placeholders and assumptions
 
@@ -243,7 +323,7 @@ Every one of these is a guess or an unmade decision. Change it in the file named
 |---|---|---|---|---|
 | Spacecraft ID (10 bits) | `0x0A5` | `comms_config.h` `COMMS_TC_SCID` | CCSDS assigns it | 11 |
 | Virtual channel ID | 0 | `comms_config.h` | proposal in PROTOCOL.md | 11 |
-| Ground station node ID | `0x10` | `comms_config.h` `COMMS_GROUND_ID` | with CDH and the other boards | 2 |
+| Ground station node ID | `0x10` | `common/can_proto.h` `GROUND_ID` (decided, no longer a COMMS placeholder) | with CDH and the other boards | 2 |
 | Callsign and SSID | `NOCALL`, 0 | `comms_config.h` | needs a licence | 3 |
 | Radio reference clock | 30 MHz crystal, **assumed** | `boards/ut_core.overlay` `xo-frequency-hz` | check the module | 24 |
 | Radio profile table | empty placeholder | `drivers/rfm26w/src/rfm26w_profiles.c` | needs WDS output | 20 |
@@ -516,7 +596,7 @@ Decisions and unknowns, numbered (code comments cite these numbers).
 
 1. **Storage** for the replay counter, CFDP state and staging area (PROTOCOL.md section 5). Staging options: the
    COMMS second flash slot (4 MB part, **verify**), external flash, or other-board storage.
-2. GROUND_ID value and the uplink allowlist (with CDH).
+2. ~~GROUND_ID value~~ decided: `GROUND_ID` = `0x10` in `common/can_proto.h` (2026-11-09). The uplink allowlist has one entry (CDH `OP_PING`); extending it is open until state gating exists (stage 7).
 3. Callsign placement and the ID interval required by the license (secondary header on every downlink packet vs
    periodic ID). If the header is required, the MVP includes it and the downlink data field is 206 bytes instead of
    213. Beacon period and exact contents.
@@ -566,6 +646,6 @@ Decisions and unknowns, numbered (code comments cite these numbers).
     5.4). The module datasheet only says the chip's default crystal is 30 MHz and 25 to 32 MHz is allowed.
 25. **Frequency equation and band table** in `rfm26w_priv.h` come from outside the provided documents. Verify them
     against the Si446x datasheet (section 5.2).
-26. **MVP CAN_CMD:** which board is the CAN target, which harmless request-and-reply command is used, and what is on
-    the allowlist.
+26. ~~MVP CAN_CMD~~ decided 2026-11-09: the target is CDH, the command is `OP_PING`, answered with `OP_PONG` (both
+    already in `common/can_proto.h`), and the allowlist has that one entry (`src/can/uplink_policy.c`).
 27. **MVP pass thresholds** (99% of 1000 pings, 10 minutes of telemetry) are proposals, kept as drafted for now.

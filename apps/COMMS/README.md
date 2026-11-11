@@ -14,12 +14,13 @@ payload data down.
 > behind it. [PLANNED.md](PLANNED.md) is the build plan: what is done, the stages, what to do next, the MVP bench
 > test, the radio driver notes and the open decisions.
 
-## Status (2026-11-04)
+## Status (2026-11-09)
 
-- **Firmware: stage 1 of 7 done.** The link-layer codecs (CRC, TC frame, Space Packet, downlink block, CAN record) are
-  written and tested. `src/main.c` is a stage 0 scaffold: it brings up CAN, checks the radio device exists and logs a
-  heartbeat. **There is no protocol traffic yet.** Next is stage 2, the pipeline against the radio driver
-  ([PLANNED.md](PLANNED.md) section 3).
+- **Firmware: stage 3a of 7 done.** The link-layer codecs, the pipeline against the radio driver (PING) and the CAN_CMD
+  path (uplink allowlist, CAN bridge, CAN ping and pong to CDH, board answers back down on `0x020`) are written and
+  tested on the host, end to end through the radio model with a fake CAN bus. `src/main.c` starts the radio and the
+  `uplink`, `radio_tx` and `can_proc` threads. CDH has a new `OP_PING` handler. None of it has run on hardware. Next is
+  stage 3b: telemetry cache, TLM, beacon, scheduler, watchdog ([PLANNED.md](PLANNED.md) section 3).
 - **Radio driver: complete enough for the MVP**, tested against a software radio model. The continuous-wave test and
   PM action are stubs. Its profile table is an empty placeholder until Silicon Labs WDS output exists.
 - **Tests:** 51 firmware host tests and 27 radio driver tests, all passing on `native_sim`.
@@ -36,7 +37,7 @@ payload data down.
 - **S-band radio:** not yet decided. The RFM26W is sub-GHz only. Payload images are meant to go down on S-band.
 - **MCU:** STM32U5 (U5A5), Zephyr RTOS. **CAN:** FDCAN to the shared bus, `common/can_proto.h` defines the 29-bit ID
   layout and node IDs (CDH `0x01`, EPS `0x02`, COMMS `0x03`, others up to `0x08`). The ground station appears on the
-  bus as `COMMS_GROUND_ID` (`0x10`, proposed).
+  bus as `GROUND_ID` (`0x10`, in `common/can_proto.h`).
 - **Storage:** no FRAM is assumed. COMMS has its own flash for staging uploads. The rest of the storage split is
   undecided.
 - **Ground station:** a radio on a Raspberry Pi, details unknown.
@@ -148,8 +149,9 @@ unit-tested on a computer.
 | link | `link/space_packet` | Space Packet header, per-APID sequence counters, loss count | 1 | done |
 | link | `link/dl_block` | Downlink block: `len`, packet, pad, CRC | 1 | done |
 | can | `can/can_record` | The 12-byte CAN-equivalent record, conversion to and from `struct can_frame` | 1 | done |
-| app | `app/radio_port`, `uplink`, `router`, `downlink`, `ping` | Radio to packet to APID dispatch, TX queue, ping | 2 | todo |
-| can | `can/can_bridge`, `uplink_policy`, `telemetry` | CAN filters and send, who may command what, telemetry cache and beacon | 3 | todo |
+| app | `app/radio_port`, `uplink`, `router`, `downlink`, `ping` | Radio to packet to APID dispatch, TX queue, ping | 2 | done |
+| can | `can/can_bridge`, `uplink_policy`, `can_ping` | CAN send and receive filter, who may command what (default-deny allowlist), CAN ping and pong records | 3a | done |
+| can | `can/telemetry`, beacon | Telemetry cache, TLM and beacon builders | 3b | todo |
 | sec | `sec/sdls`, `replay` | AES-GCM frame security, IV replay window | 4 | todo |
 | cfdp | `cfdp/cfdp_pdu`, `cfdp_rx`, `staging` | File transfer receive, storage interface | 5 | todo |
 
@@ -168,8 +170,15 @@ Downlink CAN telemetry --> telemetry cache --> beacon/TLM builders --\
 | Thread | Does | Stage | Exists |
 |---|---|---|---|
 | `heartbeat` (priority 8) | Logs once a second | 0 | yes |
-| `radio_rx`, `uplink`, `radio_tx` | Block in, packet out, sole owner of send | 2 | no |
-| `can_rx`, `can_proc`, `beacon`, `scheduler`, `watchdog` | CAN in, dispatch, periodic beacon, statistics, hardware watchdog | 3 | no |
+| `uplink` (priority 5) | Takes a received block from the queue, frame to packet to router, queues any reply | 2 | yes |
+| `radio_tx` (priority 6) | Sole owner of send: packet to block to radio | 2 | yes |
+
+There is no `radio_rx` thread. The driver's receive callback runs in the driver's work queue and copies each block
+straight into the uplink queue (priority 4 stays unused).
+| `can_proc` (priority 2) | Frames addressed to ground (board answers) to the downlink queue | 3a | yes |
+| `beacon`, `scheduler`, `watchdog` | Periodic beacon, statistics, hardware watchdog | 3b | no |
+
+There is no `can_rx` thread either: the CAN driver's filters already buffer frames into the queue `can_proc` reads.
 
 ## Radio driver (summary)
 
@@ -209,7 +218,7 @@ Decisions that were open in the original requirements and where they stand:
 
 - Use `crc16_itu_t`, never `crc16_ccitt` (reflected, different result). `comms_crc16` wraps the right one.
 - The common `can_setup()` installs filters only for this node's ID and broadcast. COMMS also needs a filter for
-  `dst` = `COMMS_GROUND_ID` (replies from boards are addressed to the ground). Add it in stage 3, not in `common/`.
+  `dst` = `GROUND_ID` (replies from boards are addressed to the ground). `can/can_bridge` adds it (stage 3a), not `common/`.
 - The radio driver's profile table is `__weak` so tests can replace it. Do not make a second table in the firmware.
 - The radio node label is `rfm26w0` in the firmware overlay and both test overlays. The radio model finds it by label.
 - The devicetree must use `GPIO_ACTIVE_LOW` for the radio's `int-gpios`, and active high for `sdn-gpios` and the
