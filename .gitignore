@@ -32,3 +32,4 @@ zephyr-sdk*/
 *deleteme*
 *.ignore
 *.ignore.*
+apps/COMMS/external_documents/

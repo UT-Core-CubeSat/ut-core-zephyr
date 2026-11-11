@@ -58,6 +58,7 @@ extern "C" {
 #define GNSS_ID     0x06
 #define STAR_ID     0x07
 #define SOLAR_ID    0x08
+#define GROUND_ID   0x10
 
 /* Message Classes */
 #define CLS_HEARTBEAT   0

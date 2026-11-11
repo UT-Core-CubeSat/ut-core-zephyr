@@ -1,0 +1,100 @@
+# RFM26W (Si446x-class) radio driver
+
+config RFM26W
+	bool "RFM26W radio driver"
+	default y
+	depends on DT_HAS_HOPERF_RFM26W_ENABLED
+	select SPI
+	select GPIO
+	help
+	  Driver for the HopeRF RFM26W sub-GHz transceiver module. It moves fixed-size
+	  blocks over the radio. See include/ut/drivers/rfm26w.h.
+
+if RFM26W
+
+config RFM26W_INIT_PRIORITY
+	int "RFM26W init priority"
+	default 80
+	help
+	  Device initialization priority. Must be later than the SPI and GPIO controllers.
+
+config RFM26W_CTS_TIMEOUT_MS
+	int "Clear-to-send timeout for ordinary commands (ms)"
+	default 20
+	range 1 1000
+	help
+	  How long the driver polls READ_CMD_BUFF for CTS (0xFF) after a command before it
+	  gives up with -ETIMEDOUT. The datasheet's typical CTS time is 20 microseconds.
+
+config RFM26W_POWER_UP_TIMEOUT_MS
+	int "Clear-to-send timeout for POWER_UP (ms)"
+	default 100
+	range 1 5000
+	help
+	  POWER_UP can take longer to set CTS than other commands.
+
+config RFM26W_STARTUP_DELAY_MS
+	int "Wait after releasing SDN (ms)"
+	default 20
+	range 5 200
+	help
+	  Time to wait after SDN goes low before the first SPI command. The datasheet gives
+	  4.5 ms for the power-on reset and 20 ms from shutdown to a ready radio (table 9).
+
+config RFM26W_VERIFY_PROFILE
+	bool "Read the radio profile back after loading it"
+	default y
+	help
+	  After loading a profile table, read every property back with GET_PROPERTY and fail
+	  start with -EIO on a mismatch.
+
+config RFM26W_PA_LEVEL_MAX
+	int "Highest PA_PWR_LVL the driver will write (0 to 127)"
+	default 32
+	range 0 127
+	help
+	  Safety cap on the raw PA level, applied after the dBm to level conversion. The
+	  conversion in the driver is an UNMEASURED PLACEHOLDER (PLANNED.md open item 17), so
+	  this cap, not the dBm value, is what keeps bench work at a low power. Raise it
+	  only after the real output power has been measured.
+
+config RFM26W_TX_THRESHOLD
+	int "TX FIFO almost-empty threshold (bytes of free space)"
+	default 48
+	range 1 64
+	help
+	  The TX almost-empty interrupt fires when the TX FIFO has at least this many bytes
+	  free, so (64 - threshold) bytes are left to send when the driver is asked to refill.
+	  The default of 48 leaves 16 bytes: about 13 ms of slack at 9.6 kb/s, about 2.6 ms at
+	  50 kb/s. The driver writes this itself after loading the profile.
+
+config RFM26W_RX_THRESHOLD
+	int "RX FIFO almost-full threshold (bytes present)"
+	default 48
+	range 1 64
+	help
+	  The RX almost-full interrupt fires when the RX FIFO holds at least this many bytes,
+	  leaving (64 - threshold) bytes of room before overflow. Same timing as above. The
+	  driver writes this itself after loading the profile.
+
+config RFM26W_WORKQ_STACK_SIZE
+	int "Stack size of the radio work queue thread"
+	default 1536
+	help
+	  The radio has its own work queue thread that handles nIRQ (FIFO streaming) and runs
+	  the receive callback. The callback runs on this stack.
+
+config RFM26W_WORKQ_PRIORITY
+	int "Priority of the radio work queue thread"
+	default 1
+	help
+	  Zephyr thread priority (lower number is more urgent, negative is cooperative). FIFO
+	  streaming has a deadline of a few milliseconds at the higher data rates, so this must
+	  be at least as urgent as every application thread that could hold the CPU for longer
+	  than that (PLANNED.md section 5.2).
+
+module = RFM26W
+module-str = RFM26W
+source "subsys/logging/Kconfig.template.log_config"
+
+endif # RFM26W
