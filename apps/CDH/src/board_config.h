@@ -34,8 +34,6 @@
 
 /* ================= GPIO Pin Assignments ================= */
 
-#define PIN_SILENT 9   /**< TCAN3403 silent-mode control (active high).  */
-#define PIN_SHDN 10    /**< TCAN3403 shutdown control (active high).     */
 #define PIN_ROLE 6     /**< MCU role strap — 0 = MCU1, 1 = MCU2.         */
 #define WATCHDOG_PIN 2 /**< Hardware watchdog kick pin (PA2).            */
 

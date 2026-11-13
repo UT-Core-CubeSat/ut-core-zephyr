@@ -22,8 +22,6 @@ LOG_MODULE_REGISTER(adcs_air_bearing, LOG_LEVEL_INF);
 /* CAN protocol defaults mirroring other UT-core boards. */
 #define NODE_ID        ADCS_ID
 #define PRIO_LOW       4
-#define PIN_SHDN       10
-#define PIN_SILENT      9
 
 /* 1: command MissionMode::SAFE -> B-dot detumble (wheels zeroed, mtq active).
  * 0: default BEARING -> detumble until rates calm, then NDI point. */
@@ -57,7 +55,6 @@ static const struct gpio_dt_spec led2 = GPIO_DT_SPEC_GET(LED2_NODE, gpios);
  * =================================================================== */
 static const struct device *i2c_dev = DEVICE_DT_GET(DT_NODELABEL(i2c1));
 static const struct device *can_dev = DEVICE_DT_GET(DT_NODELABEL(fdcan1));
-static const struct device *gpioa = DEVICE_DT_GET(DT_NODELABEL(gpioa));
 CAN_MSGQ_DEFINE(rxq, 16);
 
 typedef struct {
@@ -92,9 +89,9 @@ static inline int16_t float_to_i16_rpm(float x)
 
 static void send_heartbeat(void)
 {
-	int err = send_simple(can_dev, NODE_ID, CAN_BROADCAST, CLS_HEARTBEAT, OP_HEARTBEAT, 0x00, PRIO_LOW);
+	int err = can_send2(can_dev, NODE_ID, CAN_BROADCAST, OP_HEARTBEAT, PRIO_LOW, 0, 0);
 	if (err) {
-		LOG_WRN("Failed to send OP_SET_MODE: %d", err);
+		LOG_WRN("Failed to send OP_HEARTBEAT: %d", err);
 }
 }
 
@@ -105,18 +102,13 @@ static void send_soh_attitude(void)
 	snap = g_can_snapshot;
 	k_mutex_unlock(&g_can_snapshot_mutex);
 
-	struct can_frame f = {0};
-	f.id = CAN_ID_FULL(PRIO_LOW, NODE_ID, CAN_BROADCAST, CLS_HEALTH);
-	f.flags = CAN_FRAME_IDE;
-	f.dlc = 8;
-	f.data[0] = NODE_ID;
-	f.data[1] = OP_ADCS_SOH_ATTITUDE;
+	uint8_t buf[8] = {0};
 
 	/* Scaffold: pack qx, qy, qz as q15-ish fixed-point; q0 can be added in a follow-up frame. */
-	pack_be16(&f.data[2], float_to_q15(snap.attitude_q[1]));
-	pack_be16(&f.data[4], float_to_q15(snap.attitude_q[2]));
-	pack_be16(&f.data[6], float_to_q15(snap.attitude_q[3]));
-	can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+	pack_be16(&buf[0], float_to_q15(snap.attitude_q[1]));
+	pack_be16(&buf[2], float_to_q15(snap.attitude_q[2]));
+	pack_be16(&buf[4], float_to_q15(snap.attitude_q[3]));
+	can_send_frame(can_dev, NODE_ID, CAN_BROADCAST, OP_ADCS_SOH_ATTITUDE, PRIO_LOW, buf, 8);
 }
 
 static void send_wheel_rpm_scaffold(void)
@@ -126,18 +118,13 @@ static void send_wheel_rpm_scaffold(void)
 	snap = g_can_snapshot;
 	k_mutex_unlock(&g_can_snapshot_mutex);
 
-	struct can_frame f = {0};
-	f.id = CAN_ID_FULL(PRIO_LOW, NODE_ID, CAN_BROADCAST, CLS_TELEMETRY);
-	f.flags = CAN_FRAME_IDE;
-	f.dlc = 8;
-	f.data[0] = NODE_ID;
-	f.data[1] = OP_ADCS_WHEEL_RPM;
+	uint8_t buf[8] = {0};
 
 	/* Scaffold: first 3 wheels in frame; wheel4 can be split into a second frame when finalized. */
-	pack_be16(&f.data[2], (int16_t)snap.wheel_rpm[0]);
-	pack_be16(&f.data[4], (int16_t)snap.wheel_rpm[1]);
-	pack_be16(&f.data[6], (int16_t)snap.wheel_rpm[2]);
-	can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+	pack_be16(&buf[0], (int16_t)snap.wheel_rpm[0]);
+	pack_be16(&buf[2], (int16_t)snap.wheel_rpm[1]);
+	pack_be16(&buf[4], (int16_t)snap.wheel_rpm[2]);
+	can_send_frame(can_dev, NODE_ID, CAN_BROADCAST, OP_ADCS_WHEEL_RPM, PRIO_LOW, buf, 8);
 }
 
 static void send_mtq_dipole_scaffold(void)
@@ -147,49 +134,35 @@ static void send_mtq_dipole_scaffold(void)
 	snap = g_can_snapshot;
 	k_mutex_unlock(&g_can_snapshot_mutex);
 
-	struct can_frame f = {0};
-	f.id = CAN_ID_FULL(PRIO_LOW, NODE_ID, CAN_BROADCAST, CLS_TELEMETRY);
-	f.flags = CAN_FRAME_IDE;
-	f.dlc = 8;
-	f.data[0] = NODE_ID;
-	f.data[1] = OP_ADCS_MTQ_DIPOLE;
+	uint8_t buf[8] = {0};
 
 	/* Scaffold: mx/my/mz packed as 1e-4 A*m^2 fixed-point. */
-	pack_be16(&f.data[2], float_to_q15(snap.mtq_dipole[0]));
-	pack_be16(&f.data[4], float_to_q15(snap.mtq_dipole[1]));
-	pack_be16(&f.data[6], float_to_q15(snap.mtq_dipole[2]));
-	can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+	pack_be16(&buf[0], float_to_q15(snap.mtq_dipole[0]));
+	pack_be16(&buf[2], float_to_q15(snap.mtq_dipole[1]));
+	pack_be16(&buf[4], float_to_q15(snap.mtq_dipole[2]));
+	can_send_frame(can_dev, NODE_ID, CAN_BROADCAST, OP_ADCS_MTQ_DIPOLE, PRIO_LOW, buf, 8);
 }
 
 static void send_mtq_dipole_command_solar(float mx, float my, float mz)
 {
-	struct can_frame f = {0};
-	f.id = CAN_ID_FULL(PRIO_LOW, NODE_ID, SOLAR_ID, CLS_COMMAND);
-	f.flags = CAN_FRAME_IDE;
-	f.dlc = 8;
-	f.data[0] = NODE_ID;
-	f.data[1] = OP_SET_MAG_DIPOLE;
+	uint8_t buf[8] = {0};
 
-	/* Pack commanded dipole [mx,my,mz] in one frame (p2..p7), 1e-4 A*m^2 per LSB. */
-	pack_be16(&f.data[2], float_to_q15(mx));
-	pack_be16(&f.data[4], float_to_q15(my));
-	pack_be16(&f.data[6], float_to_q15(mz));
-	can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+	/* Pack commanded dipole [mx,my,mz] in one frame (data[0..5]), 1e-4 A*m^2 per LSB. */
+	pack_be16(&buf[0], float_to_q15(mx));
+	pack_be16(&buf[2], float_to_q15(my));
+	pack_be16(&buf[4], float_to_q15(mz));
+	can_send_frame(can_dev, NODE_ID, SOLAR_ID, OP_SET_MAG_DIPOLE, PRIO_LOW, buf, 8);
 }
 
 static void send_wheel_rpm_command_motor(uint8_t motor_sel, float rpm_cmd)
 {
-	struct can_frame f = {0};
 	const int16_t rpm_i16 = float_to_i16_rpm(rpm_cmd);
 
-	f.id = CAN_ID_FULL(PRIO_LOW, NODE_ID, MOTOR_ID, CLS_COMMAND);
-	f.flags = CAN_FRAME_IDE;
-	can_fill_payload(&f, NODE_ID, OP_SET_WHEEL_RPM,
-			 motor_sel,
-			 (uint8_t)(((uint16_t)rpm_i16 >> 8) & 0xFF),
-			 (uint8_t)((uint16_t)rpm_i16 & 0xFF),
-			 0, 0, 0);
-	can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+	can_send4(can_dev, NODE_ID, MOTOR_ID, OP_SET_WHEEL_RPM, PRIO_LOW,
+		  motor_sel,
+		  (uint8_t)(((uint16_t)rpm_i16 >> 8) & 0xFF),
+		  (uint8_t)((uint16_t)rpm_i16 & 0xFF),
+		  0);
 }
 
 static void send_wheel_rpm_commands_motor(const float wheel_rpm_cmd[4])
@@ -199,25 +172,15 @@ static void send_wheel_rpm_commands_motor(const float wheel_rpm_cmd[4])
 	}
 }
 
-static void tcan3403_wakeup(void)
-{
-	gpio_pin_configure(gpioa, PIN_SHDN, GPIO_OUTPUT_INACTIVE);
-	gpio_pin_configure(gpioa, PIN_SILENT, GPIO_OUTPUT_INACTIVE);
-	k_msleep(1);
-	LOG_INF("TCAN3403 Awake");
-}
-
 static void can_dispatch(const can_packet_t *pkt)
 {
-	switch (pkt->msg_class) {
-	case CLS_HEARTBEAT:
+	switch (pkt->op) {
+	case OP_HEARTBEAT:
 		LOG_DBG("RX heartbeat from 0x%02X", pkt->src);
 		break;
-	case CLS_COMMAND:
-		/* Scaffold hook for future ADCS command handling (mode changes, wheel commands, etc). */
-		LOG_DBG("RX command from 0x%02X op=0x%02X", pkt->src, pkt->data[1]);
-		break;
 	default:
+		/* Scaffold hook for future ADCS command handling (mode changes, wheel commands, etc). */
+		LOG_DBG("RX op=0x%03X from 0x%02X", pkt->op, pkt->src);
 		break;
 	}
 }
@@ -231,7 +194,9 @@ static void can_rx_thread(void *a, void *b, void *c)
 	can_packet_t pkt;
 	while (1) {
 		if (k_msgq_get(&rxq, &frame, K_FOREVER) == 0) {
-			can_decode(&frame, &pkt);
+			if (can_decode(&frame, &pkt) != 0) {
+				continue;
+			}
 			can_dispatch(&pkt);
 		}
 	}
@@ -631,7 +596,7 @@ static void adcs_loop(void *, void *, void *)
         #endif
 		ADCS::AdcsOutput out = adcs_core.update(sd, adcs_cmd);
 		/* Motor command packing follows bldcHallL6234 contract:
-		 * CLS_COMMAND + OP_SET_WHEEL_RPM, one frame per motor (p2=1..4, p3..p4=int16 rpm).
+		 * OP_SET_WHEEL_RPM, one frame per motor (data[0]=1..4, data[1..2]=int16 rpm).
 		 * Controller output currently exposes wheel torque only, so keep rpm commands zeroed
 		 * until wheel-speed command path is promoted through ADCSCore.
 		 */
@@ -799,12 +764,11 @@ int main(void)
 	printk("[ADCS] Actuators: reaction wheels (wheel_speeds zeroed until connected)\n\n");
 
 	/* --- CAN init (common board protocol pattern) --- */
-	if (!device_is_ready(gpioa)) {
-		printk("GPIOA not ready (CAN transceiver pins)\n");
-		return 0;
+	int err = tcan3403_wakeup();
+	if (err) {
+		LOG_ERR("TCAN3403 wakeup failed: %d", err);
 	}
-	tcan3403_wakeup();
-	int err = can_setup(can_dev, NODE_ID, &rxq, NULL);
+	err = can_setup(can_dev, NODE_ID, &rxq, NULL);
     if (err) {
         LOG_ERR("CAN Setup failed: %d", err);
         return;

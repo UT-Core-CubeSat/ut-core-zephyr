@@ -27,17 +27,18 @@ static const gpio_num_t TWAI_TX_GPIO = GPIO_NUM_8;
 static const gpio_num_t TWAI_RX_GPIO = GPIO_NUM_4;
 static const int STATUS_LED = 21;
 static constexpr uint32_t HEARTBEAT_PERIOD_MS = 1000U;
-static constexpr uint8_t CAN_BROADCAST = 0xFF;
+static constexpr uint8_t CAN_BROADCAST = 0x1F;
 static constexpr uint8_t ADCS_ID = 0x04;
 static constexpr uint8_t COMMS_ID = 0x03;
 static constexpr uint8_t CDH_ID = 0x01;
 static constexpr uint8_t EPS_ID = 0x02;
+static constexpr uint8_t MOTOR_ID = 0x05;
 static constexpr uint8_t SOLAR_ID = 0x08;
-static constexpr uint8_t CLS_HEARTBEAT = 0x00;
-static constexpr uint8_t CLS_COMMAND = 0x02;
-static constexpr uint8_t OP_HEARTBEAT = 0x30;
-static constexpr uint8_t OP_SET_MAG_DIPOLE = 0x51;
-static constexpr uint8_t OP_SET_EPS_LOAD = 0x52;
+// Opcodes mirror common/ops.h (12-bit, carried in the CAN ID).
+static constexpr uint16_t OP_HEARTBEAT = 0x001;
+static constexpr uint16_t OP_SET_WHEEL_RPM = 0x110;
+static constexpr uint16_t OP_SET_MAG_DIPOLE = 0x111;
+static constexpr uint16_t OP_SET_EPS_LOAD = 0x112;
 static constexpr uint8_t PRIO_LOW = 6;
 static constexpr twai_mode_t TWAI_RUN_MODE = TWAI_MODE_NORMAL;  // ACK-capable node.
 static constexpr bool ENABLE_TX_TEST = false;
@@ -182,26 +183,20 @@ static void send_frame_udp(uint32_t can_id, uint8_t dlc, const uint8_t* data) {
     udp.endPacket();
 }
 
-static uint32_t make_can_id(uint8_t prio, uint8_t src, uint8_t dst, uint8_t cls) {
-    return (((uint32_t)prio & 0x07U) << 26) |
-           (((uint32_t)src  & 0xFFU) << 14) |
-           (((uint32_t)dst  & 0xFFU) << 6)  |
-           ((uint32_t)cls   & 0x3FU);
+static uint32_t make_can_id(uint8_t prio, uint8_t src, uint8_t dst, uint16_t op) {
+    return (((uint32_t)prio & 0x07U)  << 26) |
+           (((uint32_t)src  & 0x1FU)  << 21) |
+           (((uint32_t)dst  & 0x1FU)  << 16) |
+           (((uint32_t)op   & 0xFFFU) << 4);
 }
 
 static void send_bridge_heartbeat() {
     twai_message_t hb = {};
     hb.extd = 1;
-    hb.identifier = make_can_id(PRIO_LOW, COMMS_ID, CAN_BROADCAST, CLS_HEARTBEAT);
-    hb.data_length_code = 8;
-    hb.data[0] = COMMS_ID;
-    hb.data[1] = OP_HEARTBEAT;
-    hb.data[2] = 0;
-    hb.data[3] = 0;
-    hb.data[4] = 0;
-    hb.data[5] = 0;
-    hb.data[6] = 0;
-    hb.data[7] = 0;
+    hb.identifier = make_can_id(PRIO_LOW, COMMS_ID, CAN_BROADCAST, OP_HEARTBEAT);
+    hb.data_length_code = 2;
+    hb.data[0] = 0;   // p0: mode (CDH only), 0 for COMMS
+    hb.data[1] = 0;
 
     const esp_err_t tx_ret = twai_transmit(&hb, pdMS_TO_TICKS(20));
     if (tx_ret != ESP_OK) {
@@ -215,16 +210,16 @@ static void send_bridge_heartbeat() {
 static void send_solar_mag_test_command() {
     twai_message_t tx = {};
     tx.extd = 1;
-    tx.identifier = make_can_id(PRIO_LOW, ADCS_ID, SOLAR_ID, CLS_COMMAND);
+    tx.identifier = make_can_id(PRIO_LOW, ADCS_ID, SOLAR_ID, OP_SET_MAG_DIPOLE);
     tx.data_length_code = 8;
-    tx.data[0] = ADCS_ID;
-    tx.data[1] = OP_SET_MAG_DIPOLE;
-    tx.data[2] = (uint8_t)((SOLAR_TEST_MX >> 8) & 0xFF);
-    tx.data[3] = (uint8_t)(SOLAR_TEST_MX & 0xFF);
-    tx.data[4] = (uint8_t)((SOLAR_TEST_MY >> 8) & 0xFF);
-    tx.data[5] = (uint8_t)(SOLAR_TEST_MY & 0xFF);
-    tx.data[6] = (uint8_t)((SOLAR_TEST_MZ >> 8) & 0xFF);
-    tx.data[7] = (uint8_t)(SOLAR_TEST_MZ & 0xFF);
+    tx.data[0] = (uint8_t)((SOLAR_TEST_MX >> 8) & 0xFF);
+    tx.data[1] = (uint8_t)(SOLAR_TEST_MX & 0xFF);
+    tx.data[2] = (uint8_t)((SOLAR_TEST_MY >> 8) & 0xFF);
+    tx.data[3] = (uint8_t)(SOLAR_TEST_MY & 0xFF);
+    tx.data[4] = (uint8_t)((SOLAR_TEST_MZ >> 8) & 0xFF);
+    tx.data[5] = (uint8_t)(SOLAR_TEST_MZ & 0xFF);
+    tx.data[6] = 0;
+    tx.data[7] = 0;
 
     const esp_err_t tx_ret = twai_transmit(&tx, pdMS_TO_TICKS(20));
     Serial.printf("CAN TX SOLAR MTQ | ret=%d | mx=%d my=%d mz=%d\n",
@@ -237,16 +232,10 @@ static void send_solar_mag_test_command() {
 static void send_eps_load_test_command(bool enable) {
     twai_message_t tx = {};
     tx.extd = 1;
-    tx.identifier = make_can_id(PRIO_LOW, CDH_ID, EPS_ID, CLS_COMMAND);
-    tx.data_length_code = 8;
-    tx.data[0] = CDH_ID;
-    tx.data[1] = OP_SET_EPS_LOAD;
-    tx.data[2] = EPS_TEST_LOAD_INDEX;      // p2: load index
-    tx.data[3] = enable ? 1U : 0U;         // p3: enable flag
-    tx.data[4] = 0;
-    tx.data[5] = 0;
-    tx.data[6] = 0;
-    tx.data[7] = 0;
+    tx.identifier = make_can_id(PRIO_LOW, CDH_ID, EPS_ID, OP_SET_EPS_LOAD);
+    tx.data_length_code = 2;
+    tx.data[0] = EPS_TEST_LOAD_INDEX;      // p0: load index
+    tx.data[1] = enable ? 1U : 0U;         // p1: enable flag
 
     const esp_err_t tx_ret = twai_transmit(&tx, pdMS_TO_TICKS(20));
     Serial.printf("CAN TX EPS LOAD | ret=%d | load=%u | state=%s\n",
@@ -313,16 +302,12 @@ void loop() {
         last_tx_ms = now;
         twai_message_t tx = {};
         tx.extd = 1;
-        tx.identifier = 0x08013FC2;  // prio=2 src=ADCS(0x04) dst=MOTOR(0x05) cls=COMMAND(0x02)
-        tx.data_length_code = 8;
-        tx.data[0] = 0x04;  // src = ADCS
-        tx.data[1] = 0x50;  // op = OP_SET_WHEEL_RPM
-        tx.data[2] = TX_TARGET_MOTOR;
-        tx.data[3] = (uint8_t)((current_rpm_ref >> 8) & 0xFF);
-        tx.data[4] = (uint8_t)(current_rpm_ref & 0xFF);
-        tx.data[5] = 0;
-        tx.data[6] = 0;
-        tx.data[7] = 0;
+        tx.identifier = make_can_id(2, ADCS_ID, MOTOR_ID, OP_SET_WHEEL_RPM);  // prio=2 ADCS -> MOTOR
+        tx.data_length_code = 4;
+        tx.data[0] = TX_TARGET_MOTOR;                            // p0: motor index
+        tx.data[1] = (uint8_t)((current_rpm_ref >> 8) & 0xFF);   // p1..p2: int16 RPM BE
+        tx.data[2] = (uint8_t)(current_rpm_ref & 0xFF);
+        tx.data[3] = 0;
         const esp_err_t tx_ret = twai_transmit(&tx, pdMS_TO_TICKS(20));
         Serial.printf("CAN TX RPM | ret=%d | motor=%u | rpm=%d\n",
                       (int)tx_ret, (unsigned)TX_TARGET_MOTOR, (int)current_rpm_ref);
@@ -341,16 +326,10 @@ void loop() {
     if (ENABLE_EPS_LOAD_TEST && !eps_load_command2_sent) {
         twai_message_t tx = {};
         tx.extd = 1;
-        tx.identifier = make_can_id(PRIO_LOW, CDH_ID, EPS_ID, CLS_COMMAND);
-        tx.data_length_code = 8;
-        tx.data[0] = CDH_ID;
-        tx.data[1] = OP_SET_EPS_LOAD;
-        tx.data[2] = EPS_TEST_LOAD_INDEX_2;   // p2: second load index
-        tx.data[3] = 1U;                      // p3: enable
-        tx.data[4] = 0;
-        tx.data[5] = 0;
-        tx.data[6] = 0;
-        tx.data[7] = 0;
+        tx.identifier = make_can_id(PRIO_LOW, CDH_ID, EPS_ID, OP_SET_EPS_LOAD);
+        tx.data_length_code = 2;
+        tx.data[0] = EPS_TEST_LOAD_INDEX_2;   // p0: second load index
+        tx.data[1] = 1U;                      // p1: enable
 
         const esp_err_t tx_ret = twai_transmit(&tx, pdMS_TO_TICKS(20));
         Serial.printf("CAN TX EPS LOAD | ret=%d | load=%u | state=ON\n",

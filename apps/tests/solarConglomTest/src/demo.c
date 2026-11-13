@@ -23,21 +23,13 @@ LOG_MODULE_REGISTER(solarcon, LOG_LEVEL_INF);
 #define NODE_ID         0x08    /* Solar Conglomerator */
 #define NODE_CDH        0x01
 #define NODE_ADCS       0x04
-#define CAN_BROADCAST   0xFF
 
 /* Priority levels */
 #define PRIO_HIGH  0
 #define PRIO_MED   2
 #define PRIO_LOW   4
 
-typedef struct {
-    uint8_t  priority;
-    uint8_t  src;
-    uint8_t  dst;
-    uint8_t  msg_class;
-    uint8_t  dlc;
-    uint8_t  data[8];
-} can_packet_t;
+/* can_packet_t is the shared type from common/can_proto.h. */
 
 /* ===================================================== */
 /* ================= HW DEVICES ======================== */
@@ -48,10 +40,6 @@ static const struct device *const pwm1_dev = DEVICE_DT_GET(DT_NODELABEL(pwm1));
 static const struct device *const pwm3_dev = DEVICE_DT_GET(DT_NODELABEL(pwm3));
 static const struct device *const can_dev  = DEVICE_DT_GET(DT_NODELABEL(fdcan1));
 static const struct device *i2c_bus = DEVICE_DT_GET(DT_NODELABEL(i2c1));
-
-/* Transceiver pins — adjust to your schematic */
-#define PIN_SHDN    10
-#define PIN_SILENT  9
 
 #define PWM_FREQ    20000U
 #define PWM_PERIOD  PWM_HZ(PWM_FREQ)
@@ -147,13 +135,13 @@ static inline int16_t unpack_be16(uint8_t msb, uint8_t lsb)
 
 /*
  * send_heartbeat() - Periodic heartbeat to CDH.
- * data[1] = 0x01 means "alive and nominal".
+ * data[0] = 0 (no mode payload).
  */
 static void send_heartbeat(void)
 {
-    int err = send_simple(can_dev, NODE_ID, CAN_BROADCAST, CLS_HEARTBEAT, 0x30, 0x00, PRIO_LOW);
+    int err = can_send2(can_dev, NODE_ID, CAN_BROADCAST, OP_HEARTBEAT, PRIO_LOW, 0, 0);
     if (err) {
-        LOG_WRN("Failed to send OP_SET_MODE: %d", err);
+        LOG_WRN("Failed to send OP_HEARTBEAT: %d", err);
     }
     LOG_DBG("TX heartbeat");
 }
@@ -162,23 +150,19 @@ static void send_heartbeat(void)
  * send_soh() - State-of-health telemetry to CDH.
  *
  * Payload layout:
- *   [0] src
- *   [1] opcode (0x01 = SOH)
- *   [2] current duty %
- *   [3] temp sensor 1  (placeholder — raw ADC / 2 or °C)
- *   [4] temp sensor 2
- *   [5] temp sensor 3
- *   [6] temp sensor 4
- *   [7] status flags
+ *   [0] current duty %
+ *   [1] temp sensor 1  (placeholder — raw ADC / 2 or °C)
+ *   [2] temp sensor 2
+ *   [3] temp sensor 3
+ *   [4] temp sensor 4
+ *   [5] status flags
+ *   [6..7] reserved (0)
+ * Opcode: OP_SOH_SOLAR (carried in the CAN ID).
  *
  * TODO: wire in real temp sensor reads.
  */
 static void send_soh(void)
 {
-    struct can_frame f = {0};
-    f.id    = CAN_ID_FULL(PRIO_LOW, NODE_ID, NODE_CDH, CLS_HEALTH);
-    f.flags = CAN_FRAME_IDE;
-
     uint8_t duty = (uint8_t)current_duty_percent;
 
     /* Read all temp sensors */
@@ -197,14 +181,12 @@ static void send_soh(void)
         }
     }
 
-    can_fill_payload(&f, NODE_ID,
-        0x01,           /* opcode: SOH */
+    can_send8(can_dev, NODE_ID, NODE_CDH, OP_SOH_SOLAR, PRIO_LOW,
         duty,
         temps[0], temps[1], temps[2], temps[3],
-        0x00            /* status flags */
+        0x00,           /* status flags */
+        0x00, 0x00
     );
-
-    can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
 
     /* Print to console */
     LOG_INF("TX SOH  duty=%u%%  temps: %d/%d ok", duty, ok, NUM_TEMP_SENSORS);
@@ -216,14 +198,12 @@ static void send_soh(void)
 
 static void handle_command(const can_packet_t *pkt)
 {
-    uint8_t opcode = pkt->data[1];
-
-    switch (opcode) {
+    switch (pkt->op) {
     case OP_SET_MAG_DIPOLE: {
-        /* ADCS packs mx/my/mz in p2..p7 (big-endian int16). */
-        int16_t mx = unpack_be16(pkt->data[2], pkt->data[3]);
-        int16_t my = unpack_be16(pkt->data[4], pkt->data[5]);
-        int16_t mz = unpack_be16(pkt->data[6], pkt->data[7]);
+        /* ADCS packs mx/my/mz in data[0..5] (big-endian int16). */
+        int16_t mx = unpack_be16(pkt->data[0], pkt->data[1]);
+        int16_t my = unpack_be16(pkt->data[2], pkt->data[3]);
+        int16_t mz = unpack_be16(pkt->data[4], pkt->data[5]);
 
         /* Sign-based face selection:
          *   +X -> x_pos=100, x_neg=0
@@ -243,14 +223,14 @@ static void handle_command(const can_packet_t *pkt)
                 mx, my, mz, x_pos, x_neg, y_pos, y_neg);
 
         /* ACK back to sender */
-        int err = send_simple(can_dev, NODE_ID, pkt->src, CLS_CMD_RESP, OP_SET_MAG_DIPOLE, (uint8_t)current_duty_percent, PRIO_LOW);
+        int err = can_send2(can_dev, NODE_ID, pkt->src, OP_RESP_SET_MAG_DIPOLE, PRIO_LOW, (uint8_t)current_duty_percent, 0);
         if (err) {
-            LOG_WRN("Failed to send OP_SET_MODE: %d", err);
+            LOG_WRN("Failed to send OP_RESP_SET_MAG_DIPOLE: %d", err);
         }
         break;
     }
     default:
-        LOG_WRN("Unknown command opcode: 0x%02X", opcode);
+        LOG_WRN("Unknown command opcode: 0x%03X", pkt->op);
         break;
     }
 }
@@ -262,11 +242,11 @@ static void handle_heartbeat(const can_packet_t *pkt)
 
 static void can_dispatch(const can_packet_t *pkt)
 {
-    switch (pkt->msg_class) {
-    case CLS_HEARTBEAT: handle_heartbeat(pkt);  break;
-    case CLS_COMMAND:   handle_command(pkt);     break;
+    switch (pkt->op) {
+    case OP_HEARTBEAT:       handle_heartbeat(pkt);  break;
+    case OP_SET_MAG_DIPOLE:  handle_command(pkt);    break;
     default:
-        LOG_WRN("Unhandled class: %d from 0x%02X", pkt->msg_class, pkt->src);
+        LOG_WRN("Unhandled op: 0x%03X from 0x%02X", pkt->op, pkt->src);
         break;
     }
 }
@@ -274,15 +254,6 @@ static void can_dispatch(const can_packet_t *pkt)
 /* ===================================================== */
 /* ================= CAN SETUP ========================= */
 /* ===================================================== */
-
-static void tcan3403_wakeup(void)
-{
-    gpio_pin_configure(gpioa, PIN_SHDN,   GPIO_OUTPUT_INACTIVE);
-    gpio_pin_configure(gpioa, PIN_SILENT,  GPIO_OUTPUT_INACTIVE);
-    k_msleep(1);
-    LOG_INF("TCAN3403 Awake");
-}
-
 
 /* ===================================================== */
 /* ================= CAN RX THREAD ===================== */
@@ -298,7 +269,9 @@ static void can_rx_thread(void *a, void *b, void *c)
 
     while (1) {
         if (k_msgq_get(&rxq, &frame, K_FOREVER) == 0) {
-            can_decode(&frame, &pkt);
+            if (can_decode(&frame, &pkt) != 0) {
+                continue;
+            }
             can_dispatch(&pkt);
         }
     }
@@ -362,8 +335,11 @@ int main(void)
     face_duty_percent[MTQ_FACE_Y_NEG] = 0;
 
     /* CAN bus init */
-    tcan3403_wakeup();
-    int err = can_setup(can_dev, NODE_ID, &rxq, NULL);
+    int err = tcan3403_wakeup();
+    if (err) {
+        LOG_ERR("TCAN3403 wakeup failed: %d", err);
+    }
+    err = can_setup(can_dev, NODE_ID, &rxq, NULL);
     if (err) {
         LOG_ERR("CAN Setup failed: %d", err);
         return;

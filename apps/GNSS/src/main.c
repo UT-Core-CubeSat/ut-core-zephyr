@@ -40,7 +40,7 @@ LOG_MODULE_REGISTER(gnss_app, CONFIG_LOG_DEFAULT_LEVEL);
 /* ===================================================== */
 /*
  * @name CAN Protocol
- * @brief Node IDs, priorities, and GNSS-specific opcodes used on the bus.
+ * @brief Node IDs, priorities, and timing constants used on the bus.
  * @{
  */
 
@@ -51,15 +51,6 @@ LOG_MODULE_REGISTER(gnss_app, CONFIG_LOG_DEFAULT_LEVEL);
 #define PRIO_MED   2
 #define PRIO_LOW   4
 
-/* GNSS-specific opcodes */
-#define OP_GNSS_SOH        0x01   /* periodic state-of-health        */
-#define OP_GNSS_POS        0x02   /* position telemetry               */
-#define OP_GNSS_VX         0x03   /* ECEF x velocity telemetry        */
-#define OP_GNSS_VY         0x04   /* ECEF y velocity telemetry        */
-#define OP_GNSS_VZ         0x05   /* ECEF z velocity telemetry        */
-#define OP_QUERY_POS       0x61   /* CDH requests current position    */
-#define OP_SET_UPDATE_RATE 0x62   /* CDH sets GNSS update rate        */
-#define OP_GNSS_TIME       0x06   /* GPS week + time-of-week (GPS time, not UTC) */
 #define TIME_INTERVAL_MS   (60*60*1000) /* Send GPS time to CDH every hour */
 
 
@@ -77,10 +68,6 @@ LOG_MODULE_REGISTER(gnss_app, CONFIG_LOG_DEFAULT_LEVEL);
 
 static const struct device *const gpioa  = DEVICE_DT_GET(DT_NODELABEL(gpioa));
 static const struct device *const can_dev = DEVICE_DT_GET(DT_NODELABEL(fdcan1));
-
-/* CAN transceiver pins — adjust to your schematic */
-#define PIN_SHDN    10
-#define PIN_SILENT  9
 
 /* GNSS driver instance */
 static orion_driver_t gnss_driver;
@@ -103,23 +90,15 @@ CAN_MSGQ_DEFINE(rxq, 16);
  */
 
 /**
- * @brief Build and send a single-opcode CAN frame with one data byte.
- * @param dst Destination node ID (or CAN_BROADCAST).
- * @param cls Message class.
- * @param op  Opcode.
- * @param val Single data byte payload.
- */
-
-/**
- * @brief Broadcast a CLS_HEARTBEAT frame announcing this node is alive.
+ * @brief Broadcast an OP_HEARTBEAT frame announcing this node is alive.
  *
  * Sent periodically from main()'s loop at HEARTBEAT_INTERVAL_MS.
  */
 static void send_heartbeat(void)
 {
-    int err = send_simple(can_dev, NODE_ID, CAN_BROADCAST, CLS_HEARTBEAT, OP_HEARTBEAT, 0x00, PRIO_LOW);
+    int err = can_send2(can_dev, NODE_ID, CAN_BROADCAST, OP_HEARTBEAT, PRIO_LOW, 0x00, 0x00);
     if (err) {
-        LOG_WRN("Failed to send OP_SET_MODE: %d", err);
+        LOG_WRN("Failed to send CAN reply: %d", err);
     }
     LOG_INF("TX heartbeat");
 }
@@ -129,17 +108,16 @@ static void send_heartbeat(void)
  *
  * Packs fix mode, satellite count, HDOP/PDOP (scaled by 10 and clamped to
  * 255), configured update rate, and a driver-running status flag into an
- * 8-byte CLS_HEALTH frame addressed to CDH.
+ * 8-byte OP_SOH_GNSS frame addressed to CDH.
  *
  * Payload:
- *   [0] src
- *   [1] OP_GNSS_SOH
- *   [2] fix_mode  (0=none, 2=2D, 3=3D, 4=3D+DGPS)
- *   [3] sv_count
- *   [4] HDOP * 10  (clamped to 255)
- *   [5] PDOP * 10  (clamped to 255)
- *   [6] update_rate_hz
- *   [7] status flags (bit0 = driver running)
+ *   [0] fix_mode  (0=none, 2=2D, 3=3D, 4=3D+DGPS)
+ *   [1] sv_count
+ *   [2] HDOP * 10  (clamped to 255)
+ *   [3] PDOP * 10  (clamped to 255)
+ *   [4] update_rate_hz
+ *   [5] status flags (bit0 = driver running)
+ *   [6..7] unused (0)
  *
  * @todo hdop/pdop are divided by 10 under a comment claiming the source
  *       value is already ×100 ("we want *10"), but the resulting math
@@ -160,19 +138,19 @@ static void send_gnss_soh(void)
 
     uint8_t flags = gnss_driver.running ? 0x01 : 0x00;
 
-    struct can_frame f = {0};
-    f.id    = CAN_ID_FULL(PRIO_LOW, NODE_ID, NODE_CDH, CLS_HEALTH);
-    f.flags = CAN_FRAME_IDE;
-    can_fill_payload(&f, NODE_ID,
-        OP_GNSS_SOH,
+    int err = can_send8(can_dev, NODE_ID, NODE_CDH, OP_SOH_GNSS, PRIO_LOW,
         nav.fix_mode,
         nav.sv_count,
         (uint8_t)hdop10,
         (uint8_t)pdop10,
         gnss_driver.cfg.update_rate_hz,
-        flags
+        flags,
+        0,
+        0
     );
-    can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+    if (err) {
+        LOG_WRN("Failed to send OP_SOH_GNSS: %d", err);
+    }
 
     LOG_INF("TX SOH  fix=%u sv=%u hdop=%u pdop=%u",
             nav.fix_mode, nav.sv_count, (unsigned)hdop10, (unsigned)pdop10);
@@ -184,14 +162,12 @@ static void send_gnss_soh(void)
  *
  * Converts nav.latitude_1e7/longitude_1e7 (1e-7 degree units) down to
  * 1e-4 degree resolution (~11m) and packs each as a signed 24-bit
- * big-endian value into an 8-byte CLS_TELEMETRY frame addressed to CDH.
+ * big-endian value into an 8-byte OP_GNSS_POS frame addressed to CDH.
  * Does nothing if the current nav fix is not valid.
  *
  * Packs lat/lon as scaled int24 for decent resolution in 8 bytes:
- *   [0] src
- *   [1] OP_GNSS_POS
- *   [2..4] latitude  × 1e4, signed 24-bit big-endian  (~11m resolution)
- *   [5..7] longitude × 1e4, signed 24-bit big-endian
+ *   [0..2] latitude  × 1e4, signed 24-bit big-endian  (~11m resolution)
+ *   [3..5] longitude × 1e4, signed 24-bit big-endian
  */
 static void send_gnss_position(orion_nav_data_t *nav)
 {
@@ -199,22 +175,20 @@ static void send_gnss_position(orion_nav_data_t *nav)
     int32_t lat_1e4 = nav->latitude_1e7  / 1000;
     int32_t lon_1e4 = nav->longitude_1e7 / 1000;
 
-    struct can_frame f = {0};
-    f.id    = CAN_ID_FULL(PRIO_MED, NODE_ID, NODE_CDH, CLS_TELEMETRY);
-    f.flags = CAN_FRAME_IDE;
-    f.dlc   = 8;
-    f.data[0] = NODE_ID;
-    f.data[1] = OP_GNSS_POS;
-    /* lat: 24-bit big-endian */
-    f.data[2] = (lat_1e4 >> 16) & 0xFF;
-    f.data[3] = (lat_1e4 >>  8) & 0xFF;
-    f.data[4] = (lat_1e4      ) & 0xFF;
-    /* lon: 24-bit big-endian */
-    f.data[5] = (lon_1e4 >> 16) & 0xFF;
-    f.data[6] = (lon_1e4 >>  8) & 0xFF;
-    f.data[7] = (lon_1e4      ) & 0xFF;
-
-    can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+    /* lat/lon: 24-bit big-endian each; bytes 6..7 unused (0) */
+    int err = can_send8(can_dev, NODE_ID, NODE_CDH, OP_GNSS_POS, PRIO_MED,
+        (lat_1e4 >> 16) & 0xFF,
+        (lat_1e4 >>  8) & 0xFF,
+        (lat_1e4      ) & 0xFF,
+        (lon_1e4 >> 16) & 0xFF,
+        (lon_1e4 >>  8) & 0xFF,
+        (lon_1e4      ) & 0xFF,
+        0,
+        0
+    );
+    if (err) {
+        LOG_WRN("Failed to send OP_GNSS_POS: %d", err);
+    }
 
     double lat = ORION_DEG_FROM_1E7(nav->latitude_1e7);
     double lon = ORION_DEG_FROM_1E7(nav->longitude_1e7);
@@ -223,7 +197,7 @@ static void send_gnss_position(orion_nav_data_t *nav)
 
 
 /**
- * @brief Send one ECEF velocity component to CDH in a CLS_TELEMETRY frame.
+ * @brief Send one ECEF velocity component to CDH in its own telemetry frame.
  * @param v_data Velocity component in cm/s (signed 32-bit).
  * @param op     Which axis: OP_GNSS_VX, OP_GNSS_VY or OP_GNSS_VZ.
  * @param seq    Sequence number shared by the VX/VY/VZ frames of one nav
@@ -231,33 +205,29 @@ static void send_gnss_position(orion_nav_data_t *nav)
  *               together.
  *
  * Frame layout:
- *   [0] src
- *   [1] op (OP_GNSS_VX / VY / VZ)
- *   [2..5] velocity, signed 32-bit big-endian (cm/s)
- *   [6] seq (uint8_t, wraps 255 -> 0)
- *   [7] unused (0)
+ *   [0..3] velocity, signed 32-bit big-endian (cm/s)
+ *   [4] seq (uint8_t, wraps 255 -> 0)
+ *   [5..7] unused (0)
  */
-static void send_gnss_velocity(int32_t v_data, uint8_t op, uint8_t seq)
+static void send_gnss_velocity(int32_t v_data, uint16_t op, uint8_t seq)
 {
-    struct can_frame f = {0};
-    f.id    = CAN_ID_FULL(PRIO_MED, NODE_ID, NODE_CDH, CLS_TELEMETRY);
-    f.flags = CAN_FRAME_IDE;
-    f.dlc   = 8;
-    f.data[0] = NODE_ID;
-    f.data[1] = op;
+    /* velocity: 32-bit big-endian in [0..3]; [4] = sequence number shared by
+     * VX/VY/VZ from the same nav snapshot; [5..7] unused (0) */
+    int err = can_send8(can_dev, NODE_ID, NODE_CDH, op, PRIO_MED,
+        (v_data >> 24) & 0xFF,
+        (v_data >> 16) & 0xFF,
+        (v_data >> 8) & 0xFF,
+        (v_data     ) & 0xFF,
+        seq,
+        0,
+        0,
+        0
+    );
+    if (err) {
+        LOG_WRN("Failed to send velocity op=0x%03X: %d", op, err);
+    }
 
-    /*velocity: 32-bit big-endian*/
-    f.data[2] = (v_data >> 24) & 0xFF;
-    f.data[3] = (v_data >> 16) & 0xFF;
-    f.data[4] = (v_data >> 8) & 0xFF;
-    f.data[5] = (v_data     ) & 0xFF;
-
-    /* sequence number: VX/VY/VZ from the same nav snapshot share it */
-    f.data[6] = seq;
-
-    can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
-
-    LOG_INF("TX VEL  op=0x%02X seq=%u v=%d cm/s", op, seq, v_data);
+    LOG_INF("TX VEL  op=0x%03X seq=%u v=%d cm/s", op, seq, v_data);
 }
 
 /**
@@ -298,10 +268,8 @@ static void send_gnss_master(void)
  * about one nav interval old when sent, plus bus latency.
  *
  * Frame layout:
- *   [0] src
- *   [1] OP_GNSS_TIME
- *   [2..3] GPS week, unsigned 16-bit big-endian
- *   [4..7] time of week in centiseconds, unsigned 32-bit big-endian
+ *   [0..1] GPS week, unsigned 16-bit big-endian
+ *   [2..5] time of week in centiseconds, unsigned 32-bit big-endian
  */
 static bool send_gnss_time(void)
 {
@@ -312,24 +280,21 @@ static bool send_gnss_time(void)
         return false; /*don't send a time if no fix found*/
     }
 
-    struct can_frame f = {0};
-    f.id = CAN_ID_FULL(PRIO_MED, NODE_ID, NODE_CDH, CLS_TELEMETRY);
-    f.flags = CAN_FRAME_IDE;
-    f.dlc = 8;
-    f.data[0] = NODE_ID;
-    f.data[1] = OP_GNSS_TIME;
-
-    /*week: 16-bit big-endian*/
-    f.data[2] = (nav.gnss_week >> 8) & 0xFF;
-    f.data[3] = (nav.gnss_week) & 0xFF;
-
-    /*time-of-week: 32-bit big endian, centiseconds*/
-    f.data[4] = (nav.tow_cs >> 24) & 0xFF;
-    f.data[5] = (nav.tow_cs >> 16) & 0xFF;
-    f.data[6] = (nav.tow_cs >> 8) & 0xFF;
-    f.data[7] = (nav.tow_cs) & 0xFF;
-
-    can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+    /* week: 16-bit big-endian; time-of-week: 32-bit big-endian centiseconds;
+     * bytes 6..7 unused (0) */
+    int err = can_send8(can_dev, NODE_ID, NODE_CDH, OP_GNSS_TIME, PRIO_MED,
+        (nav.gnss_week >> 8) & 0xFF,
+        (nav.gnss_week) & 0xFF,
+        (nav.tow_cs >> 24) & 0xFF,
+        (nav.tow_cs >> 16) & 0xFF,
+        (nav.tow_cs >> 8) & 0xFF,
+        (nav.tow_cs) & 0xFF,
+        0,
+        0
+    );
+    if (err) {
+        LOG_WRN("Failed to send OP_GNSS_TIME: %d", err);
+    }
     LOG_INF("TX TIME week=%u tow=%u.%02u s", nav.gnss_week,
             nav.tow_cs / 100, nav.tow_cs % 100);
     return true;
@@ -347,55 +312,50 @@ static bool send_gnss_time(void)
 
 
 /**
- * @brief Handle an incoming CLS_COMMAND frame from CDH.
- * @param pkt Decoded CAN packet; data[1] is the opcode.
+ * @brief Handle an incoming command frame from CDH.
+ * @param pkt Decoded CAN packet; pkt->op is the opcode.
  *
- * OP_QUERY_POS replies immediately with the current position plus a
- * command-response ack. OP_SET_UPDATE_RATE (data[2] = requested rate in
+ * OP_GET_POS replies immediately with the current position plus an
+ * OP_RESP_GET_POS ack. OP_SET_UPDATE_RATE (data[0] = requested rate in
  * Hz) attempts to apply the new rate via the GNSS driver and replies with
- * the accepted rate on success or 0x00 on failure. Unknown opcodes are
- * logged and dropped.
- *
- * @bug handle_command() reads pkt->data[1]/[2] without checking pkt->dlc
- *      first — a malformed or truncated command frame could read past
- *      the valid portion of the payload.
+ * OP_RESP_SET_UPDATE_RATE carrying the accepted rate on success or 0x00 on
+ * failure.
  */
 static void handle_command(const can_packet_t *pkt)
 {
-    uint8_t opcode = pkt->data[1];
-
-    switch (opcode) {
-    case OP_QUERY_POS:
+    switch (pkt->op) {
+    case OP_GET_POS: {
         /* CDH asked for current position — reply immediately */
         send_gnss_master();
-        int err = send_simple(can_dev, NODE_ID, pkt->src, CLS_CMD_RESP, OP_QUERY_POS, 0x01, PRIO_LOW);
+        int err = can_send2(can_dev, NODE_ID, pkt->src, OP_RESP_GET_POS, PRIO_LOW, 0x01, 0x00);
         if (err) {
-            LOG_WRN("Failed to send OP_SET_MODE: %d", err);
+            LOG_WRN("Failed to send CAN reply: %d", err);
         }
         LOG_INF("RX query position from 0x%02X", pkt->src);
         break;
+    }
 
     case OP_SET_UPDATE_RATE: {
-        /* data[2] = new rate in Hz */
-        uint8_t rate = pkt->data[2];
+        /* data[0] = new rate in Hz */
+        uint8_t rate = pkt->data[0];
         int rc = orion_driver_set_update_rate(&gnss_driver, rate);
         uint8_t ack_val = (rc == 1) ? rate : 0x00;
-        int err = send_simple(can_dev, NODE_ID, pkt->src, CLS_CMD_RESP, OP_SET_UPDATE_RATE, ack_val, PRIO_LOW);
+        int err = can_send2(can_dev, NODE_ID, pkt->src, OP_RESP_SET_UPDATE_RATE, PRIO_LOW, ack_val, 0x00);
         if (err) {
-            LOG_WRN("Failed to send OP_SET_MODE: %d", err);
+            LOG_WRN("Failed to send CAN reply: %d", err);
         }
         LOG_INF("RX set update rate=%u Hz → %s", rate, rc == 1 ? "ACK" : "NACK");
         break;
     }
 
     default:
-        LOG_WRN("Unknown command opcode: 0x%02X", opcode);
+        LOG_WRN("Unknown command opcode: 0x%03X", pkt->op);
         break;
     }
 }
 
 /**
- * @brief Handle a received CLS_HEARTBEAT frame.
+ * @brief Handle a received OP_HEARTBEAT frame.
  * @param pkt Decoded CAN packet.
  *
  * Currently only logs the sender; no liveness table is maintained here.
@@ -406,20 +366,21 @@ static void handle_heartbeat(const can_packet_t *pkt)
 }
 
 /**
- * @brief Route a decoded CAN packet to its message-class handler.
+ * @brief Route a decoded CAN packet to its handler by opcode.
  * @param pkt Decoded CAN packet.
  *
- * Dispatches CLS_HEARTBEAT to handle_heartbeat() and CLS_COMMAND to
- * handle_command(). Unrecognized classes are logged as warnings and
- * dropped.
+ * Dispatches OP_HEARTBEAT to handle_heartbeat() and OP_GET_POS /
+ * OP_SET_UPDATE_RATE to handle_command(). Unrecognized opcodes are logged
+ * as warnings and dropped.
  */
 static void can_dispatch(const can_packet_t *pkt)
 {
-    switch (pkt->msg_class) {
-    case CLS_HEARTBEAT: handle_heartbeat(pkt);  break;
-    case CLS_COMMAND:   handle_command(pkt);     break;
+    switch (pkt->op) {
+    case OP_HEARTBEAT:       handle_heartbeat(pkt); break;
+    case OP_GET_POS:
+    case OP_SET_UPDATE_RATE: handle_command(pkt);   break;
     default:
-        LOG_WRN("Unhandled class: %d from 0x%02X", pkt->msg_class, pkt->src);
+        LOG_WRN("Unhandled op: 0x%03X from 0x%02X", pkt->op, pkt->src);
         break;
     }
 }
@@ -434,21 +395,6 @@ static void can_dispatch(const can_packet_t *pkt)
  * @brief Transceiver wakeup and CAN controller/filter initialization.
  * @{
  */
-
-/**
- * @brief Bring the TCAN3403 transceiver out of shutdown/silent mode.
- *
- * Drives PIN_SHDN and PIN_SILENT inactive, then waits 1 ms for the
- * transceiver to become active.
- */
-static void tcan3403_wakeup(void)
-{
-    gpio_pin_configure(gpioa, PIN_SHDN,   GPIO_OUTPUT_INACTIVE);
-    gpio_pin_configure(gpioa, PIN_SILENT,  GPIO_OUTPUT_INACTIVE);
-    k_msleep(1);
-    LOG_INF("TCAN3403 Awake");
-}
-
 
 /* @} */
 
@@ -479,7 +425,9 @@ static void can_rx_thread(void *a, void *b, void *c)
 
     while (1) {
         if (k_msgq_get(&rxq, &frame, K_FOREVER) == 0) {
-            can_decode(&frame, &pkt);
+            if (can_decode(&frame, &pkt) != 0) {
+                continue;
+            }
             can_dispatch(&pkt);
         }
     }

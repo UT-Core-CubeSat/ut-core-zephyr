@@ -1,8 +1,8 @@
 /**
  * @file can_proto.c
  * @ingroup common
- * @brief Shared UT-CORE CAN bus helpers: frame decode, simple frame send,
- *        and common transceiver/controller bring-up.
+ * @brief Shared UT-CORE CAN bus helpers: frame decode, fixed-length frame
+ *        send, and common transceiver/controller bring-up.
  */
 
 #include "can_proto.h"
@@ -49,6 +49,35 @@ static void can_tx_done(const struct device *dev, int error, void *user_data)
 uint32_t can_proto_tx_error_count(void)
 {
     return (uint32_t)atomic_get(&tx_error_count);
+}
+
+/** Count of received frames rejected by can_decode() for a DLC/opcode mismatch. */
+static atomic_t rx_len_error_count;
+
+uint32_t can_proto_rx_len_error_count(void)
+{
+    return (uint32_t)atomic_get(&rx_len_error_count);
+}
+
+int tcan3403_wakeup(void)
+{
+#if DT_NODE_HAS_STATUS(DT_NODELABEL(gpioa), okay)
+    const struct device *gpioa = DEVICE_DT_GET(DT_NODELABEL(gpioa));
+
+    if (!device_is_ready(gpioa))
+    {
+        LOG_ERR("GPIOA not ready; cannot wake TCAN3403");
+        return -ENODEV;
+    }
+
+    gpio_pin_configure(gpioa, CAN_TCAN_SHDN_PIN, GPIO_OUTPUT_INACTIVE);
+    gpio_pin_configure(gpioa, CAN_TCAN_SILENT_PIN, GPIO_OUTPUT_INACTIVE);
+    k_msleep(1);
+    LOG_INF("TCAN3403 Awake");
+    return 0;
+#else
+    return -ENOTSUP;
+#endif
 }
 
 /**
@@ -154,30 +183,52 @@ int can_setup(const struct device *can_dev, uint8_t my_id_node, struct k_msgq *r
  * @brief Decode a packet from the can frame
  */
 
-void can_decode(const struct can_frame *f, can_packet_t *pkt)
+int can_decode(const struct can_frame *f, can_packet_t *pkt)
 {
     uint32_t id = f->id;
-    pkt->priority = (id >> 26) & 0x07;
-    pkt->src = (id >> 14) & 0xFF;
-    pkt->dst = (id >> 6) & 0xFF;
-    pkt->msg_class = id & 0x3F;
-    pkt->dlc = f->dlc;
-    memcpy(pkt->data, f->data, f->dlc);
+    uint8_t len = (f->dlc > 8) ? 8 : f->dlc;
+
+    pkt->priority = CAN_ID_PRIO(id);
+    pkt->src = CAN_ID_SRC(id);
+    pkt->dst = CAN_ID_DST(id);
+    pkt->op = CAN_ID_OP(id);
+    pkt->dlc = len;
+    memset(pkt->data, 0, sizeof(pkt->data));
+    memcpy(pkt->data, f->data, len);
+
+    if (len != can_op_len(pkt->op))
+    {
+        uint32_t n = (uint32_t)atomic_inc(&rx_len_error_count) + 1U;
+        if ((n & (n - 1U)) == 0U) /* log on 1st, 2nd, 4th, 8th... occurrence */
+        {
+            LOG_WRN("Dropped frame op=0x%03X: dlc=%u, expected %u (%u so far)",
+                    pkt->op, len, can_op_len(pkt->op), n);
+        }
+        return -EMSGSIZE;
+    }
+    return 0;
 }
 
 /**
- * @brief Build and send a single-opcode CAN frame.
+ * @brief Build and send one CAN frame of a fixed payload length.
  */
 
-int send_simple(const struct device *can_dev, uint8_t src, uint8_t dst,
-                uint8_t cls, uint8_t op, uint8_t val, uint8_t prio)
+int can_send_frame(const struct device *can_dev, uint8_t src, uint8_t dst,
+                   uint16_t op, uint8_t prio, const uint8_t *data, uint8_t len)
 {
     struct can_frame f = {0};
 
-    f.id = CAN_ID_FULL(prio, src, dst, cls);
-    f.flags = CAN_FRAME_IDE;
+    if (len != can_op_len(op) || data == NULL)
+    {
+        LOG_ERR("can_send_frame: op=0x%03X expects %u bytes, got %u",
+                op, can_op_len(op), len);
+        return -EINVAL;
+    }
 
-    can_fill_payload(&f, src, op, val, 0, 0, 0, 0, 0);
+    f.id = CAN_ID_FULL(prio, src, dst, op);
+    f.flags = CAN_FRAME_IDE;
+    f.dlc = len;
+    memcpy(f.data, data, len);
 
     /* can_tx_done makes this non-blocking: see its doc comment for why a
      * NULL callback here could hang the calling thread indefinitely. */

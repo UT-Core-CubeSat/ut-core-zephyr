@@ -44,7 +44,6 @@ LOG_MODULE_REGISTER(solarcon, LOG_LEVEL_INF);
 #define NODE_ID         0x08    /* Solar Conglomerator */
 #define NODE_CDH        0x01
 #define NODE_ADCS       0x04
-#define CAN_BROADCAST   0xFF
 
 /* Priority levels */
 #define PRIO_HIGH  0
@@ -60,10 +59,6 @@ static const struct device *const pwm1_dev = DEVICE_DT_GET(DT_NODELABEL(pwm1));
 static const struct device *const pwm3_dev = DEVICE_DT_GET(DT_NODELABEL(pwm3));
 static const struct device *const can_dev  = DEVICE_DT_GET(DT_NODELABEL(fdcan1));
 static const struct device *i2c_bus = DEVICE_DT_GET(DT_NODELABEL(i2c1));
-
-/* Transceiver pins — adjust to your schematic */
-#define PIN_SHDN    10
-#define PIN_SILENT  9
 
 #define PWM_FREQ    20000U
 #define PWM_PERIOD  PWM_HZ(PWM_FREQ)
@@ -193,29 +188,13 @@ static inline int16_t unpack_be16(uint8_t msb, uint8_t lsb)
 /* ===================================================== */
 
 /**
- * @brief Build and send a single-opcode CAN frame with one data byte.
- * @param dst Destination node ID (or CAN_BROADCAST).
- * @param cls Message class.
- * @param op  Opcode.
- * @param val Single data byte payload.
- */
-
-/**
  * @brief Broadcast a heartbeat frame announcing this node is alive.
- *
- * data[1] = 0x01 means "alive and nominal".
- *
- * @todo Uses a raw opcode literal (0x30) instead of a named constant
- *       like OP_HEARTBEAT used elsewhere in the codebase (e.g. CDH,
- *       EPS, GNSS all use OP_HEARTBEAT) — worth confirming whether
- *       0x30 is intentional or a copy-paste inconsistency, since CDH's
- *       liveness tracking may expect a specific heartbeat opcode.
  */
 static void send_heartbeat(void)
 {
-    int err = send_simple(can_dev, NODE_ID, CAN_BROADCAST, CLS_HEARTBEAT, OP_HEARTBEAT, 0x00, PRIO_LOW);
+    int err = can_send2(can_dev, NODE_ID, CAN_BROADCAST, OP_HEARTBEAT, PRIO_LOW, 0, 0);
     if (err) {
-        LOG_WRN("Failed to send OP_SET_MODE: %d", err);
+        LOG_WRN("Failed to send OP_HEARTBEAT: %d", err);
     }
     LOG_DBG("TX heartbeat");
 }
@@ -225,13 +204,12 @@ static void send_heartbeat(void)
  *        4 onboard temperature readings.
  *
  * Payload layout:
- *   [0] src
- *   [1] opcode (0x01 = SOH)
- *   [2] current duty %
- *   [3] temp sensor 1  (placeholder — raw ADC / 2 or °C)
- *   [4] temp sensor 2
- *   [5] temp sensor 3
- *   [6] temp sensor 4
+ *   [0] current duty %
+ *   [1] temp sensor 1  (placeholder — raw ADC / 2 or °C)
+ *   [2] temp sensor 2
+ *   [3] temp sensor 3
+ *   [4] temp sensor 4
+ *   [5..6] reserved (0)
  *   [7] status flags
  *
  * @todo The payload comment marks status flags as a placeholder and
@@ -242,10 +220,6 @@ static void send_heartbeat(void)
  */
 static void send_soh(void)
 {
-    struct can_frame f = {0};
-    f.id    = CAN_ID_FULL(PRIO_LOW, NODE_ID, NODE_CDH, CLS_HEALTH);
-    f.flags = CAN_FRAME_IDE;
-
     uint8_t duty = (uint8_t)current_duty_percent;
 
     /* Read all temp sensors */
@@ -264,14 +238,16 @@ static void send_soh(void)
         }
     }
 
-    can_fill_payload(&f, NODE_ID,
-        0x01,           /* opcode: SOH */
+    int err = can_send8(can_dev, NODE_ID, NODE_CDH, OP_SOH_SOLAR, PRIO_LOW,
         duty,
         temps[0], temps[1], temps[2], temps[3],
+        0x00,           /* reserved */
+        0x00,           /* reserved */
         0x00            /* status flags */
     );
-
-    can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+    if (err) {
+        LOG_WRN("Failed to send OP_SOH_SOLAR: %d", err);
+    }
 
     /* Print to console */
     LOG_INF("TX SOH  duty=%u%%  temps: %d/%d ok", duty, ok, NUM_TEMP_SENSORS);
@@ -282,16 +258,15 @@ static void send_soh(void)
 /* ===================================================== */
 
 /**
- * @brief Handle an incoming CLS_COMMAND frame.
- * @param pkt Decoded CAN packet; data[1] is the opcode.
+ * @brief Handle an incoming OP_SET_MAG_DIPOLE frame.
+ * @param pkt Decoded CAN packet.
  *
  * OP_SET_MAG_DIPOLE: unpacks a big-endian mx/my/mz int16 vector from
- * data[2..7], then does sign-only (not magnitude-proportional) face
+ * data[0..5], then does sign-only (not magnitude-proportional) face
  * selection — each axis's positive or negative face is driven to 100%
  * duty if that axis's component is positive/negative respectively, 0%
  * if zero. Z is decoded but discarded (no Z-axis torquers on this board
- * revision). Replies with a CLS_CMD_RESP ack. Unknown opcodes are
- * logged and dropped.
+ * revision). Replies with an OP_RESP_SET_MAG_DIPOLE ack.
  *
  * @todo mx/my/mz magnitude is completely ignored — only the sign of each
  *       component is used, so a command requesting a small dipole moment
@@ -303,14 +278,12 @@ static void send_soh(void)
  */
 static void handle_command(const can_packet_t *pkt)
 {
-    uint8_t opcode = pkt->data[1];
-
-    switch (opcode) {
+    switch (pkt->op) {
     case OP_SET_MAG_DIPOLE: {
-        /* ADCS packs mx/my/mz in p2..p7 (big-endian int16). */
-        int16_t mx = unpack_be16(pkt->data[2], pkt->data[3]);
-        int16_t my = unpack_be16(pkt->data[4], pkt->data[5]);
-        int16_t mz = unpack_be16(pkt->data[6], pkt->data[7]);
+        /* ADCS packs mx/my/mz in p0..p5 (big-endian int16). */
+        int16_t mx = unpack_be16(pkt->data[0], pkt->data[1]);
+        int16_t my = unpack_be16(pkt->data[2], pkt->data[3]);
+        int16_t mz = unpack_be16(pkt->data[4], pkt->data[5]);
 
         /* Sign-based face selection:
          *   +X -> x_pos=100, x_neg=0
@@ -330,20 +303,20 @@ static void handle_command(const can_packet_t *pkt)
                 mx, my, mz, x_pos, x_neg, y_pos, y_neg);
 
         /* ACK back to sender */
-        int err = send_simple(can_dev, NODE_ID, pkt->src, CLS_CMD_RESP, OP_SET_MAG_DIPOLE, (uint8_t)current_duty_percent, PRIO_LOW);
+        int err = can_send2(can_dev, NODE_ID, pkt->src, OP_RESP_SET_MAG_DIPOLE, PRIO_LOW,
+                            (uint8_t)current_duty_percent, 0);
         if (err) {
-            LOG_WRN("Failed to send OP_SET_MODE: %d", err);
+            LOG_WRN("Failed to send OP_RESP_SET_MAG_DIPOLE: %d", err);
         }
         break;
     }
     default:
-        LOG_WRN("Unknown command opcode: 0x%02X", opcode);
         break;
     }
 }
 
 /**
- * @brief Handle a received CLS_HEARTBEAT frame.
+ * @brief Handle a received OP_HEARTBEAT frame.
  * @param pkt Decoded CAN packet.
  *
  * Currently only logs the sender; no liveness table is maintained here.
@@ -354,20 +327,20 @@ static void handle_heartbeat(const can_packet_t *pkt)
 }
 
 /**
- * @brief Route a decoded CAN packet to its message-class handler.
+ * @brief Route a decoded CAN packet to its opcode handler.
  * @param pkt Decoded CAN packet.
  *
- * Dispatches CLS_HEARTBEAT to handle_heartbeat() and CLS_COMMAND to
- * handle_command(). Unrecognized classes are logged as warnings and
+ * Dispatches OP_HEARTBEAT to handle_heartbeat() and OP_SET_MAG_DIPOLE to
+ * handle_command(). Unrecognized opcodes are logged as warnings and
  * dropped.
  */
 static void can_dispatch(const can_packet_t *pkt)
 {
-    switch (pkt->msg_class) {
-    case CLS_HEARTBEAT: handle_heartbeat(pkt);  break;
-    case CLS_COMMAND:   handle_command(pkt);     break;
+    switch (pkt->op) {
+    case OP_HEARTBEAT:       handle_heartbeat(pkt);  break;
+    case OP_SET_MAG_DIPOLE:  handle_command(pkt);    break;
     default:
-        LOG_WRN("Unhandled class: %d from 0x%02X", pkt->msg_class, pkt->src);
+        LOG_WRN("Unhandled opcode: 0x%03X from 0x%02X", pkt->op, pkt->src);
         break;
     }
 }
@@ -375,20 +348,6 @@ static void can_dispatch(const can_packet_t *pkt)
 /* ===================================================== */
 /* ================= CAN SETUP ========================= */
 /* ===================================================== */
-
-/**
- * @brief Bring the TCAN3403 transceiver out of shutdown/silent mode.
- *
- * Drives PIN_SHDN and PIN_SILENT inactive, then waits 1 ms for the
- * transceiver to become active.
- */
-static void tcan3403_wakeup(void)
-{
-    gpio_pin_configure(gpioa, PIN_SHDN,   GPIO_OUTPUT_INACTIVE);
-    gpio_pin_configure(gpioa, PIN_SILENT,  GPIO_OUTPUT_INACTIVE);
-    k_msleep(1);
-    LOG_INF("TCAN3403 Awake");
-}
 
 /* ===================================================== */
 /* ================= CAN RX THREAD ===================== */
@@ -411,7 +370,9 @@ static void can_rx_thread(void *a, void *b, void *c)
 
     while (1) {
         if (k_msgq_get(&rxq, &frame, K_FOREVER) == 0) {
-            can_decode(&frame, &pkt);
+            if (can_decode(&frame, &pkt) != 0) {
+                continue;
+            }
             can_dispatch(&pkt);
         }
     }
@@ -497,8 +458,11 @@ int main(void)
     face_duty_percent[MTQ_FACE_Y_NEG] = 0;
 
     /* CAN bus init */
-    tcan3403_wakeup();
-    int err = can_setup(can_dev, NODE_ID, &rxq, NULL);
+    int err = tcan3403_wakeup();
+    if (err) {
+        LOG_ERR("TCAN3403 wakeup failed: %d", err);
+    }
+    err = can_setup(can_dev, NODE_ID, &rxq, NULL);
     if (err) {
         LOG_ERR("CAN Setup failed: %d", err);
         return err;

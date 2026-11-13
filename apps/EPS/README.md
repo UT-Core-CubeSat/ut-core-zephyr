@@ -26,4 +26,4 @@ EPS is a multi-threaded design, simpler than CDH's 7-thread design:
 | Thread | Role |
 |---|---|
 | `main` | Initializes GPIOs, INA3221 sensors, and the CAN bus; then loops forever, sending a heartbeat every `HEARTBEAT_INTERVAL_MS` and sampling/printing telemetry every `TELEMETRY_INTERVAL_MS` |
-| `can_rx_thread` | Waits for incoming CAN frames; on `OP_SET_PWR_STATE`, calls `enable_load()`/`disable_load()` and replies with a `CLS_CMD_RESP` status frame|
+| `can_rx_thread` | Waits for incoming CAN frames; on `OP_SET_PWR_STATE`, calls `enable_load()`/`disable_load()` and replies with an `OP_RESP_SET_PWR_STATE` status frame|

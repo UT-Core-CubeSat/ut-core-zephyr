@@ -8,7 +8,7 @@
  * this board answers as GNSS_ID; it also sends ground OP_SET_MODE commands
  * as COMMS_ID (no COMMS board is on the bus yet). Results print over RTT.
  *
- * CDH's mode is read from its heartbeat (payload byte 2).
+ * CDH's mode is read from its heartbeat (payload byte 0).
  *
  * Steps:
  *   0. Wait for a CDH heartbeat.
@@ -34,8 +34,6 @@
 #define NODE_ID GNSS_ID /**< Impersonate GNSS: CDH ignores positions from any other node */
 #define PRIO_MED 2      /**< Priority the GNSS app uses for position frames */
 #define PRIO_LOW 4
-
-#define OP_GNSS_POS 0x02 /**< GNSS position telemetry (apps/GNSS/src/main.c) */
 
 /* CDH modes as broadcast in its heartbeat; must match cdh_mode_t in apps/CDH/src/main.c */
 #define CDH_MODE_SAFE 0
@@ -145,10 +143,10 @@ static void send_fix(const test_fix_t *fix)
     int32_t lon_1e4 = fix->lon_e7 / 1000;
 
     struct can_frame f = {0};
-    f.id = CAN_ID_FULL(PRIO_MED, NODE_ID, CDH_ID, CLS_TELEMETRY);
-    can_fill_payload(&f, NODE_ID, OP_GNSS_POS,
+    f.id = CAN_ID_FULL(PRIO_MED, NODE_ID, CDH_ID, OP_GNSS_POS);
+    can_fill_payload(&f,
                      (lat_1e4 >> 16) & 0xFF, (lat_1e4 >> 8) & 0xFF, lat_1e4 & 0xFF,
-                     (lon_1e4 >> 16) & 0xFF, (lon_1e4 >> 8) & 0xFF, lon_1e4 & 0xFF);
+                     (lon_1e4 >> 16) & 0xFF, (lon_1e4 >> 8) & 0xFF, lon_1e4 & 0xFF, 0, 0);
 
     int err = can_send(can_dev, &f, K_NO_WAIT, tx_done, NULL);
     if (err)
@@ -165,7 +163,7 @@ static void send_ground_mode(uint8_t mode)
 {
     printk("  ground -> CDH: OP_SET_MODE %s\n", mode_str(mode));
 
-    int err = send_simple(can_dev, COMMS_ID, CDH_ID, CLS_COMMAND, OP_SET_MODE, mode, PRIO_LOW);
+    int err = send_simple(can_dev, COMMS_ID, CDH_ID, OP_SET_MODE, mode, PRIO_LOW);
     if (err)
     {
         printk("  warning: OP_SET_MODE not queued: %d\n", err);
@@ -186,14 +184,14 @@ static void pump(int32_t wait_ms)
         can_packet_t pkt;
         can_decode(&rx, &pkt);
 
-        if (pkt.src == CDH_ID && pkt.msg_class == CLS_HEARTBEAT &&
-            pkt.dlc >= 3 && pkt.data[1] == OP_HEARTBEAT)
+        if (pkt.src == CDH_ID && pkt.op == OP_HEARTBEAT &&
+            pkt.dlc >= 1)
         {
-            if (pkt.data[2] != cdh_mode)
+            if (pkt.data[0] != cdh_mode)
             {
-                printk("  CDH heartbeat: mode %s\n", mode_str(pkt.data[2]));
+                printk("  CDH heartbeat: mode %s\n", mode_str(pkt.data[0]));
             }
-            cdh_mode = pkt.data[2];
+            cdh_mode = pkt.data[0];
         }
     }
 

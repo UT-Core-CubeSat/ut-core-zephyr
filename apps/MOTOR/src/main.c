@@ -1035,10 +1035,10 @@ static bool set_motor_rpm_ref(unsigned motor_idx, float rpm_ref)
  * @brief Handle an incoming CAN command frame from ADCS.
  * @param f Raw CAN frame.
  *
- * Filters for CLS_COMMAND frames from ADCS_ID addressed to this node or
- * broadcast, with opcode OP_SET_WHEEL_RPM and at least 5 data bytes.
- * data[2] selects the target motor (0 = all motors, 1-4 = specific
- * motor); data[3:4] is the signed RPM setpoint, big-endian.
+ * Filters for OP_SET_WHEEL_RPM frames from ADCS_ID addressed to this node
+ * or broadcast, with at least 3 data bytes.
+ * data[0] selects the target motor (0 = all motors, 1-4 = specific
+ * motor); data[1:2] is the signed RPM setpoint, big-endian.
  *
  * @bug motor_sel is checked against `> NMOTORS`, but valid selectors
  *      should be 1..NMOTORS — worth double-checking this bounds check
@@ -1048,22 +1048,22 @@ static bool set_motor_rpm_ref(unsigned motor_idx, float rpm_ref)
  */
 static void handle_can_command(const struct can_frame *f)
 {
-    const uint8_t src = (uint8_t)((f->id >> 14) & 0xFFU);
-    const uint8_t dst = (uint8_t)((f->id >> 6) & 0xFFU);
-    const uint8_t msg_class = (uint8_t)(f->id & 0x3FU);
+    const uint8_t src = (uint8_t)CAN_ID_SRC(f->id);
+    const uint8_t dst = (uint8_t)CAN_ID_DST(f->id);
+    const uint16_t op = (uint16_t)CAN_ID_OP(f->id);
 
-    if (msg_class != CLS_COMMAND || src != ADCS_ID) {
+    if (op != OP_SET_WHEEL_RPM || src != ADCS_ID) {
         return;
     }
     if (dst != MOTOR_ID && dst != CAN_BROADCAST) {
         return;
     }
-    if (f->dlc < 5U || f->data[1] != OP_SET_WHEEL_RPM) {
+    if (f->dlc < 3U) {
         return;
     }
 
-    const uint8_t motor_sel = f->data[2];
-    const int16_t rpm_i16 = unpack_be_i16(f->data[3], f->data[4]);
+    const uint8_t motor_sel = f->data[0];
+    const int16_t rpm_i16 = unpack_be_i16(f->data[1], f->data[2]);
 
     if (motor_sel == 0U) {
         for (unsigned mi = 0; mi < NMOTORS; mi++) {
@@ -1110,7 +1110,7 @@ static void handle_can_command(const struct can_frame *f)
  */
 
 /**
- * @brief Broadcast a CLS_HEARTBEAT frame with a rolling sequence number.
+ * @brief Broadcast an OP_HEARTBEAT frame with a rolling sequence number.
  * @param seq Sequence number to encode in the frame (16-bit, big-endian).
  */
 static void send_can_beacon(uint32_t seq)
@@ -1118,10 +1118,10 @@ static void send_can_beacon(uint32_t seq)
     struct can_frame f = {0};
     int ret;
 
-    f.id = CAN_ID_FULL(2U, MOTOR_ID, CAN_BROADCAST, CLS_HEARTBEAT);
-    can_fill_payload(&f, MOTOR_ID, OP_HEARTBEAT,
+    f.id = CAN_ID_FULL(2U, MOTOR_ID, CAN_BROADCAST, OP_HEARTBEAT);
+    can_fill_payload(&f,
              (uint8_t)((seq >> 8) & 0xFFU), (uint8_t)(seq & 0xFFU),
-             0, 0, 0, 0);
+             0, 0, 0, 0, 0, 0);
 
     ret = can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
     if (ret != 0) {
@@ -1138,11 +1138,11 @@ static void send_soh_frame(void)
     struct can_frame f = {0};
     int ret;
 
-    f.id = CAN_ID_FULL(2U, MOTOR_ID, CAN_BROADCAST, CLS_HEALTH);
-    can_fill_payload(&f, MOTOR_ID, OP_HEARTBEAT,
+    f.id = CAN_ID_FULL(2U, MOTOR_ID, CAN_BROADCAST, OP_SOH_MOTOR);
+    can_fill_payload(&f,
              (uint8_t)gpio_pin_get_dt(&fault_in),
              (uint8_t)gpio_pin_get_dt(&kill_in),
-             (uint8_t)atomic_get(&app_run), 0, 0, 0);
+             (uint8_t)atomic_get(&app_run), 0, 0, 0, 0, 0);
 
     ret = can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
     if (ret != 0) {
@@ -1169,9 +1169,9 @@ static void send_motor_rpm_frame(unsigned mi, float rpm_signed)
     rpm_i16 = (int16_t)lrintf(clampf(rpm_signed, -32768.f, 32767.f));
     pack_be_i16(rpm_i16, &rpm_msb, &rpm_lsb);
 
-    f.id = CAN_ID_FULL(2U, MOTOR_ID, CAN_BROADCAST, CLS_TELEMETRY);
-    can_fill_payload(&f, MOTOR_ID, OP_SET_WHEEL_RPM,
-             (uint8_t)(mi + 1U), rpm_msb, rpm_lsb, 0, 0, 0);
+    f.id = CAN_ID_FULL(2U, MOTOR_ID, CAN_BROADCAST, OP_MOTOR_WHEEL_RPM);
+    can_fill_payload(&f,
+             (uint8_t)(mi + 1U), rpm_msb, rpm_lsb, 0, 0, 0, 0, 0);
 
     ret = can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
     if (ret != 0) {
@@ -1392,7 +1392,7 @@ static void can_process_thread(void *arg1, void *arg2, void *arg3)
             continue;
         }
 
-        if (pkt.msg_class == CLS_COMMAND) {
+        if (pkt.op == OP_SET_WHEEL_RPM) {
             handle_can_command(&frame);
         }
     }

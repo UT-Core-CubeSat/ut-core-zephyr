@@ -6,7 +6,7 @@ Back to [Contents](@ref index)
 
 GNSS is the UT-CORE CubeSat's position board, running Zephyr and driving an Orion B16 GNSS receiver over UART, reporting fix data to CDH over a CAN bus.
 
-A background thread drains incoming CAN frames and dispatches them by message class, handling heartbeat messages and commands from CDH (position queries, update-rate changes). The main loop broadcasts its own heartbeat, sends periodic state-of-health frames (fix mode, satellite count, DOP), and reports position telemetry as scaled lat/lon values, alongside driver stats logged to console.
+A background thread drains incoming CAN frames and dispatches them by opcode, handling heartbeat messages and commands from CDH (position queries, update-rate changes). The main loop broadcasts its own heartbeat, sends periodic state-of-health frames (fix mode, satellite count, DOP), and reports position telemetry as scaled lat/lon values, alongside driver stats logged to console.
 
 A nav-update callback registered with the Orion driver fires whenever a new fix is available, logging fix mode, position, altitude, and satellite count.
 
@@ -23,7 +23,7 @@ A nav-update callback registered with the Orion driver fires whenever a new fix 
 |---|---|
 | `orion_driver_*` | Orion B16 GNSS driver: init, start, nav data, config, stats |
 | `on_nav_update` | Callback fired on every new nav fix from the driver |
-| `can_rx_thread` | Drains incoming CAN frames, decodes and dispatches by message class |
+| `can_rx_thread` | Drains incoming CAN frames, decodes and dispatches by opcode |
 | Main loop | Broadcasts heartbeat, state-of-health, and position telemetry on independent fixed intervals |
 
 On boot, the firmware verifies GPIOA is ready, initializes and starts the GNSS driver, applies default CubeSat GNSS config, then wakes the CAN transceiver and brings up the bus before entering the main loop.

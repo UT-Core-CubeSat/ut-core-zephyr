@@ -171,7 +171,6 @@ LOG_MODULE_REGISTER(ut_core, LOG_LEVEL_INF);
 #endif
 #define DST_ME      NODE_ID
 #define PRIO_LOW    3 
-#define CLS_CORE    0
 
 #pragma message "NODE_ID=" STR(NODE_ID)
 
@@ -245,18 +244,18 @@ int main(void)
         int64_t now = k_uptime_get();
         if (now - last_hb >= 1000) {
             last_hb = now;
-            int err = send_simple(can_dev, NODE_ID, CAN_BROADCAST, CLS_HEARTBEAT, OP_HEARTBEAT, 0, PRIO_LOW);
+            int err = send_simple(can_dev, NODE_ID, CAN_BROADCAST, OP_HEARTBEAT, 0, PRIO_LOW);
             if (err) {
-                LOG_WRN("Failed to send OP_SET_MODE: %d", err);
+                LOG_WRN("Failed to send OP_HEARTBEAT: %d", err);
             }
             LOG_INF("TX: Heartbeat");
         }
 
         struct can_frame rx;
         if (k_msgq_get(&rxq, &rx, K_MSEC(100)) == 0) {
-            uint8_t src = rx.data[0];
-            uint8_t op  = rx.data[1];
-            uint8_t val = rx.data[2]; 
+            uint8_t  src = CAN_ID_SRC(rx.id);
+            uint16_t op  = CAN_ID_OP(rx.id);
+            uint8_t  val = rx.data[0];
 
             if (op == OP_SET_LED) {
                 LOG_INF("RX: CMD SET LED %d from 0x%x", val, src);

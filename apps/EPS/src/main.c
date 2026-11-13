@@ -6,9 +6,9 @@
  * Initializes the 12 load and 4 motor GPIOs and the 7 INA3221 power monitor
  * chips, wakes the TCAN3403 CAN transceiver, and brings up the CAN bus.
  *
- * A CAN RX thread decodes incoming frames and dispatches them: CLS_HEARTBEAT
+ * A CAN RX thread decodes incoming frames and dispatches them: OP_HEARTBEAT
  * frames are logged, and OP_SET_PWR_STATE commands call enable_load()/
- * disable_load() directly, replying with a CLS_CMD_RESP status frame.
+ * disable_load() directly, replying with an OP_RESP_SET_PWR_STATE status frame.
  * enable_motor()/disable_motor() exist but aren't yet wired to any CAN
  * command.
  *
@@ -51,12 +51,9 @@ LOG_MODULE_REGISTER(eps, LOG_LEVEL_INF);
 #define PRIO_LOW    4
 
 static const struct device *const can_dev = DEVICE_DT_GET(DT_NODELABEL(fdcan1));
-static const struct device *const gpioa   = DEVICE_DT_GET(DT_NODELABEL(gpioa));
 /** @cond */ /* Hidden from Doxygen, or it will mistake this as a function */
 CAN_MSGQ_DEFINE(rxq, 16);
 /** @endcond */
-#define PIN_SHDN    10
-#define PIN_SILENT  9
 
 /* ── LED ─────────────────────────────────────────────────────────── */
 
@@ -240,24 +237,24 @@ void print_telemetry(void)
 /* ── CAN TX ──────────────────────────────────────────────────────── */
 
 /**
- * @brief Broadcast a CLS_HEARTBEAT frame announcing this node is alive.
+ * @brief Broadcast an OP_HEARTBEAT frame announcing this node is alive.
  *
  * Sent periodically from main()'s loop at HEARTBEAT_INTERVAL_MS.
  */
 static void send_heartbeat(void)
 {
-    struct can_frame f = {0};
-    f.id    = CAN_ID_FULL(PRIO_LOW, NODE_ID, CAN_BROADCAST, CLS_HEARTBEAT);
-    f.flags = CAN_FRAME_IDE;
-    can_fill_payload(&f, NODE_ID, OP_HEARTBEAT, 0x00, 0, 0, 0, 0, 0);
-    can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+    int err = can_send2(can_dev, NODE_ID, CAN_BROADCAST, OP_HEARTBEAT, PRIO_LOW, 0, 0);
+    if (err) {
+        LOG_ERR("heartbeat send failed: %d", err);
+        return;
+    }
     LOG_INF("TX heartbeat");
 }
 
 /* ── CAN RX ──────────────────────────────────────────────────────── */
 
 /**
- * @brief Handle a received CLS_HEARTBEAT frame.
+ * @brief Handle a received OP_HEARTBEAT frame.
  * @param pkt Decoded CAN packet.
  *
  * Currently only logs the sender; no liveness table is maintained on EPS.
@@ -269,18 +266,18 @@ static void handle_heartbeat(const can_packet_t *pkt)
 
 /**
  * @brief Handle an OP_SET_PWR_STATE command by enabling or disabling the
- *        requested load, then replying with a CLS_CMD_RESP status frame.
- * @param pkt Decoded CAN packet; data[2] is the load number (1-12),
- *            data[3] is the requested state (1 = enable, 0 = disable).
+ *        requested load, then replying with an OP_RESP_SET_PWR_STATE status frame.
+ * @param pkt Decoded CAN packet; data[0] is the load number (1-12),
+ *            data[1] is the requested state (1 = enable, 0 = disable).
  *
- * Sends a response frame back to the requester with data[4] set to 0x00
+ * Sends a response frame back to the requester with data[2] set to 0x00
  * on success or 0x01 on error, based on the return value of
  * enable_load()/disable_load().
  */
 static void handle_set_pwr_state(const can_packet_t *pkt)
 {
-    uint8_t load_num = pkt->data[2];   /* p2: load number (1..12) */
-    uint8_t state    = pkt->data[3];   /* p3: 1 = enable, 0 = disable */
+    uint8_t load_num = pkt->data[0];   /* p0: load number (1..12) */
+    uint8_t state    = pkt->data[1];   /* p1: 1 = enable, 0 = disable */
     int ret;
 
     if (state) {
@@ -292,42 +289,32 @@ static void handle_set_pwr_state(const can_packet_t *pkt)
     LOG_INF("SET_PWR_STATE load=%d state=%d result=%d", load_num, state, ret);
 
     /* Send command response back to the requester */
-    struct can_frame f = {0};
-    f.id    = CAN_ID_FULL(PRIO_LOW, NODE_ID, pkt->src, CLS_CMD_RESP);
-    f.flags = CAN_FRAME_IDE;
     uint8_t status = (ret == 0) ? 0x00 : 0x01;  /* 0x00 = success, 0x01 = error */
-    can_fill_payload(&f, NODE_ID, OP_SET_PWR_STATE, load_num, state, status, 0, 0, 0);
-    can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+    int err = can_send4(can_dev, NODE_ID, pkt->src, OP_RESP_SET_PWR_STATE, PRIO_LOW,
+                        load_num, state, status, 0);
+    if (err) {
+        LOG_ERR("RESP_SET_PWR_STATE send failed: %d", err);
+    }
 }
 
 /**
- * @brief Route a decoded CAN packet to its message-class/opcode handler.
+ * @brief Route a decoded CAN packet to its opcode handler.
  * @param pkt Decoded CAN packet.
  *
- * Dispatches CLS_HEARTBEAT to handle_heartbeat() and CLS_COMMAND frames
- * with opcode OP_SET_PWR_STATE to handle_set_pwr_state(). Unrecognized
- * classes or opcodes are logged as warnings and dropped.
+ * Dispatches OP_HEARTBEAT to handle_heartbeat() and OP_SET_PWR_STATE
+ * to handle_set_pwr_state(). Unrecognized opcodes are logged as warnings and dropped.
  */
 static void can_dispatch(const can_packet_t *pkt)
 {
-    switch (pkt->msg_class) {
-    case CLS_HEARTBEAT:
+    switch (pkt->op) {
+    case OP_HEARTBEAT:
         handle_heartbeat(pkt);
         break;
-    case CLS_COMMAND: {
-        uint8_t op = pkt->data[1];
-        switch (op) {
-        case OP_SET_PWR_STATE:
-            handle_set_pwr_state(pkt);
-            break;
-        default:
-            LOG_WRN("Unknown command opcode: 0x%02X from 0x%02X", op, pkt->src);
-            break;
-        }
+    case OP_SET_PWR_STATE:
+        handle_set_pwr_state(pkt);
         break;
-    }
     default:
-        LOG_WRN("Unhandled class: %d from 0x%02X", pkt->msg_class, pkt->src);
+        LOG_WRN("Unhandled opcode: 0x%03X from 0x%02X", pkt->op, pkt->src);
         break;
     }
 }
@@ -351,7 +338,9 @@ static void can_rx_thread(void *a, void *b, void *c)
 
     while (1) {
         if (k_msgq_get(&rxq, &frame, K_FOREVER) == 0) {
-            can_decode(&frame, &pkt);
+            if (can_decode(&frame, &pkt) != 0) {
+                continue;
+            }
             can_dispatch(&pkt);
         }
     }
@@ -364,20 +353,6 @@ K_THREAD_DEFINE(can_rx_tid, CAN_RX_STACK_SIZE,
 /** @endcond */
 
 /* ── CAN Setup ───────────────────────────────────────────────────── */
-
-/**
- * @brief Bring the TCAN3403 transceiver out of shutdown/silent mode.
- *
- * Drives PIN_SHDN and PIN_SILENT inactive, then waits 1 ms for the
- * transceiver to become active.
- */
-static void tcan3403_wakeup(void)
-{
-    gpio_pin_configure(gpioa, PIN_SHDN,   GPIO_OUTPUT_INACTIVE);
-    gpio_pin_configure(gpioa, PIN_SILENT,  GPIO_OUTPUT_INACTIVE);
-    k_msleep(1);
-    LOG_INF("TCAN3403 Awake");
-}
 
 /**
  * @brief Configure bitrate/mode, start the CAN controller, and install RX
@@ -467,7 +442,10 @@ int main(void)
     if (err) { printk("EPS: led0 config failed (%d)\n", err); return 0; }
 
     /* CAN bus init */
-    tcan3403_wakeup();
+    err = tcan3403_wakeup();
+    if (err) {
+        LOG_ERR("TCAN3403 wakeup failed: %d", err);
+    }
     err = can_setup(can_dev, NODE_ID, &rxq, NULL);
     if (err) {
         LOG_ERR("CAN Setup failed: %d", err);

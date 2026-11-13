@@ -6,7 +6,7 @@ Back to [Contents](@ref index)
 
 CDH is the UT-CORE CubeSat's central board, running Zephyr on an STM32U5 and coordinating with the rest of the satellite (EPS, COMMS, ADCS, motor, GNSS, star tracker, solar) over a 500 kbit/s FDCAN bus.
 
-It's built as eight priority-ordered threads: a watchdog kicker at the top so the board can't hang, a CAN RX thread that drains incoming frames into a queue, and a processing thread that decodes and dispatches those frames by message class.
+It's built as eight priority-ordered threads: a watchdog kicker at the top so the board can't hang, a CAN RX thread that drains incoming frames into a queue, and a processing thread that decodes and dispatches those frames by opcode.
 
 Lower-priority threads broadcast heartbeats, poll GNSS position, read onboard temperature sensors and track other nodes' liveness, and assemble telemetry for downlink.
 
@@ -43,7 +43,7 @@ On boot, the firmware verifies MCU identity, brings up the CAN bus, then hands o
 - Compile SOH (State of Health) for subsystems
     - **Incomplete** soh_thread reads sensor data, but nothing else happens with said data. telemetry_thread should do that , but it's unimplemented currently.
 - Handle data routing
-    - **Complete** can_dispatch routes data by message class. can_process_thread filters by destination node/broadcast.
+    - **Complete** can_dispatch routes data by opcode. can_process_thread filters by destination node/broadcast.
 - Read Internal sensor data
     - **Incomplete** soh_thread does real I2C reads of the onboard temperature sensors via temp_telemetry_read_all. Temperature is covered, but no other internal sensor types are wired in.
 - Determine Uplink/downlink schedule
@@ -64,9 +64,9 @@ On boot, the firmware verifies MCU identity, brings up the CAN bus, then hands o
     - **Incomplete** This should fall under telemetry_thread, which is incomplete.
 
 ## Interactions with other subsystems
-- EPS - CDH sets the power via OP_SET_PWR_STATE and reads back a CLS_CMD_RESP confirmation.
+- EPS - CDH sets the power via OP_SET_PWR_STATE and reads back an OP_RESP_SET_PWR_STATE confirmation.
 - GNSS - polls GNSS every GNSS_POLL_MS (defined in board_config.h) using op code OP_GET_POS. This response is parsed in the handle_telemetry function, which currently does nothing with it.
-- COMMS - Inbound commands come via CLS_COMMAND and get handled via the class_command function. No outgoing path back through COMMS exists. This will need to be implemented when we get start on the COMMS board.
+- COMMS - Inbound commands come as command opcodes and get handled via the handle_command function. No outgoing path back through COMMS exists. This will need to be implemented when we get start on the COMMS board.
 - ADCS - Currently gets heartbeat and checks for node timeouts. OP codes are defined for OP_ADCS_SOH_ATTITUDE, OP_ADCS_WHEEL_RPM, and OP_ADCS_MTQ_DIPOLE but CDH never sends any of these.
 - MOTOR - Currently gets heartbeat and checks for node timeouts.
 - SOLAR - Currently gets heartbeat and checks for node timeouts.

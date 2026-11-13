@@ -11,8 +11,8 @@ from udp_receiver import Frame
 CSV_HEADER = [
     "rx_wall_time", "timestamp_ms",
     "priority", "src", "src_name", "dst", "dst_name",
-    "cls", "cls_name", "opcode", "opcode_name",
-    "p2", "p3", "p4", "p5", "p6", "p7",
+    "op", "op_name", "category", "dlc",
+    "p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7",
     "can_id_hex",
 ]
 
@@ -48,9 +48,10 @@ class CsvLogger:
                 f"{f.rx_wall_time:.3f}", f.timestamp_ms,
                 f.priority, f.src, can_proto.name_node(f.src),
                 f.dst, can_proto.name_node(f.dst),
-                f.cls, can_proto.name_class(f.cls),
-                f.opcode, can_proto.name_opcode(f.opcode, f.cls),
-                f.p2, f.p3, f.p4, f.p5, f.p6, f.p7,
+                f"0x{f.op:03X}", can_proto.name_opcode(f.op),
+                can_proto.name_category(f.op), f.dlc,
+                *("" if p is None else p for p in
+                  (f.p0, f.p1, f.p2, f.p3, f.p4, f.p5, f.p6, f.p7)),
                 f"0x{f.can_id:08X}",
             ])
             self._files[f.src][0].flush()

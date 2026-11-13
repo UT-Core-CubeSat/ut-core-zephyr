@@ -134,7 +134,7 @@ static gnss_data_t gnss_latest = {0};
  * @brief CDH operating mode (see sat-controls/cdh_state_machine.drawio).
  *
  * Values are explicit because the mode is broadcast in every CDH heartbeat
- * (payload byte 2) and arrives as the OP_SET_MODE argument, so other boards
+ * (payload byte 0) and arrives as the OP_SET_MODE argument, so other boards
  * depend on them. Never reorder or renumber.
  */
 typedef enum
@@ -386,41 +386,53 @@ static int fram_save(const cdh_persist_t *p)
 /* ===================================================== */
 
 /**
- * @brief Bring the TCAN3403 transceiver out of shutdown/silent mode.
- */
-static void tcan3403_wakeup(void)
-{
-    gpio_pin_configure(gpioa, PIN_SHDN, GPIO_OUTPUT_INACTIVE);
-    gpio_pin_configure(gpioa, PIN_SILENT, GPIO_OUTPUT_INACTIVE);
-    k_msleep(1);
-    LOG_INF("TCAN3403 Awake");
-}
-
-/**
- * @brief Route a decoded packet to its message-class handler.
+ * @brief Route a decoded packet to its handler by opcode.
  * @param pkt Decoded CAN packet.
  */
 static void can_dispatch(const can_packet_t *pkt)
 {
-    switch (pkt->msg_class)
+    switch (pkt->op)
     {
-    case CLS_HEARTBEAT:
+    case OP_HEARTBEAT:
         handle_heartbeat(pkt);
         break;
-    case CLS_COMMAND:
+
+    case OP_SET_MODE:
+    case OP_REBOOT:
+    case OP_SET_LED:
+    case OP_SET_PWR_STATE:
         handle_command(pkt);
         break;
-    case CLS_CMD_RESP:
+
+    case OP_RESP_SET_PWR_STATE:
+    case OP_RESP_GET_POS:
+    case OP_RESP_SET_UPDATE_RATE:
+    case OP_RESP_SET_WHEEL_RPM:
+    case OP_RESP_SET_MAG_DIPOLE:
+    case OP_RESP_SET_EPS_LOAD:
         handle_cmd_response(pkt);
         break;
-    case CLS_TELEMETRY:
+
+    case OP_GNSS_POS:
+    case OP_GNSS_VX:
+    case OP_GNSS_VY:
+    case OP_GNSS_VZ:
+    case OP_GNSS_TIME:
+    case OP_MOTOR_WHEEL_RPM:
+    case OP_ADCS_WHEEL_RPM:
+    case OP_ADCS_MTQ_DIPOLE:
         handle_telemetry(pkt);
         break;
-    case CLS_HEALTH:
+
+    case OP_SOH_GNSS:
+    case OP_SOH_SOLAR:
+    case OP_SOH_MOTOR:
+    case OP_ADCS_SOH_ATTITUDE:
         handle_health(pkt);
         break;
+
     default:
-        LOG_WRN("Unhandled class: %d", pkt->msg_class);
+        LOG_WRN("Unhandled op: 0x%03X from 0x%02X", pkt->op, pkt->src);
         break;
     }
 }
@@ -430,21 +442,21 @@ static void can_dispatch(const can_packet_t *pkt)
 /* ===================================================== */
 
 /**
- * @brief Handle a CLS_CMD_RESP frame — currently only logs/confirms EPS
+ * @brief Handle a command-response (OP_RESP_*) frame — currently only logs/confirms EPS
  *        power-state acknowledgements.
  * @param pkt Decoded CAN packet.
  */
 static void handle_cmd_response(const can_packet_t *pkt)
 {
-    uint8_t op = pkt->data[1];
+    uint16_t op = pkt->op;
 
     switch (op)
     {
-    case OP_SET_PWR_STATE:
+    case OP_RESP_SET_PWR_STATE:
     {
-        uint8_t load_num = pkt->data[2];
-        uint8_t state = pkt->data[3];
-        uint8_t status = pkt->data[4]; /* 0x00 = success, 0x01 = error */
+        uint8_t load_num = pkt->data[0];
+        uint8_t state = pkt->data[1];
+        uint8_t status = pkt->data[2]; /* 0x00 = success, 0x01 = error */
         if (status == 0x00)
         {
             LOG_INF("EPS confirmed: load %d %s",
@@ -457,30 +469,30 @@ static void handle_cmd_response(const can_packet_t *pkt)
         break;
     }
     default:
-        LOG_INF("CmdResp from node 0x%x, op=0x%02X", pkt->src, op);
+        LOG_INF("CmdResp from node 0x%x, op=0x%03X", pkt->src, op);
         break;
     }
 }
 
 /**
- * @brief Handle a CLS_TELEMETRY frame; parses GNSS position reports and
+ * @brief Handle a telemetry frame; parses GNSS position reports and
  *        logs anything else.
  * @param pkt Decoded CAN packet.
  */
 static void handle_telemetry(const can_packet_t *pkt)
 {
-    if (pkt->src == GNSS_ID && pkt->data[1] == 0x02 /* OP_GNSS_POS */)
+    if (pkt->src == GNSS_ID && pkt->op == OP_GNSS_POS)
     {
         /* Unpack signed 24-bit big-endian lat/lon (units: 1e-4 degrees) */
-        int32_t lat_1e4 = (int32_t)((uint32_t)pkt->data[2] << 16 |
-                                    (uint32_t)pkt->data[3] << 8 |
-                                    (uint32_t)pkt->data[4]);
+        int32_t lat_1e4 = (int32_t)((uint32_t)pkt->data[0] << 16 |
+                                    (uint32_t)pkt->data[1] << 8 |
+                                    (uint32_t)pkt->data[2]);
         if (lat_1e4 & 0x800000)
             lat_1e4 |= 0xFF000000; /* sign-extend */
 
-        int32_t lon_1e4 = (int32_t)((uint32_t)pkt->data[5] << 16 |
-                                    (uint32_t)pkt->data[6] << 8 |
-                                    (uint32_t)pkt->data[7]);
+        int32_t lon_1e4 = (int32_t)((uint32_t)pkt->data[3] << 16 |
+                                    (uint32_t)pkt->data[4] << 8 |
+                                    (uint32_t)pkt->data[5]);
         if (lon_1e4 & 0x800000)
             lon_1e4 |= 0xFF000000;
 
@@ -498,7 +510,7 @@ static void handle_telemetry(const can_packet_t *pkt)
 }
 
 /**
- * @brief Handle a CLS_HEALTH frame.
+ * @brief Handle a state-of-health frame.
  * @param pkt Decoded CAN packet.
  */
 static void handle_health(const can_packet_t *pkt)
@@ -513,11 +525,8 @@ static void handle_health(const can_packet_t *pkt)
  */
 static void send_set_board_pwr(uint8_t load_num, uint8_t state)
 {
-    struct can_frame f = {0};
-    f.id = CAN_ID_FULL(PRIO_LOW, NODE_ID, EPS_ID, CLS_COMMAND);
-    f.flags = CAN_FRAME_IDE;
-    can_fill_payload(&f, NODE_ID, OP_SET_PWR_STATE, load_num, state, 0, 0, 0, 0);
-    int ret = can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+    int ret = can_send2(can_dev, NODE_ID, EPS_ID, OP_SET_PWR_STATE, PRIO_LOW,
+                        load_num, state);
     if (ret)
     {
         LOG_ERR("Failed to send SET_PWR_STATE (load=%d state=%d): %d",
@@ -531,7 +540,7 @@ static void send_set_board_pwr(uint8_t load_num, uint8_t state)
 
 /**
  * @brief Handle an incoming ground/CAN command and act on its opcode.
- * @param pkt Decoded CAN packet; data[1] is the opcode, data[2..] are args.
+ * @param pkt Decoded CAN packet; op is the opcode, data[0..] are args.
  *
  * OP_SET_MODE only posts a request; mode_manager_thread decides whether to
  * act on it. Ground may request SAFE (from any mode) or STANDBY (from SAFE,
@@ -542,8 +551,8 @@ static void send_set_board_pwr(uint8_t load_num, uint8_t state)
  */
 static void handle_command(const can_packet_t *pkt)
 {
-    uint8_t opcode = pkt->data[1];
-    uint8_t val = pkt->data[2];
+    uint16_t opcode = pkt->op;
+    uint8_t val = pkt->data[0];
 
     switch (opcode)
     {
@@ -570,19 +579,19 @@ static void handle_command(const can_packet_t *pkt)
 
     case OP_SET_PWR_STATE:
         LOG_INF("Forwarding SET_PWR_STATE load=%d state=%d to EPS",
-                pkt->data[2], pkt->data[3]);
-        send_set_board_pwr(pkt->data[2], pkt->data[3]);
+                pkt->data[0], pkt->data[1]);
+        send_set_board_pwr(pkt->data[0], pkt->data[1]);
         break;
 
     default:
-        LOG_WRN("Unknown opcode: %d", opcode);
+        LOG_WRN("Unknown opcode: 0x%03X", opcode);
         break;
     }
 }
 
 /**
  * @brief Mark a node alive and record its last-seen timestamp.
- * @param pkt Decoded CAN packet from CLS_HEARTBEAT.
+ * @param pkt Decoded CAN packet from OP_HEARTBEAT.
  */
 static void handle_heartbeat(const can_packet_t *pkt)
 {
@@ -756,7 +765,15 @@ static void safe_mode_boot(void)
         LOG_ERR("UID and PA6 MISMATCH — trusting PA6 hardware pin.");
     }
 
-    tcan3403_wakeup();
+    err = tcan3403_wakeup();
+    if (err)
+    {
+        LOG_ERR("TCAN3403 wakeup failed: %d", err);
+    }
+    else
+    {
+        LOG_INF("TCAN3403 Awake");
+    }
     err = can_setup(can_dev, NODE_ID, &rxq, NULL);
     if (err)
     {
@@ -1296,8 +1313,8 @@ void can_rx_thread(void *a, void *b, void *c)
 
         if (k_msgq_get(&rxq, &rx, K_MSEC(CAN_RX_WAIT_MS)) == 0)
         {
-            LOG_INF("RX: id=0x%08X dlc=%d d0=0x%02X d1=0x%02X",
-                    rx.id, rx.dlc, rx.data[0], rx.data[1]);
+            LOG_INF("RX: id=0x%08X dlc=%d op=0x%03X src=0x%02X",
+                    rx.id, rx.dlc, (unsigned)CAN_ID_OP(rx.id), (unsigned)CAN_ID_SRC(rx.id));
 
             if (k_msgq_put(&can_proc_q, &rx, K_NO_WAIT) != 0)
             {
@@ -1323,7 +1340,10 @@ void can_process_thread(void *a, void *b, void *c)
         if (k_msgq_get(&can_proc_q, &frame, K_MSEC(CAN_RX_WAIT_MS)) == 0)
         {
             led_can_activity();
-            can_decode(&frame, &pkt);
+            if (can_decode(&frame, &pkt) != 0)
+            {
+                continue;
+            }
 
             if (pkt.dst != NODE_ID && pkt.dst != CAN_BROADCAST)
             {
@@ -1337,7 +1357,7 @@ void can_process_thread(void *a, void *b, void *c)
 
 /**
  * @brief Broadcasts a heartbeat once per second once CAN is up, in every
- *        mode. Payload byte 2 carries current_mode; other boards follow it
+ *        mode. Payload byte 0 carries current_mode; other boards follow it
  *        and fall back to SAFE if the heartbeat stops.
  */
 void scheduler_thread(void *a, void *b, void *c)
@@ -1356,8 +1376,8 @@ void scheduler_thread(void *a, void *b, void *c)
             if (now - last_hb >= 1000)
             {
                 last_hb = now;
-                int err = send_simple(can_dev, NODE_ID, CAN_BROADCAST, CLS_HEARTBEAT, OP_HEARTBEAT,
-                                      (uint8_t)current_mode, PRIO_LOW);
+                int err = can_send2(can_dev, NODE_ID, CAN_BROADCAST, OP_HEARTBEAT,
+                                    PRIO_LOW, (uint8_t)current_mode, 0);
                 if (err)
                 {
                     LOG_WRN("Failed to send OP_HEARTBEAT: %d", err);
@@ -1545,9 +1565,7 @@ void watchdog_thread(void *a, void *b, void *c)
 
 /**
  * @brief Periodically requests a position fix from the GNSS node.
- * @todo Uses a magic opcode literal (0x61, commented as OP_QUERY_POS)
- *       instead of a named constant. If OP_QUERY_POS is defined in
- *       can_proto.h, swap in the macro here for consistency.
+ * Sends OP_GET_POS; GNSS replies with OP_GNSS_POS telemetry.
  */
 void gnss_thread(void *a, void *b, void *c)
 {
@@ -1562,11 +1580,11 @@ void gnss_thread(void *a, void *b, void *c)
         if (mode_is_operational(current_mode))
         {
             /* Request position from GNSS node — it responds with OP_GNSS_POS
-               on CLS_TELEMETRY, which handle_telemetry() parses above */
-            int err = send_simple(can_dev, NODE_ID, GNSS_ID, CLS_COMMAND, 0x61 /* OP_QUERY_POS*/, 0, PRIO_LOW);
+               as telemetry, which handle_telemetry() parses above */
+            int err = can_send2(can_dev, NODE_ID, GNSS_ID, OP_GET_POS, PRIO_LOW, 0, 0);
             if (err)
             {
-                LOG_WRN("Failed to send OP_SET_MODE: %d", err);
+                LOG_WRN("Failed to send OP_GET_POS: %d", err);
             }
             LOG_INF("GNSS position request sent");
         }

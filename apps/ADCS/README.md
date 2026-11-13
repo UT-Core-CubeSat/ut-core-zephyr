@@ -61,7 +61,7 @@ Based on the ADCS software requirements in the waterfall requirements document:
 |---|---|---|
 | Read magnetometers and IMUs | **Implemented** | 7 sensors over I2C with `WHO_AM_I` validation, per-sensor health flags, and averaging across whichever sensors responded |
 | Reports attitude to CDH (vector + rates) | **Not implemented** | Attitude and rates are computed by `ADCSCore`, but only printed to console. `mainOrbit.cpp` contains no CAN code |
-| SOH to CDH | **Not implemented** | No SOH packaging. Opcodes are already reserved in `common/can_proto.h` (`OP_ADCS_SOH_ATTITUDE`, `OP_ADCS_WHEEL_RPM`, `OP_ADCS_MTQ_DIPOLE`) |
+| SOH to CDH | **Not implemented** | No SOH packaging. Opcodes are already reserved in `common/ops.h` (`OP_ADCS_SOH_ATTITUDE`, `OP_ADCS_WHEEL_RPM`, `OP_ADCS_MTQ_DIPOLE`) |
 | Responds to commands (sun pointing / nadir / ground point) | **Not implemented** | Mode is hardcoded to `DETUMBLE` and never changes; there is no command receive path. `ADCS::MissionMode` already defines `STANDBY` (sun), `IMAGING` (nadir/target) and `DOWNLINK` (ground point), so this is missing plumbing rather than missing algorithms |
 | Takes in star tracker vector | **Not implemented** | `star_quat` is a hardcoded identity quaternion placeholder |
 
