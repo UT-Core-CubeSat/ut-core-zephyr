@@ -351,13 +351,6 @@ K_MSGQ_DEFINE(can_proc_q, sizeof(struct can_frame), 16, 4);
 /**
  * @brief Decoded CAN frame with routing fields unpacked from the ID.
  */
-typedef struct {
-    uint8_t msg_class;
-    uint8_t src;
-    uint8_t dst;
-    uint8_t data[8];
-    uint8_t dlc;
-} can_packet_t;
 
 static struct gpio_callback hall_cb_gpiod;
 static struct gpio_callback hall_cb_gpioe;
@@ -1042,10 +1035,10 @@ static bool set_motor_rpm_ref(unsigned motor_idx, float rpm_ref)
  * @brief Handle an incoming CAN command frame from ADCS.
  * @param f Raw CAN frame.
  *
- * Filters for CLS_COMMAND frames from ADCS_ID addressed to this node or
- * broadcast, with opcode OP_SET_WHEEL_RPM and at least 5 data bytes.
- * data[2] selects the target motor (0 = all motors, 1-4 = specific
- * motor); data[3:4] is the signed RPM setpoint, big-endian.
+ * Filters for OP_SET_WHEEL_RPM frames from ADCS_ID addressed to this node
+ * or broadcast, with at least 3 data bytes.
+ * data[0] selects the target motor (0 = all motors, 1-4 = specific
+ * motor); data[1:2] is the signed RPM setpoint, big-endian.
  *
  * @bug motor_sel is checked against `> NMOTORS`, but valid selectors
  *      should be 1..NMOTORS — worth double-checking this bounds check
@@ -1055,22 +1048,22 @@ static bool set_motor_rpm_ref(unsigned motor_idx, float rpm_ref)
  */
 static void handle_can_command(const struct can_frame *f)
 {
-    const uint8_t src = (uint8_t)((f->id >> 14) & 0xFFU);
-    const uint8_t dst = (uint8_t)((f->id >> 6) & 0xFFU);
-    const uint8_t msg_class = (uint8_t)(f->id & 0x3FU);
+    const uint8_t src = (uint8_t)CAN_ID_SRC(f->id);
+    const uint8_t dst = (uint8_t)CAN_ID_DST(f->id);
+    const uint16_t op = (uint16_t)CAN_ID_OP(f->id);
 
-    if (msg_class != CLS_COMMAND || src != ADCS_ID) {
+    if (op != OP_SET_WHEEL_RPM || src != ADCS_ID) {
         return;
     }
     if (dst != MOTOR_ID && dst != CAN_BROADCAST) {
         return;
     }
-    if (f->dlc < 5U || f->data[1] != OP_SET_WHEEL_RPM) {
+    if (f->dlc < 3U) {
         return;
     }
 
-    const uint8_t motor_sel = f->data[2];
-    const int16_t rpm_i16 = unpack_be_i16(f->data[3], f->data[4]);
+    const uint8_t motor_sel = f->data[0];
+    const int16_t rpm_i16 = unpack_be_i16(f->data[1], f->data[2]);
 
     if (motor_sel == 0U) {
         for (unsigned mi = 0; mi < NMOTORS; mi++) {
@@ -1097,21 +1090,6 @@ static void handle_can_command(const struct can_frame *f)
     }
 }
 
-/**
- * @brief Unpack a raw CAN frame's ID and payload into a can_packet_t.
- * @param f   Raw CAN frame as received from the driver.
- * @param pkt Output decoded packet.
- */
-static void decode_can_packet(const struct can_frame *f, can_packet_t *pkt)
-{
-    const uint32_t id = f->id;
-
-    pkt->src = (uint8_t)((id >> 14) & 0xFFU);
-    pkt->dst = (uint8_t)((id >> 6) & 0xFFU);
-    pkt->msg_class = (uint8_t)(id & 0x3FU);
-    pkt->dlc = f->dlc;
-    memcpy(pkt->data, f->data, f->dlc);
-}
 
 /**
  * @brief Bring up the CAN transceiver and controller, and install RX
@@ -1130,130 +1108,17 @@ static void decode_can_packet(const struct can_frame *f, can_packet_t *pkt)
  *       block) — likely an accidental copy-paste duplication rather
  *       than intentional.
  */
-static int can_setup(void)
-{
-    if (!device_is_ready(can_dev)) {
-        printk("ERR: CAN device not ready\n");
-        printk("CAN node: %s\n", can_dev->name);
-#if DT_NODE_HAS_STATUS(DT_NODELABEL(fdcan1), okay)
-        printk("DT fdcan1 status: okay\n");
-#else
-        printk("DT fdcan1 status: not okay\n");
-#endif
-        printk("CAN node: %s\n", can_dev->name);
-#if DT_NODE_HAS_STATUS(DT_NODELABEL(fdcan1), okay)
-        printk("DT fdcan1 status: okay\n");
-#else
-        printk("DT fdcan1 status: not okay\n");
-#endif
-        return -ENODEV;
-    }
-
-#if DT_NODE_HAS_STATUS(CAN_STB_NODE, okay)
-    if (!device_is_ready(can_stb.port)) {
-        printk("ERR: CAN STB GPIO device not ready\n");
-        return -ENODEV;
-    }
-
-    /* Default try: STB active-high -> drive low to leave standby. */
-    (void)gpio_pin_configure_dt(&can_stb, GPIO_OUTPUT_INACTIVE);
-    (void)gpio_pin_set_dt(&can_stb, 0);
-    k_msleep(5);
-#else
-    printk("WARN: CAN STB alias missing (canstb)\n");
-#endif
-
-    int ret = can_set_bitrate(can_dev, 500000);
-
-    if (ret != 0) {
-        printk("ERR: CAN bitrate cfg failed (%d)\n", ret);
-        return ret;
-    }
-
-    ret = can_set_mode(can_dev, CAN_MODE_NORMAL);
-    if (ret != 0) {
-        printk("ERR: CAN mode cfg failed (%d)\n", ret);
-        return ret;
-    }
-
-    ret = can_start(can_dev);
-    if (ret != 0) {
-#if DT_NODE_HAS_STATUS(CAN_STB_NODE, okay)
-        /*
-         * Some transceivers use opposite standby polarity.
-         * Retry once with STB high to detect that case.
-         */
-        printk("CAN start failed (%d), retrying with STB=1\n", ret);
-        (void)gpio_pin_set_dt(&can_stb, 1);
-        k_msleep(5);
-        ret = can_start(can_dev);
-        if (ret == 0) {
-            printk("CAN recovered with STB=1 (transceiver standby polarity is inverted)\n");
-        }
-#endif
-    }
-    if (ret != 0) {
-#if DT_NODE_HAS_STATUS(CAN_STB_NODE, okay)
-        /*
-         * Some transceivers use opposite standby polarity.
-         * Retry once with STB high to detect that case.
-         */
-        printk("CAN start failed (%d), retrying with STB=1\n", ret);
-        (void)gpio_pin_set_dt(&can_stb, 1);
-        k_msleep(5);
-        ret = can_start(can_dev);
-        if (ret == 0) {
-            printk("CAN recovered with STB=1 (transceiver standby polarity is inverted)\n");
-        }
-#endif
-    }
-    if (ret != 0) {
-        printk("ERR: CAN start failed (%d)\n", ret);
-        return ret;
-    }
-
-    const struct can_filter to_me = {
-        .id = CAN_DST(MOTOR_ID),
-        .mask = CAN_DST_MASK_29,
-        .flags = CAN_FILTER_IDE,
-    };
-    const struct can_filter bcast = {
-        .id = CAN_DST(CAN_BROADCAST),
-        .mask = CAN_DST_MASK_29,
-        .flags = CAN_FILTER_IDE,
-    };
-
-    ret = can_add_rx_filter_msgq(can_dev, &can_rx_q, &to_me);
-    if (ret < 0) {
-        printk("ERR: CAN to_me filter failed (%d)\n", ret);
-        return ret;
-    }
-
-    ret = can_add_rx_filter_msgq(can_dev, &can_rx_q, &bcast);
-    if (ret < 0) {
-        printk("ERR: CAN bcast filter failed (%d)\n", ret);
-        return ret;
-    }
-
-    printk("CAN ready: node=0x%02X, ADCS cmd opcode=0x%02X\n", MOTOR_ID, OP_SET_WHEEL_RPM);
-    return 0;
-}
 
 /**
- * @brief Broadcast a CLS_HEARTBEAT frame with a rolling sequence number.
+ * @brief Broadcast an OP_HEARTBEAT frame with a rolling sequence number.
  * @param seq Sequence number to encode in the frame (16-bit, big-endian).
  */
 static void send_can_beacon(uint32_t seq)
 {
-    struct can_frame f = {0};
     int ret;
 
-    f.id = CAN_ID_FULL(2U, MOTOR_ID, CAN_BROADCAST, CLS_HEARTBEAT);
-    can_fill_payload(&f, MOTOR_ID, OP_HEARTBEAT,
-             (uint8_t)((seq >> 8) & 0xFFU), (uint8_t)(seq & 0xFFU),
-             0, 0, 0, 0);
-
-    ret = can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+    ret = can_send2(can_dev, MOTOR_ID, CAN_BROADCAST, OP_HEARTBEAT, 2U,
+                    (uint8_t)((seq >> 8) & 0xFFU), (uint8_t)(seq & 0xFFU));
     if (ret != 0) {
         printk("WARN: CAN beacon tx failed (%d)\n", ret);
     }
@@ -1265,16 +1130,12 @@ static void send_can_beacon(uint32_t seq)
  */
 static void send_soh_frame(void)
 {
-    struct can_frame f = {0};
     int ret;
 
-    f.id = CAN_ID_FULL(2U, MOTOR_ID, CAN_BROADCAST, CLS_HEALTH);
-    can_fill_payload(&f, MOTOR_ID, OP_HEARTBEAT,
-             (uint8_t)gpio_pin_get_dt(&fault_in),
-             (uint8_t)gpio_pin_get_dt(&kill_in),
-             (uint8_t)atomic_get(&app_run), 0, 0, 0);
-
-    ret = can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+    ret = can_send4(can_dev, MOTOR_ID, CAN_BROADCAST, OP_SOH_MOTOR, 2U,
+                    (uint8_t)gpio_pin_get_dt(&fault_in),
+                    (uint8_t)gpio_pin_get_dt(&kill_in),
+                    (uint8_t)atomic_get(&app_run), 0);
     if (ret != 0) {
         printk("WARN: SOH tx failed (%d)\n", ret);
     }
@@ -1290,7 +1151,6 @@ static void send_soh_frame(void)
  */
 static void send_motor_rpm_frame(unsigned mi, float rpm_signed)
 {
-    struct can_frame f = {0};
     int16_t rpm_i16;
     uint8_t rpm_msb;
     uint8_t rpm_lsb;
@@ -1299,11 +1159,8 @@ static void send_motor_rpm_frame(unsigned mi, float rpm_signed)
     rpm_i16 = (int16_t)lrintf(clampf(rpm_signed, -32768.f, 32767.f));
     pack_be_i16(rpm_i16, &rpm_msb, &rpm_lsb);
 
-    f.id = CAN_ID_FULL(2U, MOTOR_ID, CAN_BROADCAST, CLS_TELEMETRY);
-    can_fill_payload(&f, MOTOR_ID, OP_SET_WHEEL_RPM,
-             (uint8_t)(mi + 1U), rpm_msb, rpm_lsb, 0, 0, 0);
-
-    ret = can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+    ret = can_send4(can_dev, MOTOR_ID, CAN_BROADCAST, OP_MOTOR_WHEEL_RPM, 2U,
+                    (uint8_t)(mi + 1U), rpm_msb, rpm_lsb, 0);
     if (ret != 0) {
         printk("WARN: RPM tx failed M%u (%d)\n", mi + 1U, ret);
     }
@@ -1517,12 +1374,12 @@ static void can_process_thread(void *arg1, void *arg2, void *arg3)
             continue;
         }
 
-        decode_can_packet(&frame, &pkt);
+        can_decode(&frame, &pkt);
         if (pkt.dst != MOTOR_ID && pkt.dst != CAN_BROADCAST) {
             continue;
         }
 
-        if (pkt.msg_class == CLS_COMMAND) {
+        if (pkt.op == OP_SET_WHEEL_RPM) {
             handle_can_command(&frame);
         }
     }
@@ -1773,9 +1630,15 @@ int main(void)
         }
     }
 
-    if (can_setup() != 0) {
-        return -1;
-    }
+    #if DT_NODE_HAS_STATUS(CAN_STB_NODE, okay)
+        const struct gpio_dt_spec *stb_ptr = &can_stb;
+    #else
+        const struct gpio_dt_spec *stb_ptr = NULL;
+    #endif
+
+        if (can_setup(can_dev, MOTOR_ID, &can_rx_q, stb_ptr) != 0) {
+            return -1;
+        }
 
     printk("\n============================================\n");
     printk("  BLDC - ISR 6-step  (%u motors)\n", NMOTORS);

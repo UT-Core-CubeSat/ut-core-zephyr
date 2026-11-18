@@ -35,10 +35,6 @@
 #define BOARD_NODE_ID       0x08   /**< SOLAR_ID */
 #define BOARD_NODE_NAME     "SOLAR"
 
-/* ================= CAN TRANSCEIVER PINS ================= */
-#define PIN_CAN_SILENT      9      /**< PA9  — TCAN3403 silent mode        */
-#define PIN_CAN_SHDN        10     /**< PA10 — TCAN3403 shutdown           */
-
 /* ================= MAGNETORQUER PIN MAP ================= */
 /*
  * PC2-PC5 drive the magnetorquer coils.  When PWM timer channels are

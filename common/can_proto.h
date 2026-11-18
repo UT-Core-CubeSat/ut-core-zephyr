@@ -3,24 +3,25 @@
 /**
  * @file can_proto.h
  * @ingroup common
- * @brief Shared UT-CORE CAN bus protocol: ID layout, node IDs, message
- *        classes, opcodes, and payload packing.
+ * @brief Shared UT-CORE CAN bus protocol: ID layout, node IDs, and payload
+ *        packing (opcodes live in ops.h).
  *
- * Defines the 29-bit extended CAN ID bit layout (priority/src/dst/class),
+ * Defines the 29-bit extended CAN ID bit layout (priority/src/dst/op),
  * macros to construct and mask that ID, every subsystem's fixed node ID,
- * the message-class taxonomy, the shared opcode enum used across all
- * UT-CORE apps, and a helper for packing the standard 8-byte payload.
+ * and a helper for packing the 8-byte payload.
  * Included by every board's firmware (CDH, EPS, GNSS, MOTOR, SOLAR) to
  * keep CAN traffic consistent across the satellite.
  *
  * UT-CORE CAN Protocol  —  29-bit Extended Frame ID Layout
  * ```
  * [28:26]  PRIORITY  (3 bits)   0 = highest
- * [25:22]  RESERVED  (4 bits)   must be 0
- * [21:14]  SRC       (8 bits)   source node ID
- * [13:6]   DST       (8 bits)   destination node ID; 0xFF = broadcast
- * [5:0]    CLASS     (6 bits)   message class
+ * [25:21]  SRC       (5 bits)   source node ID
+ * [20:16]  DST       (5 bits)   destination node ID; 0x1F = broadcast
+ * [15:4]   OP        (12 bits)  opcode, one per message type (see ops.h)
+ * [3:0]    RESERVED  (4 bits)   must be 0
  * ```
+ * All 8 data bytes are application payload; the source node and opcode are
+ * carried only in the ID.
  */
 
 
@@ -30,23 +31,31 @@ extern "C" {
 
 #include <zephyr/drivers/can.h>
 #include <stdint.h>
+#include <zephyr/drivers/gpio.h>
+#include "ops.h"
+
+#define CAN_SRC_SHIFT       21
+#define CAN_DST_SHIFT       16
+#define CAN_OP_SHIFT        4
 
 #define CAN_PRIO(p)    (((uint32_t)(p)  & 0x07U) << 26)
-#define CAN_SRC(s)     (((uint32_t)(s)  & 0xFFU) << 14)
-#define CAN_DST(d)     (((uint32_t)(d)  & 0xFFU) <<  6)
-#define CAN_CLASS(c)   (((uint32_t)(c)  & 0x3FU)      )
+#define CAN_SRC(s)     (((uint32_t)(s)  & 0x1FU) << CAN_SRC_SHIFT)
+#define CAN_DST(d)     (((uint32_t)(d)  & 0x1FU) << CAN_DST_SHIFT)
+#define CAN_OP(o)      (((uint32_t)(o)  & 0xFFFU) << CAN_OP_SHIFT)
 
-#define CAN_ID(prio, dst, cls) \
-    (CAN_PRIO(prio) | CAN_DST(dst) | CAN_CLASS(cls))
+/** Build a full 29-bit ID. */
+#define CAN_ID_FULL(prio, src, dst, op) \
+    (CAN_PRIO(prio) | CAN_SRC(src) | CAN_DST(dst) | CAN_OP(op))
 
-/** Use this variant when you want SRC baked into the ID (optional, useful for filters) */
-#define CAN_ID_FULL(prio, src, dst, cls) \
-    (CAN_PRIO(prio) | CAN_SRC(src) | CAN_DST(dst) | CAN_CLASS(cls))
+/* Field extraction */
+#define CAN_ID_PRIO(id)  (((id) >> 26) & 0x07U)
+#define CAN_ID_SRC(id)   (((id) >> CAN_SRC_SHIFT) & 0x1FU)
+#define CAN_ID_DST(id)   (((id) >> CAN_DST_SHIFT) & 0x1FU)
+#define CAN_ID_OP(id)    (((id) >> CAN_OP_SHIFT) & 0xFFFU)
 
 /* Masks for filtering */
-#define CAN_DST_SHIFT       6
-#define CAN_DST_MASK_29     (0xFFU << CAN_DST_SHIFT)   /* 0x00003FC0 */
-#define CAN_BROADCAST       0xFF
+#define CAN_DST_MASK_29     (0x1FU << CAN_DST_SHIFT)   /* 0x001F0000 */
+#define CAN_BROADCAST       0x1F
 
 /* Node IDs */
 #define CDH_ID      0x01
@@ -57,100 +66,199 @@ extern "C" {
 #define GNSS_ID     0x06
 #define STAR_ID     0x07
 #define SOLAR_ID    0x08
+#define GROUND_ID   0x10
 
-/* Message Classes */
-#define CLS_HEARTBEAT   0
-#define CLS_COMMAND     2
-#define CLS_CMD_RESP    3
-#define CLS_TELEMETRY   4
-#define CLS_HEALTH      10
+
+typedef struct {
+    uint8_t  priority;
+    uint8_t  src;
+    uint8_t  dst;
+    uint16_t op;
+    uint8_t  data[64];   /**< Payload; 64 bytes to hold a CAN FD frame. */
+    uint8_t  dlc;        /**< Payload length in BYTES (not the DLC code). */
+} can_packet_t;
+
+/** CAN FD data-phase bitrate (bit/s) used when CONFIG_CAN_FD_MODE=y. The
+ *  arbitration phase stays at 500 kbit/s. Override before including. */
+#ifndef CAN_FD_DATA_BITRATE
+#define CAN_FD_DATA_BITRATE 2000000
+#endif
 
 /**
- * @brief Opcodes used across all UT-CORE CAN message classes.
+ * @brief Configure bitrate/mode, start the CAN controller, and install
+ *        RX filters for this node's address and broadcast. With
+ *        CONFIG_CAN_FD_MODE=y also sets the data-phase bitrate
+ *        (CAN_FD_DATA_BITRATE) and enables CAN_MODE_FD; classic frames
+ *        still work in that mode.
+ * @param can_dev    CAN controller device.
+ * @param my_id_node This board's node ID (used for the to-me filter).
+ * @param rxq        Message queue to receive filtered frames into.
+ * @return 0 on success, negative errno on failure.
+ */
+
+int can_setup(const struct device *can_dev, uint8_t my_id_node, struct k_msgq *rxq, const struct gpio_dt_spec *can_stb);
+
+/* TCAN3403 transceiver control pins (GPIOA), identical on every UT-CORE board
+ * that uses it. Override before including this header if a board differs. */
+#ifndef CAN_TCAN_SILENT_PIN
+#define CAN_TCAN_SILENT_PIN 9    /**< PA9  - TCAN3403 silent mode (active high)  */
+#endif
+#ifndef CAN_TCAN_SHDN_PIN
+#define CAN_TCAN_SHDN_PIN   10   /**< PA10 - TCAN3403 shutdown (active high)     */
+#endif
+
+/**
+ * @brief Bring the TCAN3403 transceiver out of shutdown/silent mode.
  *
- * Payload byte layout for multi-byte opcodes is opcode-specific; see the
- * per-opcode comments above each value for p2..p7 field meaning (e.g.
- * OP_SET_WHEEL_RPM, OP_SET_MAG_DIPOLE, OP_SET_EPS_LOAD, and the
- * OP_ADCS_* telemetry opcodes).
- */
-typedef enum {
-    OP_PING      = 0x01,    /**< _ */
-    OP_PONG      = 0x02,    /**< _ */
-    OP_BUTTON    = 0x10,    /**< _ */
-    OP_SET_LED   = 0x20,    /**< _ */
-    OP_HEARTBEAT = 0x30,    /**< _ */
-    OP_SET_MODE  = 0x40,    /**< _ */
-    OP_REBOOT    = 0x41,    /**< _ */
-    OP_SET_PWR_STATE = 0x60,/**< _ */
-    OP_GET_POS = 0x61,      /**< _ */
-    /**
-     * Set wheel RPM reference (CLS_COMMAND):
-     *   p2 = motor index (1..4), or 0 for all motors
-     *   p3..p4 = signed RPM reference (big-endian int16_t)
-     */
-    OP_SET_WHEEL_RPM = 0x50,
-    /**
-     * Set magnetorquer commanded dipole vector (CLS_COMMAND):
-     *   p2..p3 = mx (big-endian int16_t, 1e-4 A*m^2 per LSB)
-     *   p4..p5 = my (big-endian int16_t, 1e-4 A*m^2 per LSB)
-     *   p6..p7 = mz (big-endian int16_t, 1e-4 A*m^2 per LSB)
-     */
-    OP_SET_MAG_DIPOLE = 0x51,
-    /**
-     * EPS load switch command (CLS_COMMAND):
-     *   p2 = load index (1..12), or 0 for all loads
-     *   p3 = enable flag (0 = disable, nonzero = enable)
-     */
-    OP_SET_EPS_LOAD = 0x52,
-    /*
-     * ADCS app telemetry/scaffold opcodes:
-     *   OP_ADCS_SOH_ATTITUDE (CLS_HEALTH): qx/qy/qz packed in p2..p7
-     *   OP_ADCS_WHEEL_RPM    (CLS_TELEMETRY): wheel1..wheel3 rpm packed in p2..p7
-     *   OP_ADCS_MTQ_DIPOLE   (CLS_TELEMETRY): mx/my/mz packed in p2..p7
-     */
-    OP_ADCS_SOH_ATTITUDE = 0x70, /**< OP_ADCS_SOH_ATTITUDE (CLS_HEALTH): qx/qy/qz packed in p2..p7 */
-    OP_ADCS_WHEEL_RPM    = 0x71, /**< OP_ADCS_WHEEL_RPM (CLS_TELEMETRY): wheel1..wheel3 rpm packed in p2..p7 */
-    OP_ADCS_MTQ_DIPOLE   = 0x72, /**< OP_ADCS_MTQ_DIPOLE (CLS_TELEMETRY): mx/my/mz packed in p2..p7 */
-} can_op_t;
-
-/**
- * @brief Standard 8-byte CAN application payload layout: source node,
- *        opcode, and 6 opcode-specific data bytes.
- */
-struct can_payload {
-    uint8_t src;
-    uint8_t op;
-    uint8_t p2, p3, p4, p5, p6, p7;
-};
-
-/**
- * @brief Pack a can_frame's payload with the standard [src, op, p2..p7]
- *        layout and mark it as an extended (29-bit) frame.
- * @param f   CAN frame to populate (id must already be set separately).
- * @param src Source node ID.
- * @param op  Opcode.
- * @param p2  Payload byte 2.
- * @param p3  Payload byte 3.
- * @param p4  Payload byte 4.
- * @param p5  Payload byte 5.
- * @param p6  Payload byte 6.
- * @param p7  Payload byte 7.
+ * Drives CAN_TCAN_SHDN_PIN and CAN_TCAN_SILENT_PIN low on GPIOA, then waits
+ * 1 ms for the transceiver to become active. Call before can_setup(). Boards
+ * that control the transceiver with a devicetree STB pin (MOTOR) pass it to
+ * can_setup() instead and do not call this.
  *
- * Always sets dlc to 8, even for opcodes that use fewer meaningful bytes.
+ * @return 0 on success, -ENODEV if GPIOA is not ready, -ENOTSUP if the board
+ *         has no gpioa node.
  */
-static inline void can_fill_payload(struct can_frame *f,
-                                    uint8_t src, uint8_t op,
-                                    uint8_t p2, uint8_t p3, uint8_t p4,
-                                    uint8_t p5, uint8_t p6, uint8_t p7)
+int tcan3403_wakeup(void);
+
+/**
+ * @brief Unpack a raw CAN frame's 29-bit ID and payload into a can_packet_t.
+ *
+ * pkt->data is zeroed first, then the frame's payload is copied in, so bytes
+ * beyond dlc are always 0. The frame is rejected if its DLC does not equal
+ * can_op_len(op) (which also rejects unknown opcodes).
+ *
+ * @param f   Raw CAN frame as received from the driver.
+ * @param pkt Output decoded packet (fields are filled even on rejection).
+ * @return 0 on success, -EMSGSIZE if the DLC does not match the opcode's
+ *         fixed length (counted in can_proto_rx_len_error_count()).
+ */
+int can_decode(const struct can_frame *f, can_packet_t *pkt);
+
+/**
+ * @brief Build and send one CAN frame of a fixed payload length.
+ *
+ * @param can_dev CAN controller device to send on.
+ * @param src     Source node ID (this board's own ID).
+ * @param dst     Destination node ID, or CAN_BROADCAST for all nodes.
+ * @param op      Opcode (see ops.h); carried in the CAN ID.
+ * @param prio    Arbitration priority (0 = highest; see CAN_PRIO()).
+ * @param data    Payload bytes (at least len bytes).
+ * @param len     Payload length; must equal can_op_len(op): 2, 4 or 8, or an FD length
+ *               (12, 16, 20, 24, 32, 48, 64) for FD-only opcodes.
+ *               len > 8 is sent as a CAN FD frame with bit-rate switch and
+ *               needs CONFIG_CAN_FD_MODE (else -ENOTSUP).
+ *
+ * Prefer the can_send2/can_send4/can_send8 wrappers below.
+ *
+ * @note Returns as soon as the frame is handed to the CAN driver, not once
+ *       it is acknowledged on the bus. A 0 return means the frame was
+ *       queued; it does not mean a peer received it. If no peer acknowledges
+ *       the frame, the failure shows up asynchronously in
+ *       can_proto_tx_error_count() rather than blocking this call.
+ * @return 0 if queued, -EINVAL if len does not match can_op_len(op), or a
+ *         negative errno from the driver (invalid ID, no free TX mailbox).
+ */
+int can_send_frame(const struct device *can_dev, uint8_t src, uint8_t dst,
+                   uint16_t op, uint8_t prio, const uint8_t *data, uint8_t len);
+
+/** @brief Send a 2-byte frame. @see can_send_frame */
+static inline int can_send2(const struct device *can_dev, uint8_t src, uint8_t dst,
+                            uint16_t op, uint8_t prio, uint8_t p0, uint8_t p1)
 {
-    f->dlc    = 8;
-    f->flags  = CAN_FRAME_IDE;   /* <-- Mark as extended frame */
-    f->data[0] = src;
-    f->data[1] = op;
-    f->data[2] = p2; f->data[3] = p3;
-    f->data[4] = p4; f->data[5] = p5;
-    f->data[6] = p6; f->data[7] = p7;
+    const uint8_t d[2] = {p0, p1};
+    return can_send_frame(can_dev, src, dst, op, prio, d, 2);
 }
+
+/** @brief Send a 4-byte frame. @see can_send_frame */
+static inline int can_send4(const struct device *can_dev, uint8_t src, uint8_t dst,
+                            uint16_t op, uint8_t prio,
+                            uint8_t p0, uint8_t p1, uint8_t p2, uint8_t p3)
+{
+    const uint8_t d[4] = {p0, p1, p2, p3};
+    return can_send_frame(can_dev, src, dst, op, prio, d, 4);
+}
+
+/** @brief Send an 8-byte frame. @see can_send_frame */
+static inline int can_send8(const struct device *can_dev, uint8_t src, uint8_t dst,
+                            uint16_t op, uint8_t prio,
+                            uint8_t p0, uint8_t p1, uint8_t p2, uint8_t p3,
+                            uint8_t p4, uint8_t p5, uint8_t p6, uint8_t p7)
+{
+    const uint8_t d[8] = {p0, p1, p2, p3, p4, p5, p6, p7};
+    return can_send_frame(can_dev, src, dst, op, prio, d, 8);
+}
+
+/**
+ * @name CAN FD send helpers
+ * Payload is passed as an array (too many bytes for per-byte arguments).
+ * The opcode must have the matching length in can_op_len(). Frames are sent
+ * with FD + bit-rate switch; these return -ENOTSUP unless the app is built
+ * with CONFIG_CAN_FD_MODE=y, and every node that receives them must run in FD
+ * mode too. @see can_send_frame
+ * @{
+ */
+
+/** @brief Send a 12-byte CAN FD frame. @param data 12 payload bytes. */
+static inline int can_send12(const struct device *can_dev, uint8_t src, uint8_t dst,
+                             uint16_t op, uint8_t prio, const uint8_t data[12])
+{
+    return can_send_frame(can_dev, src, dst, op, prio, data, 12);
+}
+
+/** @brief Send a 20-byte CAN FD frame. @param data 20 payload bytes. */
+static inline int can_send20(const struct device *can_dev, uint8_t src, uint8_t dst,
+                             uint16_t op, uint8_t prio, const uint8_t data[20])
+{
+    return can_send_frame(can_dev, src, dst, op, prio, data, 20);
+}
+
+/** @brief Send a 64-byte CAN FD frame. @param data 64 payload bytes. */
+static inline int can_send64(const struct device *can_dev, uint8_t src, uint8_t dst,
+                             uint16_t op, uint8_t prio, const uint8_t data[64])
+{
+    return can_send_frame(can_dev, src, dst, op, prio, data, 64);
+}
+
+/** @} */
+
+/** @brief Store a signed 32-bit value big-endian at p[0..3]. */
+static inline void can_put_be32(uint8_t *p, int32_t v)
+{
+    uint32_t u = (uint32_t)v;
+    p[0] = (uint8_t)(u >> 24);
+    p[1] = (uint8_t)(u >> 16);
+    p[2] = (uint8_t)(u >> 8);
+    p[3] = (uint8_t)u;
+}
+
+/** @brief Read a signed 32-bit big-endian value from p[0..3]. */
+static inline int32_t can_get_be32(const uint8_t *p)
+{
+    return (int32_t)(((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+                     ((uint32_t)p[2] << 8) | (uint32_t)p[3]);
+}
+
+/**
+ * @brief Number of CAN sends that failed to complete since boot, as
+ *        reported asynchronously by the CAN driver after can_send_frame()
+ *        has already returned.
+ *
+ * A failure here most often means a frame went unacknowledged on the bus
+ * (no other node received it) rather than a local driver error. Intended
+ * for future SOH/diagnostics reporting.
+ *
+ * @return Rolling count of failed sends. Wraps like any other 32-bit
+ *         counter; treat it as a diagnostic value, not a one-time
+ *         threshold to alarm on directly.
+ */
+uint32_t can_proto_tx_error_count(void);
+
+/**
+ * @brief Number of received frames dropped by can_decode() because their DLC
+ *        did not match can_op_len() for the opcode (or the opcode is unknown).
+ * @return Rolling count; wraps like any 32-bit counter.
+ */
+uint32_t can_proto_rx_len_error_count(void);
 
 #ifdef __cplusplus
 }

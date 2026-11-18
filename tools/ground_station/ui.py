@@ -28,13 +28,16 @@ HEALTH_NODES = [
     can_proto.MOTOR_ID, can_proto.GNSS_ID, can_proto.SOLAR_ID,
 ]
 
-CLASS_ROW_COLOR = {
-    can_proto.CLS_HEARTBEAT: QtGui.QColor(220, 240, 255),
-    can_proto.CLS_COMMAND:   QtGui.QColor(255, 235, 205),
-    can_proto.CLS_CMD_RESP:  QtGui.QColor(255, 245, 225),
-    can_proto.CLS_TELEMETRY: QtGui.QColor(225, 255, 225),
-    can_proto.CLS_HEALTH:    QtGui.QColor(255, 225, 225),
+# Keyed by category (op >> 8): 0 system, 1 command, 2 response, 3 telemetry, 4 health
+CATEGORY_ROW_COLOR = {
+    0: QtGui.QColor(220, 240, 255),
+    1: QtGui.QColor(255, 235, 205),
+    2: QtGui.QColor(255, 245, 225),
+    3: QtGui.QColor(225, 255, 225),
+    4: QtGui.QColor(255, 225, 225),
 }
+
+BAD_LEN_COLOR = QtGui.QColor(255, 120, 120)   # frame whose DLC != op_len(op)
 
 
 # ---------------------------------------------------------------------------
@@ -77,11 +80,9 @@ class NodeHealthTab(QtWidgets.QWidget):
         )
 
     def on_frame(self, f: Frame) -> None:
-        if f.cls != can_proto.CLS_HEARTBEAT or f.opcode != can_proto.OP_HEARTBEAT:
+        if f.op != can_proto.OP_HEARTBEAT:
             return
-        # Prefer payload source for heartbeat, but fall back to CAN-ID source.
-        # Some bridge-generated heartbeats may set one source field differently.
-        node_id = f.payload_src if f.payload_src in self._boxes else f.src
+        node_id = f.src
         if node_id not in self._boxes:
             return
         self._last_seen[node_id] = f.rx_wall_time
@@ -108,7 +109,7 @@ class NodeHealthTab(QtWidgets.QWidget):
 # Telemetry Plots tab
 # ---------------------------------------------------------------------------
 class TelemetryTab(QtWidgets.QWidget):
-    BYTE_LABELS = ["p2", "p3", "p4", "p5", "p6", "p7"]
+    BYTE_LABELS = ["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7"]
 
     def __init__(self):
         super().__init__()
@@ -129,13 +130,13 @@ class TelemetryTab(QtWidgets.QWidget):
         top.addWidget(self.op_combo)
         top.addStretch()
 
-        # Six stacked plots, one per payload byte.
+        # Eight stacked plots, one per payload byte.
         self._plots: list[pg.PlotWidget] = []
         self._curves: list[pg.PlotDataItem] = []
         self._x: list[deque] = []
         self._y: list[deque] = []
         plot_area = pg.GraphicsLayoutWidget()
-        colors = ["r", "g", "b", "c", "m", "y"]
+        colors = ["r", "g", "b", "c", "m", "y", "k", "orange"]
         for i, label in enumerate(self.BYTE_LABELS):
             p = plot_area.addPlot(row=i, col=0)
             p.setLabel("left", label)
@@ -160,13 +161,15 @@ class TelemetryTab(QtWidgets.QWidget):
         op_filter = self.op_combo.currentData()
         if node_filter is not None and f.src != node_filter:
             return
-        if op_filter is not None and f.opcode != op_filter:
+        if op_filter is not None and f.op != op_filter:
             return
 
         t = f.rx_wall_time - self._t0
-        values = (f.p2, f.p3, f.p4, f.p5, f.p6, f.p7)
+        values = (f.p0, f.p1, f.p2, f.p3, f.p4, f.p5, f.p6, f.p7)
         cutoff = t - PLOT_WINDOW_S
         for i, v in enumerate(values):
+            if v is None:      # beyond dlc: no sample
+                continue
             xs, ys = self._x[i], self._y[i]
             xs.append(t); ys.append(v)
             while xs and xs[0] < cutoff:
@@ -185,15 +188,15 @@ class TelemetryTab(QtWidgets.QWidget):
 # Frame Log tab
 # ---------------------------------------------------------------------------
 class FrameLogTab(QtWidgets.QWidget):
-    COLUMNS = ["Time", "SRC", "DST", "Class", "Opcode",
-               "p2", "p3", "p4", "p5", "p6", "p7"]
+    COLUMNS = ["Time", "SRC", "DST", "Category", "Op", "Opcode", "DLC",
+               "p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7"]
 
     def __init__(self):
         super().__init__()
         top = QtWidgets.QHBoxLayout()
         top.addWidget(QtWidgets.QLabel("Filter:"))
         self.filter_edit = QtWidgets.QLineEdit()
-        self.filter_edit.setPlaceholderText("substring (e.g. 'EPS', 'TELEMETRY', 'PING')")
+        self.filter_edit.setPlaceholderText("substring (e.g. 'EPS', 'telemetry', 'PING')")
         top.addWidget(self.filter_edit)
 
         self.pause_btn = QtWidgets.QPushButton("Pause")
@@ -229,10 +232,10 @@ class FrameLogTab(QtWidgets.QWidget):
         for f in drained:
             src = can_proto.name_node(f.src)
             dst = can_proto.name_node(f.dst)
-            cls_name = can_proto.name_class(f.cls)
-            op_name = can_proto.name_opcode(f.opcode, f.cls)
+            cat_name = can_proto.name_category(f.op)
+            op_name = can_proto.name_opcode(f.op)
             if needle:
-                hay = f"{src} {dst} {cls_name} {op_name}".upper()
+                hay = f"{src} {dst} {cat_name} {op_name}".upper()
                 if needle not in hay:
                     continue
 
@@ -240,12 +243,17 @@ class FrameLogTab(QtWidgets.QWidget):
             self.table.insertRow(row)
             t_str = time.strftime("%H:%M:%S", time.localtime(f.rx_wall_time))
             t_str += f".{int((f.rx_wall_time % 1) * 1000):03d}"
-            values = [t_str, src, dst, cls_name, op_name,
-                      f.p2, f.p3, f.p4, f.p5, f.p6, f.p7]
-            color = CLASS_ROW_COLOR.get(f.cls)
+            values = [t_str, src, dst, cat_name, f"0x{f.op:03X}", op_name,
+                      f"{f.dlc}" if f.len_ok else f"{f.dlc} !(exp {can_proto.op_len(f.op)})",
+                      *("" if p is None else p for p in
+                        (f.p0, f.p1, f.p2, f.p3, f.p4, f.p5, f.p6, f.p7))]
+            color = CATEGORY_ROW_COLOR.get((f.op >> 8) & 0xF)
             for c, v in enumerate(values):
                 item = QtWidgets.QTableWidgetItem(str(v))
-                if color is not None:
+                if not f.len_ok:
+                    item.setBackground(BAD_LEN_COLOR)
+                    item.setForeground(QtGui.QBrush(QtGui.QColor(160, 0, 0)))
+                elif color is not None:
                     item.setBackground(color)
                 self.table.setItem(row, c, item)
 
