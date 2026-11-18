@@ -52,12 +52,7 @@
 
 /* ================= HW DEVICES ================= */
 
-static const struct device *const gpioa = DEVICE_DT_GET(DT_NODELABEL(gpioa));
 static const struct device *const can_dev = DEVICE_DT_GET(DT_NODELABEL(fdcan1));
-
-/* CAN transceiver pins, same as apps/GNSS */
-#define PIN_SHDN 10
-#define PIN_SILENT 9
 
 /** @cond */ /* Hidden from Doxygen, or it will mistake this as a function */
 CAN_MSGQ_DEFINE(rxq, 16);
@@ -81,9 +76,6 @@ static int64_t last_fix_ms;
 
 /** CDH mode from its latest heartbeat. */
 static uint8_t cdh_mode = CDH_MODE_UNKNOWN;
-
-/** Frames the CAN driver reported as failed after queuing. */
-static atomic_t tx_errors = ATOMIC_INIT(0);
 
 /* ================= HELPERS ================= */
 
@@ -109,31 +101,6 @@ static const char *mode_str(uint8_t mode)
 }
 
 /**
- * @brief TX-complete callback so can_send() never blocks waiting for an ACK.
- *        Runs in interrupt context: count only.
- */
-static void tx_done(const struct device *dev, int error, void *user_data)
-{
-    ARG_UNUSED(dev);
-    ARG_UNUSED(user_data);
-
-    if (error)
-    {
-        atomic_inc(&tx_errors);
-    }
-}
-
-/**
- * @brief Bring the TCAN3403 transceiver out of shutdown/silent mode.
- */
-static void tcan3403_wakeup(void)
-{
-    gpio_pin_configure(gpioa, PIN_SHDN, GPIO_OUTPUT_INACTIVE);
-    gpio_pin_configure(gpioa, PIN_SILENT, GPIO_OUTPUT_INACTIVE);
-    k_msleep(1);
-}
-
-/**
  * @brief Send a GNSS position frame packed exactly like apps/GNSS
  *        send_gnss_position(): lat/lon x 1e4 as signed 24-bit big-endian.
  */
@@ -142,13 +109,9 @@ static void send_fix(const test_fix_t *fix)
     int32_t lat_1e4 = fix->lat_e7 / 1000;
     int32_t lon_1e4 = fix->lon_e7 / 1000;
 
-    struct can_frame f = {0};
-    f.id = CAN_ID_FULL(PRIO_MED, NODE_ID, CDH_ID, OP_GNSS_POS);
-    can_fill_payload(&f,
+    int err = can_send8(can_dev, NODE_ID, CDH_ID, OP_GNSS_POS, PRIO_MED,
                      (lat_1e4 >> 16) & 0xFF, (lat_1e4 >> 8) & 0xFF, lat_1e4 & 0xFF,
                      (lon_1e4 >> 16) & 0xFF, (lon_1e4 >> 8) & 0xFF, lon_1e4 & 0xFF, 0, 0);
-
-    int err = can_send(can_dev, &f, K_NO_WAIT, tx_done, NULL);
     if (err)
     {
         printk("  warning: GNSS fix not queued: %d\n", err);
@@ -163,7 +126,7 @@ static void send_ground_mode(uint8_t mode)
 {
     printk("  ground -> CDH: OP_SET_MODE %s\n", mode_str(mode));
 
-    int err = send_simple(can_dev, COMMS_ID, CDH_ID, OP_SET_MODE, mode, PRIO_LOW);
+    int err = can_send2(can_dev, COMMS_ID, CDH_ID, OP_SET_MODE, PRIO_LOW, mode, 0);
     if (err)
     {
         printk("  warning: OP_SET_MODE not queued: %d\n", err);
@@ -315,8 +278,12 @@ int main(void)
 {
     printk("\n=== CDH mode test: STANDBY + fix over Utah -> EXPERIMENT ===\n");
 
-    tcan3403_wakeup();
-    int err = can_setup(can_dev, NODE_ID, &rxq, NULL);
+    int err = tcan3403_wakeup();
+    if (err)
+    {
+        printk("TCAN3403 wakeup failed: %d\n", err);
+    }
+    err = can_setup(can_dev, NODE_ID, &rxq, NULL);
     if (err)
     {
         printk("FAIL: CAN setup failed: %d\n", err);
@@ -330,7 +297,7 @@ int main(void)
     send_ground_mode(CDH_MODE_SAFE);
     wait_for_mode(CDH_MODE_SAFE, MODE_CHANGE_TIMEOUT_MS);
 
-    printk("\nCAN TX errors during test: %ld\n", (long)atomic_get(&tx_errors));
+    printk("\nCAN TX errors during test: %ld\n", (long)can_proto_tx_error_count());
     printk("=== %s ===\n", pass ? "PASS" : "FAIL");
 
     /* Keep draining rxq: the CAN filters stay active, and CDH's heartbeats

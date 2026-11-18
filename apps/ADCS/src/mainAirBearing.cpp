@@ -98,9 +98,9 @@ static inline int16_t float_to_i16_rpm(float x)
 
 static void send_heartbeat(void)
 {
-	int err = send_simple(can_dev, NODE_ID, CAN_BROADCAST, OP_HEARTBEAT, 0x00, PRIO_LOW);
+	int err = can_send2(can_dev, NODE_ID, CAN_BROADCAST, OP_HEARTBEAT, PRIO_LOW, 0x00, 0x00);
 	if (err) {
-		LOG_WRN("Failed to send OP_SET_MODE: %d", err);
+		LOG_WRN("Failed to send OP_HEARTBEAT: %d", err);
 	}
 }
 
@@ -177,17 +177,12 @@ static void send_mtq_dipole_command_solar(float mx, float my, float mz)
 
 static void send_wheel_rpm_command_motor(uint8_t motor_sel, float rpm_cmd)
 {
-	struct can_frame f = {0};
 	const int16_t rpm_i16 = float_to_i16_rpm(rpm_cmd);
 
-	f.id = CAN_ID_FULL(PRIO_LOW, NODE_ID, MOTOR_ID, OP_SET_WHEEL_RPM);
-	f.flags = CAN_FRAME_IDE;
-	can_fill_payload(&f,
-			 motor_sel,
-			 (uint8_t)(((uint16_t)rpm_i16 >> 8) & 0xFF),
-			 (uint8_t)((uint16_t)rpm_i16 & 0xFF),
-			 0, 0, 0, 0, 0);
-	can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+	can_send4(can_dev, NODE_ID, MOTOR_ID, OP_SET_WHEEL_RPM, PRIO_LOW,
+		  motor_sel,
+		  (uint8_t)(((uint16_t)rpm_i16 >> 8) & 0xFF),
+		  (uint8_t)((uint16_t)rpm_i16 & 0xFF), 0);
 }
 
 static void send_wheel_rpm_commands_motor(const float wheel_rpm_cmd[4])

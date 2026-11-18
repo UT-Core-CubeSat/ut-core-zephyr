@@ -1115,15 +1115,10 @@ static void handle_can_command(const struct can_frame *f)
  */
 static void send_can_beacon(uint32_t seq)
 {
-    struct can_frame f = {0};
     int ret;
 
-    f.id = CAN_ID_FULL(2U, MOTOR_ID, CAN_BROADCAST, OP_HEARTBEAT);
-    can_fill_payload(&f,
-             (uint8_t)((seq >> 8) & 0xFFU), (uint8_t)(seq & 0xFFU),
-             0, 0, 0, 0, 0, 0);
-
-    ret = can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+    ret = can_send2(can_dev, MOTOR_ID, CAN_BROADCAST, OP_HEARTBEAT, 2U,
+                    (uint8_t)((seq >> 8) & 0xFFU), (uint8_t)(seq & 0xFFU));
     if (ret != 0) {
         printk("WARN: CAN beacon tx failed (%d)\n", ret);
     }
@@ -1135,16 +1130,12 @@ static void send_can_beacon(uint32_t seq)
  */
 static void send_soh_frame(void)
 {
-    struct can_frame f = {0};
     int ret;
 
-    f.id = CAN_ID_FULL(2U, MOTOR_ID, CAN_BROADCAST, OP_SOH_MOTOR);
-    can_fill_payload(&f,
-             (uint8_t)gpio_pin_get_dt(&fault_in),
-             (uint8_t)gpio_pin_get_dt(&kill_in),
-             (uint8_t)atomic_get(&app_run), 0, 0, 0, 0, 0);
-
-    ret = can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+    ret = can_send4(can_dev, MOTOR_ID, CAN_BROADCAST, OP_SOH_MOTOR, 2U,
+                    (uint8_t)gpio_pin_get_dt(&fault_in),
+                    (uint8_t)gpio_pin_get_dt(&kill_in),
+                    (uint8_t)atomic_get(&app_run), 0);
     if (ret != 0) {
         printk("WARN: SOH tx failed (%d)\n", ret);
     }
@@ -1160,7 +1151,6 @@ static void send_soh_frame(void)
  */
 static void send_motor_rpm_frame(unsigned mi, float rpm_signed)
 {
-    struct can_frame f = {0};
     int16_t rpm_i16;
     uint8_t rpm_msb;
     uint8_t rpm_lsb;
@@ -1169,11 +1159,8 @@ static void send_motor_rpm_frame(unsigned mi, float rpm_signed)
     rpm_i16 = (int16_t)lrintf(clampf(rpm_signed, -32768.f, 32767.f));
     pack_be_i16(rpm_i16, &rpm_msb, &rpm_lsb);
 
-    f.id = CAN_ID_FULL(2U, MOTOR_ID, CAN_BROADCAST, OP_MOTOR_WHEEL_RPM);
-    can_fill_payload(&f,
-             (uint8_t)(mi + 1U), rpm_msb, rpm_lsb, 0, 0, 0, 0, 0);
-
-    ret = can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+    ret = can_send4(can_dev, MOTOR_ID, CAN_BROADCAST, OP_MOTOR_WHEEL_RPM, 2U,
+                    (uint8_t)(mi + 1U), rpm_msb, rpm_lsb, 0);
     if (ret != 0) {
         printk("WARN: RPM tx failed M%u (%d)\n", mi + 1U, ret);
     }

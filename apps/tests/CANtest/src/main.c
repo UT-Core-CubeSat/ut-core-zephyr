@@ -244,7 +244,7 @@ int main(void)
         int64_t now = k_uptime_get();
         if (now - last_hb >= 1000) {
             last_hb = now;
-            int err = send_simple(can_dev, NODE_ID, CAN_BROADCAST, OP_HEARTBEAT, 0, PRIO_LOW);
+            int err = can_send2(can_dev, NODE_ID, CAN_BROADCAST, OP_HEARTBEAT, PRIO_LOW, 0, 0);
             if (err) {
                 LOG_WRN("Failed to send OP_HEARTBEAT: %d", err);
             }
