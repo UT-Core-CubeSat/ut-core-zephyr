@@ -125,7 +125,28 @@ int can_setup(const struct device *can_dev, uint8_t my_id_node, struct k_msgq *r
         return err;
     }
 
-    err = can_set_mode(can_dev, CAN_MODE_NORMAL);
+    can_mode_t mode = CAN_MODE_NORMAL;
+
+#ifdef CONFIG_CAN_FD_MODE
+    can_mode_t caps;
+
+    err = can_get_capabilities(can_dev, &caps);
+    if (err || !(caps & CAN_MODE_FD))
+    {
+        LOG_ERR("CAN controller lacks FD support (err=%d)", err);
+        return err ? err : -ENOTSUP;
+    }
+
+    err = can_set_bitrate_data(can_dev, CAN_FD_DATA_BITRATE);
+    if (err)
+    {
+        LOG_ERR("can_set_bitrate_data(%u) failed: %d", (unsigned)CAN_FD_DATA_BITRATE, err);
+        return err;
+    }
+    mode |= CAN_MODE_FD;
+#endif
+
+    err = can_set_mode(can_dev, mode);
     if (err)
     {
         LOG_ERR("can_set_mode failed: %d", err);
@@ -174,7 +195,11 @@ int can_setup(const struct device *can_dev, uint8_t my_id_node, struct k_msgq *r
 
     LOG_INF("Filter to_me:  id=0x%08X mask=0x%08X", to_me.id, to_me.mask);
     LOG_INF("Filter bcast:  id=0x%08X mask=0x%08X", bcast.id, bcast.mask);
+#ifdef CONFIG_CAN_FD_MODE
+    LOG_INF("CAN Initialized (29-bit extended, FD: 500000/%u bit/s)", (unsigned)CAN_FD_DATA_BITRATE);
+#else
     LOG_INF("CAN Initialized (29-bit extended)");
+#endif
 
     return 0;
 }
@@ -186,7 +211,13 @@ int can_setup(const struct device *can_dev, uint8_t my_id_node, struct k_msgq *r
 int can_decode(const struct can_frame *f, can_packet_t *pkt)
 {
     uint32_t id = f->id;
-    uint8_t len = (f->dlc > 8) ? 8 : f->dlc;
+    /* f->dlc is the DLC code; for FD frames 9..15 mean 12..64 bytes. */
+    uint8_t len = can_dlc_to_bytes(f->dlc);
+
+    if (len > CAN_MAX_DLEN)
+    {
+        len = CAN_MAX_DLEN;
+    }
 
     pkt->priority = CAN_ID_PRIO(id);
     pkt->src = CAN_ID_SRC(id);
@@ -196,7 +227,8 @@ int can_decode(const struct can_frame *f, can_packet_t *pkt)
     memset(pkt->data, 0, sizeof(pkt->data));
     memcpy(pkt->data, f->data, len);
 
-    if (len != can_op_len(pkt->op))
+    if (len != can_op_len(pkt->op) ||
+        (len > 8 && (f->flags & CAN_FRAME_FDF) == 0))
     {
         uint32_t n = (uint32_t)atomic_inc(&rx_len_error_count) + 1U;
         if ((n & (n - 1U)) == 0U) /* log on 1st, 2nd, 4th, 8th... occurrence */
@@ -218,6 +250,16 @@ int can_send_frame(const struct device *can_dev, uint8_t src, uint8_t dst,
 {
     struct can_frame f = {0};
 
+    if (len > 8)
+    {
+#ifdef CONFIG_CAN_FD_MODE
+        f.flags |= CAN_FRAME_FDF | CAN_FRAME_BRS;
+#else
+        LOG_ERR("can_send_frame: %u-byte frame needs CONFIG_CAN_FD_MODE", len);
+        return -ENOTSUP;
+#endif
+    }
+
     if (len != can_op_len(op) || data == NULL)
     {
         LOG_ERR("can_send_frame: op=0x%03X expects %u bytes, got %u",
@@ -226,8 +268,8 @@ int can_send_frame(const struct device *can_dev, uint8_t src, uint8_t dst,
     }
 
     f.id = CAN_ID_FULL(prio, src, dst, op);
-    f.flags = CAN_FRAME_IDE;
-    f.dlc = len;
+    f.flags |= CAN_FRAME_IDE;
+    f.dlc = can_bytes_to_dlc(len);
     memcpy(f.data, data, len);
 
     /* can_tx_done makes this non-blocking: see its doc comment for why a

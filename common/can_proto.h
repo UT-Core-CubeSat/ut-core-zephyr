@@ -74,13 +74,22 @@ typedef struct {
     uint8_t  src;
     uint8_t  dst;
     uint16_t op;
-    uint8_t  data[8];
-    uint8_t  dlc;
+    uint8_t  data[64];   /**< Payload; 64 bytes to hold a CAN FD frame. */
+    uint8_t  dlc;        /**< Payload length in BYTES (not the DLC code). */
 } can_packet_t;
+
+/** CAN FD data-phase bitrate (bit/s) used when CONFIG_CAN_FD_MODE=y. The
+ *  arbitration phase stays at 500 kbit/s. Override before including. */
+#ifndef CAN_FD_DATA_BITRATE
+#define CAN_FD_DATA_BITRATE 2000000
+#endif
 
 /**
  * @brief Configure bitrate/mode, start the CAN controller, and install
- *        RX filters for this node's address and broadcast.
+ *        RX filters for this node's address and broadcast. With
+ *        CONFIG_CAN_FD_MODE=y also sets the data-phase bitrate
+ *        (CAN_FD_DATA_BITRATE) and enables CAN_MODE_FD; classic frames
+ *        still work in that mode.
  * @param can_dev    CAN controller device.
  * @param my_id_node This board's node ID (used for the to-me filter).
  * @param rxq        Message queue to receive filtered frames into.
@@ -134,7 +143,10 @@ int can_decode(const struct can_frame *f, can_packet_t *pkt);
  * @param op      Opcode (see ops.h); carried in the CAN ID.
  * @param prio    Arbitration priority (0 = highest; see CAN_PRIO()).
  * @param data    Payload bytes (at least len bytes).
- * @param len     Payload length; must equal can_op_len(op) (2, 4 or 8).
+ * @param len     Payload length; must equal can_op_len(op): 2, 4 or 8, or an FD length
+ *               (12, 16, 20, 24, 32, 48, 64) for FD-only opcodes.
+ *               len > 8 is sent as a CAN FD frame with bit-rate switch and
+ *               needs CONFIG_CAN_FD_MODE (else -ENOTSUP).
  *
  * Prefer the can_send2/can_send4/can_send8 wrappers below.
  *

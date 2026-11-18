@@ -87,7 +87,8 @@ typedef enum {
 /**
  * @brief Fixed payload length (DLC) for an opcode.
  * @param op Opcode (12-bit value from the CAN ID).
- * @return 2, 4 or 8; 0 if the opcode is unknown (such frames are rejected).
+ * @return 2, 4 or 8 (or an FD length 12..64 for FD-only opcodes); 0 if the opcode is
+ *         unknown (such frames are rejected).
  */
 static inline uint8_t can_op_len(uint16_t op)
 {
@@ -129,6 +130,7 @@ static inline uint8_t can_op_len(uint16_t op)
     case OP_SOH_SOLAR:
     case OP_ADCS_SOH_ATTITUDE:
         return 8;
+    /* CAN FD frames (>8 bytes, 12/16/20/24/32/48/64) need CONFIG_CAN_FD_MODE; add their opcodes here. */
     default:
         return 0;
     }
