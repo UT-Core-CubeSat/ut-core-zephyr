@@ -65,6 +65,10 @@ extern "C" {
 #define CLS_CMD_RESP    3
 #define CLS_TELEMETRY   4
 #define CLS_HEALTH      10
+/** SOH Core payload; see soh_core_t and soh_pack_core(). */
+#define CLS_SOH_CORE    11
+/** SOH CAN Stats payload; see soh_can_t and soh_pack_can(). */
+#define CLS_SOH_CAN_STATS 12
 
 /**
  * @brief Opcodes used across all UT-CORE CAN message classes.
