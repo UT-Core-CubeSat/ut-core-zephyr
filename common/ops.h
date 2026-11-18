@@ -21,9 +21,9 @@
  * Payload byte layouts below use p0..p7 = CAN data[0]..data[7]; all 8 data
  * bytes are application payload (src and op live in the ID, not the data).
  *
- * Frame length: every opcode has a fixed payload length of 2, 4 or 8 bytes
- * (smallest that fits), given by can_op_len() at the bottom of this file.
- * Senders use can_send2/can_send4/can_send8; can_decode() rejects frames
+ * Frame length: every opcode has a fixed payload length of 2, 4 or 8 bytes (or a CAN FD length, 12..64)
+ * (smallest that fits; CAN FD opcodes use 12, 16, 20, 24, 32, 48 or 64), given by can_op_len() at the bottom of this file.
+ * Senders use can_send2/4/8 (can_send12/20/64 for CAN FD); can_decode() rejects frames
  * whose DLC does not match, so handlers can trust data[0..len-1]. Unused
  * trailing bytes within the length are zero.
  *
@@ -68,10 +68,8 @@ typedef enum {
     OP_RESP_SET_EPS_LOAD    = OP_RESP(OP_SET_EPS_LOAD),
 
     /* ---- 0x3xx telemetry ---- */
-    OP_GNSS_POS  = 0x301,   /**< GNSS -> CDH: p0..p2 = lat, p3..p5 = lon (big-endian 24-bit). */
-    OP_GNSS_VX   = 0x302,   /**< p0..p3 = 32-bit value (big-endian), p4 = seq. */
-    OP_GNSS_VY   = 0x303,   /**< same layout as OP_GNSS_VX. */
-    OP_GNSS_VZ   = 0x304,   /**< same layout as OP_GNSS_VX. */
+    OP_GNSS_POS  = 0x301,   /**< GNSS -> CDH, 12 bytes (CAN FD): p0..p3 = latitude, p4..p7 = longitude (int32 big-endian, 1e-7 deg), p8..p11 = ellipsoid altitude (int32 big-endian, cm). */
+    OP_GNSS_VEL  = 0x302,   /**< GNSS -> CDH, 12 bytes (CAN FD): p0..p3 = ECEF vx, p4..p7 = vy, p8..p11 = vz (int32 big-endian, cm/s). 0x303/0x304 were VY/VZ and are retired. */
     OP_GNSS_TIME = 0x305,   /**< p0..p1 = GPS week, p2..p5 = time of week (big-endian). */
     OP_MOTOR_WHEEL_RPM = 0x310, /**< MOTOR wheel RPM telemetry (was OP_SET_WHEEL_RPM in telemetry class). */
     OP_ADCS_WHEEL_RPM  = 0x311, /**< wheel1..wheel3 rpm packed in p0..p5. */
@@ -121,10 +119,6 @@ static inline uint8_t can_op_len(uint16_t op)
         return 4;
     /* 8 bytes */
     case OP_SET_MAG_DIPOLE:
-    case OP_GNSS_POS:
-    case OP_GNSS_VX:
-    case OP_GNSS_VY:
-    case OP_GNSS_VZ:
     case OP_GNSS_TIME:
     case OP_ADCS_WHEEL_RPM:
     case OP_ADCS_MTQ_DIPOLE:
@@ -134,7 +128,11 @@ static inline uint8_t can_op_len(uint16_t op)
     case OP_SOH_CORE:
     case OP_SOH_CAN_STATS:
         return 8;
-    /* CAN FD frames (>8 bytes, 12/16/20/24/32/48/64) need CONFIG_CAN_FD_MODE; add their opcodes here. */
+    /* CAN FD frames (>8 bytes: 12/16/20/24/32/48/64) need CONFIG_CAN_FD_MODE on both ends. */
+    /* 12 bytes */
+    case OP_GNSS_POS:
+    case OP_GNSS_VEL:
+        return 12;
     default:
         return 0;
     }

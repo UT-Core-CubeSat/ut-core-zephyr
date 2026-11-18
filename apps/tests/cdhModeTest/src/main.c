@@ -102,16 +102,18 @@ static const char *mode_str(uint8_t mode)
 
 /**
  * @brief Send a GNSS position frame packed exactly like apps/GNSS
- *        send_gnss_position(): lat/lon x 1e4 as signed 24-bit big-endian.
+ *        send_gnss_position(): 12-byte CAN FD frame, int32 big-endian
+ *        lat/lon (1e-7 deg) and altitude (cm, fixed at 0 here).
  */
 static void send_fix(const test_fix_t *fix)
 {
-    int32_t lat_1e4 = fix->lat_e7 / 1000;
-    int32_t lon_1e4 = fix->lon_e7 / 1000;
+    uint8_t buf[12];
 
-    int err = can_send8(can_dev, NODE_ID, CDH_ID, OP_GNSS_POS, PRIO_MED,
-                     (lat_1e4 >> 16) & 0xFF, (lat_1e4 >> 8) & 0xFF, lat_1e4 & 0xFF,
-                     (lon_1e4 >> 16) & 0xFF, (lon_1e4 >> 8) & 0xFF, lon_1e4 & 0xFF, 0, 0);
+    can_put_be32(&buf[0], fix->lat_e7);
+    can_put_be32(&buf[4], fix->lon_e7);
+    can_put_be32(&buf[8], 0);
+
+    int err = can_send12(can_dev, NODE_ID, CDH_ID, OP_GNSS_POS, PRIO_MED, buf);
     if (err)
     {
         printk("  warning: GNSS fix not queued: %d\n", err);

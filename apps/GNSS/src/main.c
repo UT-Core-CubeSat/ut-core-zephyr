@@ -157,91 +157,66 @@ static void send_gnss_soh(void)
 }
 
 /**
- * @brief Send a position telemetry frame with lat/lon packed as scaled
- *        24-bit integers.
+ * @brief Send the current position to CDH as one 12-byte CAN FD frame.
  *
- * Converts nav.latitude_1e7/longitude_1e7 (1e-7 degree units) down to
- * 1e-4 degree resolution (~11m) and packs each as a signed 24-bit
- * big-endian value into an 8-byte OP_GNSS_POS frame addressed to CDH.
  * Does nothing if the current nav fix is not valid.
  *
- * Packs lat/lon as scaled int24 for decent resolution in 8 bytes:
- *   [0..2] latitude  × 1e4, signed 24-bit big-endian  (~11m resolution)
- *   [3..5] longitude × 1e4, signed 24-bit big-endian
+ * Frame layout (OP_GNSS_POS), all signed 32-bit big-endian:
+ *   [0..3]  latitude  (1e-7 degrees)
+ *   [4..7]  longitude (1e-7 degrees)
+ *   [8..11] ellipsoid altitude (cm)
  */
-static void send_gnss_position(orion_nav_data_t *nav)
+static void send_gnss_position(const orion_nav_data_t *nav)
 {
-    /* lat/lon are in 1e-7 degrees; divide by 1000 → 1e-4 degrees */
-    int32_t lat_1e4 = nav->latitude_1e7  / 1000;
-    int32_t lon_1e4 = nav->longitude_1e7 / 1000;
+    uint8_t buf[12];
 
-    /* lat/lon: 24-bit big-endian each; bytes 6..7 unused (0) */
-    int err = can_send8(can_dev, NODE_ID, NODE_CDH, OP_GNSS_POS, PRIO_MED,
-        (lat_1e4 >> 16) & 0xFF,
-        (lat_1e4 >>  8) & 0xFF,
-        (lat_1e4      ) & 0xFF,
-        (lon_1e4 >> 16) & 0xFF,
-        (lon_1e4 >>  8) & 0xFF,
-        (lon_1e4      ) & 0xFF,
-        0,
-        0
-    );
+    can_put_be32(&buf[0], nav->latitude_1e7);
+    can_put_be32(&buf[4], nav->longitude_1e7);
+    can_put_be32(&buf[8], (int32_t)nav->ellipsoid_alt_cm);
+
+    int err = can_send12(can_dev, NODE_ID, NODE_CDH, OP_GNSS_POS, PRIO_MED, buf);
     if (err) {
         LOG_WRN("Failed to send OP_GNSS_POS: %d", err);
     }
 
     double lat = ORION_DEG_FROM_1E7(nav->latitude_1e7);
     double lon = ORION_DEG_FROM_1E7(nav->longitude_1e7);
-    LOG_INF("TX POS  lat=%.6f lon=%.6f", lat, lon);
+    LOG_INF("TX POS  lat=%.7f lon=%.7f alt=%d cm", lat, lon, (int)nav->ellipsoid_alt_cm);
 }
 
 
 /**
- * @brief Send one ECEF velocity component to CDH in its own telemetry frame.
- * @param v_data Velocity component in cm/s (signed 32-bit).
- * @param op     Which axis: OP_GNSS_VX, OP_GNSS_VY or OP_GNSS_VZ.
- * @param seq    Sequence number shared by the VX/VY/VZ frames of one nav
- *               snapshot, so CDH can tell whether the three axes belong
- *               together.
+ * @brief Send the ECEF velocity to CDH as one 12-byte CAN FD frame.
  *
- * Frame layout:
- *   [0..3] velocity, signed 32-bit big-endian (cm/s)
- *   [4] seq (uint8_t, wraps 255 -> 0)
- *   [5..7] unused (0)
+ * All three axes come from the same nav snapshot in a single frame, so they
+ * are consistent by construction (no sequence number needed).
+ *
+ * Frame layout (OP_GNSS_VEL), all signed 32-bit big-endian, cm/s:
+ *   [0..3] ECEF vx    [4..7] ECEF vy    [8..11] ECEF vz
  */
-static void send_gnss_velocity(int32_t v_data, uint16_t op, uint8_t seq)
+static void send_gnss_velocity(const orion_nav_data_t *nav)
 {
-    /* velocity: 32-bit big-endian in [0..3]; [4] = sequence number shared by
-     * VX/VY/VZ from the same nav snapshot; [5..7] unused (0) */
-    int err = can_send8(can_dev, NODE_ID, NODE_CDH, op, PRIO_MED,
-        (v_data >> 24) & 0xFF,
-        (v_data >> 16) & 0xFF,
-        (v_data >> 8) & 0xFF,
-        (v_data     ) & 0xFF,
-        seq,
-        0,
-        0,
-        0
-    );
+    uint8_t buf[12];
+
+    can_put_be32(&buf[0], nav->ecef_vx_cms);
+    can_put_be32(&buf[4], nav->ecef_vy_cms);
+    can_put_be32(&buf[8], nav->ecef_vz_cms);
+
+    int err = can_send12(can_dev, NODE_ID, NODE_CDH, OP_GNSS_VEL, PRIO_MED, buf);
     if (err) {
-        LOG_WRN("Failed to send velocity op=0x%03X: %d", op, err);
+        LOG_WRN("Failed to send OP_GNSS_VEL: %d", err);
     }
 
-    LOG_INF("TX VEL  op=0x%03X seq=%u v=%d cm/s", op, seq, v_data);
+    LOG_INF("TX VEL  vx=%d vy=%d vz=%d cm/s",
+            (int)nav->ecef_vx_cms, (int)nav->ecef_vy_cms, (int)nav->ecef_vz_cms);
 }
 
 /**
- * @brief Send position and all three velocity components for the current
- *        nav fix.
- *
- * Does nothing if the nav data is not valid. The three velocity frames
- * share one sequence number (vel_seq), which increments once per call, so
- * CDH can detect a dropped or mixed-up velocity set. The counter is
- * compared for equality only, so its 8-bit wrap needs no special handling.
+ * @brief Send position and velocity for the current nav fix (two CAN FD
+ *        frames). Does nothing if the nav data is not valid.
  */
 static void send_gnss_master(void)
 {
-    static uint8_t vel_seq;  /* wraps 255 -> 0; CDH only compares for equality */
     orion_nav_data_t nav;
     orion_driver_get_nav(&gnss_driver, &nav);
 
@@ -250,10 +225,7 @@ static void send_gnss_master(void)
     }
 
     send_gnss_position(&nav);
-    send_gnss_velocity(nav.ecef_vx_cms, OP_GNSS_VX, vel_seq);
-    send_gnss_velocity(nav.ecef_vy_cms, OP_GNSS_VY, vel_seq);
-    send_gnss_velocity(nav.ecef_vz_cms, OP_GNSS_VZ, vel_seq);
-    vel_seq++;
+    send_gnss_velocity(&nav);
 }
 
 

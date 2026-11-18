@@ -189,6 +189,56 @@ static inline int can_send8(const struct device *can_dev, uint8_t src, uint8_t d
 }
 
 /**
+ * @name CAN FD send helpers
+ * Payload is passed as an array (too many bytes for per-byte arguments).
+ * The opcode must have the matching length in can_op_len(). Frames are sent
+ * with FD + bit-rate switch; these return -ENOTSUP unless the app is built
+ * with CONFIG_CAN_FD_MODE=y, and every node that receives them must run in FD
+ * mode too. @see can_send_frame
+ * @{
+ */
+
+/** @brief Send a 12-byte CAN FD frame. @param data 12 payload bytes. */
+static inline int can_send12(const struct device *can_dev, uint8_t src, uint8_t dst,
+                             uint16_t op, uint8_t prio, const uint8_t data[12])
+{
+    return can_send_frame(can_dev, src, dst, op, prio, data, 12);
+}
+
+/** @brief Send a 20-byte CAN FD frame. @param data 20 payload bytes. */
+static inline int can_send20(const struct device *can_dev, uint8_t src, uint8_t dst,
+                             uint16_t op, uint8_t prio, const uint8_t data[20])
+{
+    return can_send_frame(can_dev, src, dst, op, prio, data, 20);
+}
+
+/** @brief Send a 64-byte CAN FD frame. @param data 64 payload bytes. */
+static inline int can_send64(const struct device *can_dev, uint8_t src, uint8_t dst,
+                             uint16_t op, uint8_t prio, const uint8_t data[64])
+{
+    return can_send_frame(can_dev, src, dst, op, prio, data, 64);
+}
+
+/** @} */
+
+/** @brief Store a signed 32-bit value big-endian at p[0..3]. */
+static inline void can_put_be32(uint8_t *p, int32_t v)
+{
+    uint32_t u = (uint32_t)v;
+    p[0] = (uint8_t)(u >> 24);
+    p[1] = (uint8_t)(u >> 16);
+    p[2] = (uint8_t)(u >> 8);
+    p[3] = (uint8_t)u;
+}
+
+/** @brief Read a signed 32-bit big-endian value from p[0..3]. */
+static inline int32_t can_get_be32(const uint8_t *p)
+{
+    return (int32_t)(((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+                     ((uint32_t)p[2] << 8) | (uint32_t)p[3]);
+}
+
+/**
  * @brief Number of CAN sends that failed to complete since boot, as
  *        reported asynchronously by the CAN driver after can_send_frame()
  *        has already returned.

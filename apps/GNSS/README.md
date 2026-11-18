@@ -30,7 +30,7 @@ On boot, the firmware verifies GPIOA is ready, initializes and starts the GNSS d
 
 ## Software Requirements 9-28-26 (Cason)
 - Process lat/long
-    - **Complete** The code gets this from the orion chip, converts it to 1e-4 degree units
+    - **Complete** The code gets this from the orion chip, sends it to CDH at full 1e-7 degree resolution (plus altitude in cm) in one 12-byte CAN FD frame
 - Process speed
     - **Incomplete** The code never extracts this from orion_nav_data_t. In theory this should be fairly easy to implement.
 - Send data to CDH

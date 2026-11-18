@@ -414,9 +414,7 @@ static void can_dispatch(const can_packet_t *pkt)
         break;
 
     case OP_GNSS_POS:
-    case OP_GNSS_VX:
-    case OP_GNSS_VY:
-    case OP_GNSS_VZ:
+    case OP_GNSS_VEL:
     case OP_GNSS_TIME:
     case OP_MOTOR_WHEEL_RPM:
     case OP_ADCS_WHEEL_RPM:
@@ -483,26 +481,15 @@ static void handle_telemetry(const can_packet_t *pkt)
 {
     if (pkt->src == GNSS_ID && pkt->op == OP_GNSS_POS)
     {
-        /* Unpack signed 24-bit big-endian lat/lon (units: 1e-4 degrees) */
-        int32_t lat_1e4 = (int32_t)((uint32_t)pkt->data[0] << 16 |
-                                    (uint32_t)pkt->data[1] << 8 |
-                                    (uint32_t)pkt->data[2]);
-        if (lat_1e4 & 0x800000)
-            lat_1e4 |= 0xFF000000; /* sign-extend */
-
-        int32_t lon_1e4 = (int32_t)((uint32_t)pkt->data[3] << 16 |
-                                    (uint32_t)pkt->data[4] << 8 |
-                                    (uint32_t)pkt->data[5]);
-        if (lon_1e4 & 0x800000)
-            lon_1e4 |= 0xFF000000;
-
-        gnss_latest.lat_deg_e7 = lat_1e4 * 1000; /* back to 1e-7 */
-        gnss_latest.lon_deg_e7 = lon_1e4 * 1000;
+        /* 12-byte frame: int32 big-endian lat, lon (1e-7 deg), altitude (cm) */
+        gnss_latest.lat_deg_e7 = can_get_be32(&pkt->data[0]);
+        gnss_latest.lon_deg_e7 = can_get_be32(&pkt->data[4]);
+        gnss_latest.alt_mm = can_get_be32(&pkt->data[8]) * 10;
         gnss_latest.timestamp_ms = k_uptime_get_32();
         gnss_latest.valid = true;
 
-        LOG_INF("GNSS fix: lat=%d lon=%d (1e-7 deg)",
-                gnss_latest.lat_deg_e7, gnss_latest.lon_deg_e7);
+        LOG_INF("GNSS fix: lat=%d lon=%d (1e-7 deg) alt=%d mm",
+                gnss_latest.lat_deg_e7, gnss_latest.lon_deg_e7, gnss_latest.alt_mm);
         return;
     }
 
