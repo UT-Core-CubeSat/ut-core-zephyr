@@ -82,6 +82,8 @@ typedef enum {
     OP_SOH_SOLAR = 0x402,   /**< SOLAR SOH, p0..p7. */
     OP_SOH_MOTOR = 0x403,   /**< MOTOR SOH, p0..p7. */
     OP_ADCS_SOH_ATTITUDE = 0x404, /**< qx/qy/qz packed in p0..p5. */
+    OP_SOH_CORE      = 0x410,   /**< Any node, usually broadcast: SOH Core, 8 bytes; layout in soh.h (soh_pack_core). */
+    OP_SOH_CAN_STATS = 0x411,   /**< Any node, usually broadcast: SOH CAN Stats, 8 bytes; layout in soh.h (soh_pack_can). */
 } can_op_t;
 
 /**
@@ -129,6 +131,8 @@ static inline uint8_t can_op_len(uint16_t op)
     case OP_SOH_GNSS:
     case OP_SOH_SOLAR:
     case OP_ADCS_SOH_ATTITUDE:
+    case OP_SOH_CORE:
+    case OP_SOH_CAN_STATS:
         return 8;
     /* CAN FD frames (>8 bytes, 12/16/20/24/32/48/64) need CONFIG_CAN_FD_MODE; add their opcodes here. */
     default:
