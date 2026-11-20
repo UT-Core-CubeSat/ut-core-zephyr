@@ -54,8 +54,13 @@ LOG_MODULE_REGISTER(gnss_app, CONFIG_LOG_DEFAULT_LEVEL);
 /* GNSS-specific opcodes */
 #define OP_GNSS_SOH        0x01   /* periodic state-of-health        */
 #define OP_GNSS_POS        0x02   /* position telemetry               */
+#define OP_GNSS_VX         0x03   /* ECEF x velocity telemetry        */
+#define OP_GNSS_VY         0x04   /* ECEF y velocity telemetry        */
+#define OP_GNSS_VZ         0x05   /* ECEF z velocity telemetry        */
 #define OP_QUERY_POS       0x61   /* CDH requests current position    */
 #define OP_SET_UPDATE_RATE 0x62   /* CDH sets GNSS update rate        */
+#define OP_GNSS_TIME       0x06   /* GPS week + time-of-week (GPS time, not UTC) */
+#define TIME_INTERVAL_MS   (60*60*1000) /* Send GPS time to CDH every hour */
 
 
 /* @} */
@@ -188,18 +193,11 @@ static void send_gnss_soh(void)
  *   [2..4] latitude  × 1e4, signed 24-bit big-endian  (~11m resolution)
  *   [5..7] longitude × 1e4, signed 24-bit big-endian
  */
-static void send_gnss_position(void)
+static void send_gnss_position(orion_nav_data_t *nav)
 {
-    orion_nav_data_t nav;
-    orion_driver_get_nav(&gnss_driver, &nav);
-
-    if (!nav.valid) {
-        return;  /* don't send garbage */
-    }
-
     /* lat/lon are in 1e-7 degrees; divide by 1000 → 1e-4 degrees */
-    int32_t lat_1e4 = nav.latitude_1e7  / 1000;
-    int32_t lon_1e4 = nav.longitude_1e7 / 1000;
+    int32_t lat_1e4 = nav->latitude_1e7  / 1000;
+    int32_t lon_1e4 = nav->longitude_1e7 / 1000;
 
     struct can_frame f = {0};
     f.id    = CAN_ID_FULL(PRIO_MED, NODE_ID, NODE_CDH, CLS_TELEMETRY);
@@ -218,11 +216,124 @@ static void send_gnss_position(void)
 
     can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
 
-    double lat = ORION_DEG_FROM_1E7(nav.latitude_1e7);
-    double lon = ORION_DEG_FROM_1E7(nav.longitude_1e7);
+    double lat = ORION_DEG_FROM_1E7(nav->latitude_1e7);
+    double lon = ORION_DEG_FROM_1E7(nav->longitude_1e7);
     LOG_INF("TX POS  lat=%.6f lon=%.6f", lat, lon);
 }
 
+
+/**
+ * @brief Send one ECEF velocity component to CDH in a CLS_TELEMETRY frame.
+ * @param v_data Velocity component in cm/s (signed 32-bit).
+ * @param op     Which axis: OP_GNSS_VX, OP_GNSS_VY or OP_GNSS_VZ.
+ * @param seq    Sequence number shared by the VX/VY/VZ frames of one nav
+ *               snapshot, so CDH can tell whether the three axes belong
+ *               together.
+ *
+ * Frame layout:
+ *   [0] src
+ *   [1] op (OP_GNSS_VX / VY / VZ)
+ *   [2..5] velocity, signed 32-bit big-endian (cm/s)
+ *   [6] seq (uint8_t, wraps 255 -> 0)
+ *   [7] unused (0)
+ */
+static void send_gnss_velocity(int32_t v_data, uint8_t op, uint8_t seq)
+{
+    struct can_frame f = {0};
+    f.id    = CAN_ID_FULL(PRIO_MED, NODE_ID, NODE_CDH, CLS_TELEMETRY);
+    f.flags = CAN_FRAME_IDE;
+    f.dlc   = 8;
+    f.data[0] = NODE_ID;
+    f.data[1] = op;
+
+    /*velocity: 32-bit big-endian*/
+    f.data[2] = (v_data >> 24) & 0xFF;
+    f.data[3] = (v_data >> 16) & 0xFF;
+    f.data[4] = (v_data >> 8) & 0xFF;
+    f.data[5] = (v_data     ) & 0xFF;
+
+    /* sequence number: VX/VY/VZ from the same nav snapshot share it */
+    f.data[6] = seq;
+
+    can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+
+    LOG_INF("TX VEL  op=0x%02X seq=%u v=%d cm/s", op, seq, v_data);
+}
+
+/**
+ * @brief Send position and all three velocity components for the current
+ *        nav fix.
+ *
+ * Does nothing if the nav data is not valid. The three velocity frames
+ * share one sequence number (vel_seq), which increments once per call, so
+ * CDH can detect a dropped or mixed-up velocity set. The counter is
+ * compared for equality only, so its 8-bit wrap needs no special handling.
+ */
+static void send_gnss_master(void)
+{
+    static uint8_t vel_seq;  /* wraps 255 -> 0; CDH only compares for equality */
+    orion_nav_data_t nav;
+    orion_driver_get_nav(&gnss_driver, &nav);
+
+    if (!nav.valid) {
+        return;  /* don't send garbage */
+    }
+
+    send_gnss_position(&nav);
+    send_gnss_velocity(nav.ecef_vx_cms, OP_GNSS_VX, vel_seq);
+    send_gnss_velocity(nav.ecef_vy_cms, OP_GNSS_VY, vel_seq);
+    send_gnss_velocity(nav.ecef_vz_cms, OP_GNSS_VZ, vel_seq);
+    vel_seq++;
+}
+
+
+/**
+ * @brief Send the current GPS time (week + time-of-week) to CDH.
+ * @return true if a frame was sent; false if there is no usable fix, in
+ *         which case the caller should retry on its next pass.
+ *
+ * The time is GPS time, not UTC (GPS is currently ahead of UTC by the
+ * leap-second count). Conversion is deliberately left to CDH/ground. The
+ * value is the time of the receiver's last nav solution, so it is up to
+ * about one nav interval old when sent, plus bus latency.
+ *
+ * Frame layout:
+ *   [0] src
+ *   [1] OP_GNSS_TIME
+ *   [2..3] GPS week, unsigned 16-bit big-endian
+ *   [4..7] time of week in centiseconds, unsigned 32-bit big-endian
+ */
+static bool send_gnss_time(void)
+{
+    orion_nav_data_t nav;
+    orion_driver_get_nav(&gnss_driver, &nav);
+
+    if (!nav.valid || nav.fix_mode == 0) {
+        return false; /*don't send a time if no fix found*/
+    }
+
+    struct can_frame f = {0};
+    f.id = CAN_ID_FULL(PRIO_MED, NODE_ID, NODE_CDH, CLS_TELEMETRY);
+    f.flags = CAN_FRAME_IDE;
+    f.dlc = 8;
+    f.data[0] = NODE_ID;
+    f.data[1] = OP_GNSS_TIME;
+
+    /*week: 16-bit big-endian*/
+    f.data[2] = (nav.gnss_week >> 8) & 0xFF;
+    f.data[3] = (nav.gnss_week) & 0xFF;
+
+    /*time-of-week: 32-bit big endian, centiseconds*/
+    f.data[4] = (nav.tow_cs >> 24) & 0xFF;
+    f.data[5] = (nav.tow_cs >> 16) & 0xFF;
+    f.data[6] = (nav.tow_cs >> 8) & 0xFF;
+    f.data[7] = (nav.tow_cs) & 0xFF;
+
+    can_send(can_dev, &f, K_NO_WAIT, NULL, NULL);
+    LOG_INF("TX TIME week=%u tow=%u.%02u s", nav.gnss_week,
+            nav.tow_cs / 100, nav.tow_cs % 100);
+    return true;
+}
 /* @} */
 
 /* ===================================================== */
@@ -256,7 +367,7 @@ static void handle_command(const can_packet_t *pkt)
     switch (opcode) {
     case OP_QUERY_POS:
         /* CDH asked for current position — reply immediately */
-        send_gnss_position();
+        send_gnss_master();
         int err = send_simple(can_dev, NODE_ID, pkt->src, CLS_CMD_RESP, OP_QUERY_POS, 0x01, PRIO_LOW);
         if (err) {
             LOG_WRN("Failed to send OP_SET_MODE: %d", err);
@@ -397,8 +508,8 @@ K_THREAD_DEFINE(can_rx_tid, CAN_RX_STACK_SIZE,
  * @param nav  Latest nav fix data from the GNSS driver.
  * @param user Unused user-data pointer (registered as NULL).
  *
- * Logs fix mode, position, altitude, and satellite count when the fix is
- * valid; logs a warning and returns early otherwise.
+ * Logs fix mode, position, altitude, velocity, and satellite count when
+ * the fix is valid; logs a warning and returns early otherwise.
  */
 static void on_nav_update(const orion_nav_data_t *nav, void *user)
 {
@@ -421,8 +532,9 @@ static void on_nav_update(const orion_nav_data_t *nav, void *user)
         default:                fix_str = "NONE";      break;
     }
 
-    LOG_INF("FIX %s | lat=%.6f lon=%.6f alt=%.2fm | SVs=%u",
-            fix_str, lat, lon, alt, nav->sv_count);
+    LOG_INF("FIX %s | lat=%.6f lon=%.6f alt=%.2fm | SVs=%u | vx=%d vy=%d vz=%d cm/s",
+            fix_str, lat, lon, alt, nav->sv_count,
+            nav->ecef_vx_cms, nav->ecef_vy_cms, nav->ecef_vz_cms);
 }
 
 /* @} */
@@ -504,6 +616,11 @@ int main(void)
     int64_t last_hb  = k_uptime_get();
     int64_t last_soh = k_uptime_get();
     int64_t last_pos = k_uptime_get();
+    /* Start one interval in the past so the first time frame goes out on the
+     * first good fix; later, last_time only resets after a successful send,
+     * so a missed hour is retried on the next pass instead of waiting
+     * another hour. */
+    int64_t last_time = -(int64_t)TIME_INTERVAL_MS;
 
     while (1) {
         int64_t now = k_uptime_get();
@@ -519,7 +636,7 @@ int main(void)
         }
 
         if ((now - last_pos) >= POS_INTERVAL_MS) {
-            send_gnss_position();
+            send_gnss_master();
 
             /* Print detailed nav + stats on the same 5s cadence */
             orion_nav_data_t nav;
@@ -528,8 +645,9 @@ int main(void)
                 double lat = ORION_DEG_FROM_1E7(nav.latitude_1e7);
                 double lon = ORION_DEG_FROM_1E7(nav.longitude_1e7);
                 double alt = ORION_M_FROM_CM(nav.msl_alt_cm);
-                LOG_INF("NAV fix=%u sv=%u lat=%.6f lon=%.6f alt=%.2fm",
-                        nav.fix_mode, nav.sv_count, lat, lon, alt);
+                LOG_INF("NAV fix=%u sv=%u lat=%.6f lon=%.6f alt=%.2fm vx=%d vy=%d vz=%d cm/s",
+                        nav.fix_mode, nav.sv_count, lat, lon, alt,
+                        nav.ecef_vx_cms, nav.ecef_vy_cms, nav.ecef_vz_cms);
             } else {
                 LOG_INF("No valid fix yet.");
             }
@@ -540,6 +658,11 @@ int main(void)
                     rx_b, tx_b, nav_cnt, f_ok, f_err);
 
             last_pos = now;
+        }
+        if ((now - last_time) >= TIME_INTERVAL_MS) {
+            if (send_gnss_time()) {
+                last_time = now;
+            }
         }
 
         k_msleep(100);
