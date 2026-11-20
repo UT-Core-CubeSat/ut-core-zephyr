@@ -5,7 +5,8 @@
  *
  * Anything that wants to send (uplink replies now, telemetry and CAN replies later) calls
  * `downlink_submit()`, which only queues. `downlink_service_one()`, run by the radio_tx thread, builds the
- * packet with the next sequence count for its APID, packs the block and sends it. The sequence counters
+ * packet (callsign secondary header first, if COMMS_CALLSIGN_IN_PACKETS) with the next sequence count for its
+ * APID, packs the block and sends it. The sequence counters
  * are therefore touched by that one thread only, so they need no lock.
  */
 #ifndef COMMS_DOWNLINK_H_
@@ -31,6 +32,7 @@ struct downlink {
 	struct sp_seq seq;      /**< 4 KB, owned by the transmit thread */
 	struct k_msgq *q;       /**< item size sizeof(struct dl_item) */
 	struct radio_port *port;
+	uint8_t sec_hdr[COMMS_SEC_HDR_LEN]; /**< callsign secondary header, made once by downlink_init() */
 	struct downlink_stats stats;
 };
 

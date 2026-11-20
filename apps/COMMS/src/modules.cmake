@@ -25,6 +25,11 @@ set(COMMS_MODULE_SOURCES
     ${COMMS_SRC_DIR}/app/radio_port.c
     ${COMMS_SRC_DIR}/app/downlink.c
     ${COMMS_SRC_DIR}/app/uplink.c
+    # stage 3b: callsign header, telemetry cache, TLM and beacon, scheduler
+    ${COMMS_SRC_DIR}/link/callsign.c
+    ${COMMS_SRC_DIR}/can/telemetry.c
+    ${COMMS_SRC_DIR}/app/tlm.c
+    ${COMMS_SRC_DIR}/app/scheduler.c
 )
 
 set(COMMS_TARGET_ONLY_SOURCES

@@ -67,6 +67,7 @@ static void decode(int i, struct sp_packet *pkt)
 	zassert_equal(dl_block_unpack(sent[i], COMMS_BLOCK_LEN, &p, &plen), DL_OK);
 	zassert_equal(sp_parse(p, plen, pkt), SP_OK);
 	zassert_false(pkt->is_tc, "downlink packets are telemetry type");
+	test_strip_callsign(pkt);
 }
 
 ZTEST(downlink, test_item_goes_out_as_a_valid_block_and_packet)
@@ -192,4 +193,47 @@ ZTEST(downlink, test_send_failure_is_counted_and_later_items_still_go)
 	/* The lost packet used count 0, so ground sees the gap. */
 	decode(1, &pkt);
 	zassert_equal(pkt.seq_count, 1);
+}
+
+/* ---- callsign secondary header ---- */
+
+ZTEST(downlink, test_every_packet_carries_the_callsign_header_and_the_flag_says_so)
+{
+	struct dl_item it = item(APID_DL_TLM, 0x33, 5);
+	const uint8_t *p;
+	size_t plen;
+	struct sp_packet pkt;
+
+	for (int i = 0; i < 3; i++) {
+		zassert_ok(downlink_submit(&dl, &it));
+		zassert_ok(downlink_service_one(&dl, K_NO_WAIT));
+	}
+	for (int i = 0; i < 3; i++) {
+		zassert_equal(dl_block_unpack(sent[i], COMMS_BLOCK_LEN, &p, &plen), DL_OK);
+		zassert_equal(sp_parse(p, plen, &pkt), SP_OK);
+		zassert_equal(pkt.sec_hdr, COMMS_CALLSIGN_IN_PACKETS ? true : false);
+		zassert_equal(pkt.data_len, COMMS_DL_SEC_HDR_LEN + 5);
+	}
+}
+
+ZTEST(downlink, test_the_largest_item_with_the_header_still_fits_the_block_exactly)
+{
+	struct dl_item it = item(APID_DL_TLM, 0xEE, DL_ITEM_MAX_DATA);
+	const uint8_t *p;
+	size_t plen;
+
+	zassert_ok(downlink_submit(&dl, &it));
+	zassert_ok(downlink_service_one(&dl, K_NO_WAIT));
+	zassert_equal(dl.stats.build_errors, 0);
+	zassert_equal(dl_block_unpack(sent[0], COMMS_BLOCK_LEN, &p, &plen), DL_OK);
+	zassert_equal(plen, COMMS_DL_MAX_PACKET, "the packet fills the block to the last byte");
+}
+
+ZTEST(downlink, test_the_item_limit_is_206_with_the_callsign_header)
+{
+	if (COMMS_CALLSIGN_IN_PACKETS) {
+		zassert_equal(DL_ITEM_MAX_DATA, 206);
+	} else {
+		zassert_equal(DL_ITEM_MAX_DATA, 213);
+	}
 }

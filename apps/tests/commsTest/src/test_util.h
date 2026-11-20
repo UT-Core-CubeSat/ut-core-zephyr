@@ -13,6 +13,7 @@
 #include <string.h>
 
 #include <zephyr/kernel.h>
+#include <zephyr/ztest.h>
 
 #include "comms_config.h"
 #include "link/space_packet.h"
@@ -92,6 +93,26 @@ static inline void test_make_ping_block(uint8_t *block, uint32_t id, const uint8
 	}
 	plen = test_make_ul_packet(pkt, sizeof(pkt), APID_UL_PING, data, 4 + n);
 	(void)tc_frame_build(block, COMMS_TC_SCID, COMMS_TC_VCID, pkt, plen);
+}
+
+/**
+ * Check the callsign secondary header of a downlink packet and move @p pkt past it, so the test sees the data
+ * field it submitted. The expected bytes are written out here, not taken from comms_config.h, so a changed
+ * callsign is noticed.
+ */
+static inline void test_strip_callsign(struct sp_packet *pkt)
+{
+	static const uint8_t want[7] = {'K', '7', 'U', 'T', 'S', ' ', 0};
+
+	if (!COMMS_CALLSIGN_IN_PACKETS) {
+		zassert_false(pkt->sec_hdr, "no secondary header expected");
+		return;
+	}
+	zassert_true(pkt->sec_hdr, "downlink packets carry the callsign secondary header");
+	zassert_true(pkt->data_len > sizeof(want));
+	zassert_mem_equal(pkt->data, want, sizeof(want), "callsign header");
+	pkt->data += sizeof(want);
+	pkt->data_len -= sizeof(want);
 }
 
 #endif /* COMMS_TEST_UTIL_H_ */

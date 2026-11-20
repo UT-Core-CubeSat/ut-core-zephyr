@@ -25,6 +25,7 @@
 struct mvp_switches {
 	bool ping;    /**< APID 0x0F0 */
 	bool can_cmd; /**< APID 0x010 */
+	bool tlm;     /**< periodic telemetry (0x020) and beacon (0x021): read by the scheduler, not the router */
 };
 
 struct router_stats {

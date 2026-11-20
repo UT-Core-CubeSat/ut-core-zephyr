@@ -44,26 +44,36 @@
  * higher data rates, so nothing that can hold the CPU for longer than that may run above it.
  * Only threads marked "stage 0" exist so far. See README.md for the thread table.
  */
-#define PRIO_WATCHDOG 0 /**< Hardware watchdog kick. Never starve it. (stage 3) */
-#define PRIO_CAN_RX   1 /**< Drain the CAN hardware FIFO. (stage 3) */
-#define PRIO_CAN_PROC 2 /**< Decode and dispatch CAN frames. (stage 3) */
-#define PRIO_RADIO_RX 4 /**< Radio block to uplink queue. (stage 2) */
+#define PRIO_WATCHDOG 0 /**< Thread supervisor and task watchdog. Never starve it. (stage 3b) */
+#define PRIO_CAN_RX   1 /**< Unused: the CAN driver's filters buffer into a queue. */
+#define PRIO_CAN_PROC 2 /**< Decode and dispatch CAN frames. (stage 3a) */
+#define PRIO_RADIO_RX 4 /**< Unused: the radio callback feeds the uplink queue directly. */
 #define PRIO_UPLINK   5 /**< TC frame check, packet routing. (stage 2) */
 #define PRIO_RADIO_TX 6 /**< Sole owner of UHF transmit. (stage 2) */
-#define PRIO_BEACON   7 /**< Periodic beacon. (stage 3) */
-#define PRIO_SCHED    8 /**< Heartbeat and statistics. (stage 0) */
+#define PRIO_SCHED    8 /**< CAN heartbeat, telemetry, beacon, statistics. (stage 3b) */
 
 /** [PLACEHOLDER] Stack sizes. Measure with CONFIG_THREAD_STACK_INFO before trusting them. */
 #define STACK_SIZE    1024
 #define STACK_UPLINK  3072
 #define STACK_RADIO_TX 2048
 #define STACK_CAN_PROC 2048
+#define STACK_SCHED    2048
 
 /* ================= Timing ================= */
 
-#define WATCHDOG_KICK_MS      15    /**< [PLACEHOLDER] Must be below half the hardware watchdog timeout. */
-#define HEARTBEAT_INTERVAL_MS 1000  /**< Heartbeat log (and, from stage 3, heartbeat to CDH). */
+#define WATCHDOG_KICK_MS      250   /**< Supervisor pass period. Must be below half SUPERVISOR_WDT_TIMEOUT_MS. */
+#define SUPERVISOR_WDT_TIMEOUT_MS 1000U /**< Task watchdog timeout of the supervisor thread itself (as CDH). */
 #define STATS_LOG_INTERVAL_MS 10000 /**< How often the counters are logged. */
+
+/** Longest a supervised thread waits on its queue, so it checks in at least this often. */
+#define SERVICE_WAIT_MS 250U
+
+/** Longest allowed gap between check-ins, per thread. radio_tx may sit in a send for up to
+ *  COMMS_RADIO_SEND_TIMEOUT_MS (1 s) plus the wait. [PLACEHOLDER] until measured on the board. */
+#define HEALTH_TIMEOUT_CAN_PROC_MS 1500U
+#define HEALTH_TIMEOUT_UPLINK_MS   1500U
+#define HEALTH_TIMEOUT_RADIO_TX_MS 4000U
+#define HEALTH_TIMEOUT_SCHED_MS    1500U
 
 /* ================= Queues ================= */
 

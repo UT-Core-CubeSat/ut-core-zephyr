@@ -50,6 +50,21 @@ int can_bridge_forward(struct can_bridge *br, const struct can_record *rec)
 	return 0;
 }
 
+int can_bridge_send_heartbeat(struct can_bridge *br)
+{
+	struct can_frame frame = {.id = CAN_ID_FULL(COMMS_CAN_UPLINK_PRIO, COMMS_ID, CAN_BROADCAST, CLS_HEARTBEAT)};
+	int err;
+
+	can_fill_payload(&frame, COMMS_ID, OP_HEARTBEAT, 0, 0, 0, 0, 0, 0);
+	err = br->ops->send(br->dev, &frame);
+	if (err) {
+		br->stats.send_errors++;
+		return err;
+	}
+	br->stats.heartbeats++;
+	return 0;
+}
+
 int can_bridge_add_ground_filter(const struct device *can_dev, struct k_msgq *rxq)
 {
 	const struct can_filter to_ground = {

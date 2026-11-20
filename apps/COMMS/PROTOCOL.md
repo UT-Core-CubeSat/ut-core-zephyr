@@ -219,7 +219,7 @@ minus 1).
 |---|---|
 | Sequence flags | Always `11` (unsegmented) |
 | Sequence count | Counter per APID, for loss detection only. Not used for security |
-| Secondary header | Downlink: 7 bytes, callsign (6 ASCII characters, space padded, plus 1 byte SSID) **(proposed)**. Uplink: none |
+| Secondary header | Downlink: 7 bytes, callsign (6 ASCII characters, space padded, plus 1 byte SSID), on every packet, secondary header flag set. Callsign **K7UTS**, SSID 0 (SSID undecided) (decided 2026-11-20). Uplink: none |
 | Packets per block | One |
 | Idle packets | Not used. Fill is plain zeros |
 
@@ -325,7 +325,9 @@ priority over any transfer **(spec, table 5-5)**.
 ## 9. Beacon
 
 - APID `0x021`, unauthenticated, unencrypted.
-- 1-3 CAN-format records (system state and health), callsign in the secondary header.
+- 1-3 CAN-format records (system state and health), callsign in the secondary header (as every downlink packet).
+- Contents (placeholder, open item 3): the COMMS health record (section 14), then the CDH and EPS heartbeats if they were
+  heard within the last 60 s.
 - Same block, framing and PHY settings as every other UHF downlink.
 - Sent from a lowest-priority thread. Default period TBD (placeholder 60 s). The decoder and frame spec are
   published openly (SatNOGS, gr-satellites).
@@ -438,8 +440,8 @@ bypass 1, control command 0 (Type-BD), spare `00`, spacecraft ID a placeholder k
 header and the packet. COMMS drops anything that is not Type-BD, has the wrong spacecraft ID or virtual channel, or
 fails the FECF or frame length check. Max Space Packet 216 bytes (223 minus 7), max packet data field 210.
 
-**MVP downlink block:** as section 3. Max Space Packet 219, max data field 213 (206 if the callsign secondary header
-is used, open item 3). The receiver drops any block whose CRC fails or whose `len` is above 219. No acknowledgement at
+**MVP downlink block:** as section 3. Max Space Packet 219, max data field 213, of which the callsign secondary header
+takes 7, so 206 for the content (decided 2026-11-20). The receiver drops any block whose CRC fails or whose `len` is above 219. No acknowledgement at
 this layer.
 
 **Space Packet header:** as section 6. The sequence count is per APID and direction, the sender increments, and the
@@ -450,8 +452,13 @@ receiver uses it to count lost packets.
   choice, default 32). The reply returns `ping_id` and the payload unchanged, so ground can check them. The board adds
   nothing else. RSSI is read by ground.
 - **Telemetry/beacon data field** (the counter is a deviation): `tlm_counter` (4), then N x 12-byte CAN-equivalent
-  records. In the MVP the records may be fixed test values (for example an incrementing value from COMMS_ID) so ground
-  can check content.
+  records. One counter serves APIDs `0x020` and `0x021` and the CAN answers on `0x020`, so a gap in it is a lost
+  packet. The first record of every telemetry packet and beacon is the **COMMS health record**: source COMMS_ID,
+  destination broadcast, class `CLS_HEALTH`, data `{COMMS_ID, OP_HEARTBEAT, uptime s (4, big-endian), records that
+  follow (1), 0}`, so ground can check content with no other board on the bus. Telemetry then adds the latest
+  broadcast record of every board (heartbeat, telemetry, health and SOH classes), at most 15, and only if it is not
+  older than 60 s. At most 16 records fit with the callsign header. COMMS also broadcasts its own CAN heartbeat
+  (class `CLS_HEARTBEAT`, data `{COMMS_ID, OP_HEARTBEAT, 0 x 6}`) once a second, which CDH watches for.
 - **Command data field** (direct subset): N x 12-byte CAN records. The MVP accepts exactly one record per packet.
 - **CAN ping and pong** (MVP CAN_CMD test, `src/can/can_ping.h`), using the existing `OP_PING` (0x01) and `OP_PONG` (0x02):
   ping record: `src` GROUND_ID, `dst` the board, class `CLS_COMMAND`, data `{GROUND_ID, OP_PING, t0..t5}`. Pong record:

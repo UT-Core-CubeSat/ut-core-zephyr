@@ -16,6 +16,7 @@
 #include "can/can_ping.h"
 #include "common/can_proto.h"
 #include "app/radio_port.h"
+#include "app/scheduler.h"
 #include "app/uplink.h"
 #include "link/dl_block.h"
 #include "rfm26w_emul.h"
@@ -34,6 +35,9 @@ static struct downlink dl;
 static struct uplink ul;
 static struct router rt;
 static struct can_bridge br;
+static struct tlm_cache tcache;
+static struct tlm tl;
+static struct scheduler sch;
 
 static void *setup(void)
 {
@@ -52,8 +56,11 @@ static void before(void *f)
 	radio_port_init(&port, radio, &p_uplink_q);
 	downlink_init(&dl, &p_tx_q, &port);
 	fake_can_attach(&br);
-	router_init(&rt, &br, (struct mvp_switches){.ping = true, .can_cmd = true});
+	router_init(&rt, &br, (struct mvp_switches){.ping = true, .can_cmd = true, .tlm = true});
 	uplink_init(&ul, &p_uplink_q, &dl, &rt);
+	tlm_cache_init(&tcache);
+	tlm_init(&tl, &tcache, &fcan_counter);
+	scheduler_init(&sch, 0, 10000, &tl, &dl, &br, &rt.sw);
 	zassert_ok(rfm26w_start(radio));
 	zassert_ok(radio_port_start(&port));
 }
@@ -87,6 +94,7 @@ static void take_reply(struct sp_packet *pkt, uint8_t *keep)
 	zassert_equal(len, COMMS_BLOCK_LEN);
 	zassert_equal(dl_block_unpack(keep, len, &p, &plen), DL_OK);
 	zassert_equal(sp_parse(p, plen, pkt), SP_OK);
+	test_strip_callsign(pkt);
 }
 
 /* Run one ping through everything and return once the reply has been transmitted. */
@@ -404,4 +412,143 @@ ZTEST(pipeline, test_a_board_frame_for_someone_else_never_goes_down)
 	can_fill_payload(&f, CDH_ID, OP_SET_PWR_STATE, 1, 1, 0, 0, 0, 0);
 	zassert_equal(can_bridge_on_frame(&br, &f, &it), 0);
 	zassert_equal(k_msgq_num_used_get(&p_tx_q), 0);
+}
+
+/* ---- periodic telemetry and beacon through the radio (stage 3b) ---- */
+
+static void broadcast_seen(uint8_t src, uint8_t cls, uint8_t op, uint8_t value, int64_t now)
+{
+	struct can_frame f = {.id = CAN_ID_FULL(3, src, CAN_BROADCAST, cls)};
+
+	can_fill_payload(&f, src, op, value, 0, 0, 0, 0, 0);
+	zassert_equal(tlm_cache_on_frame(&tcache, &f, now), 1);
+}
+
+/* Run the scheduler at @p now and send whatever it queued, one packet at a time. */
+static int step_and_send(int64_t now)
+{
+	int n = 0;
+
+	(void)scheduler_step(&sch, now);
+	while (k_msgq_num_used_get(&p_tx_q) > 0) {
+		zassert_ok(downlink_service_one(&dl, K_NO_WAIT));
+		n++;
+	}
+	return n;
+}
+
+ZTEST(pipeline, test_telemetry_reaches_the_air_with_callsign_counter_and_the_cached_records)
+{
+	uint8_t keep[COMMS_BLOCK_LEN];
+	struct sp_packet pkt;
+	struct can_record r;
+
+	broadcast_seen(CDH_ID, CLS_HEARTBEAT, OP_HEARTBEAT, 0x2A, 1000);
+	zassert_equal(step_and_send(0), 0, "the heartbeat is CAN only, telemetry is not due yet");
+	zassert_equal(step_and_send(COMMS_TLM_PERIOD_MS), 1);
+
+	take_reply(&pkt, keep);
+	zassert_equal(pkt.apid, APID_DL_TLM);
+	zassert_equal(pkt.seq_count, 0);
+	zassert_equal(pkt.data_len, 4 + 2 * CAN_RECORD_LEN);
+	zassert_equal(pkt.data[3], 0, "tlm_counter");
+	zassert_equal(can_record_unpack(&pkt.data[4], CAN_RECORD_LEN, &r), REC_OK);
+	zassert_equal(can_record_class(&r), CLS_HEALTH);
+	zassert_equal(r.data[5], COMMS_TLM_PERIOD_MS / 1000, "uptime");
+	zassert_equal(can_record_unpack(&pkt.data[4 + CAN_RECORD_LEN], CAN_RECORD_LEN, &r), REC_OK);
+	zassert_equal(can_record_src(&r), CDH_ID);
+	zassert_equal(r.data[2], 0x2A);
+}
+
+ZTEST(pipeline, test_beacon_reaches_the_air_on_apid_021)
+{
+	uint8_t keep[COMMS_BLOCK_LEN];
+	struct sp_packet pkt;
+
+	rt.sw.tlm = true;
+	broadcast_seen(CDH_ID, CLS_HEARTBEAT, OP_HEARTBEAT, 1, COMMS_BEACON_PERIOD_MS - 10);
+	broadcast_seen(EPS_ID, CLS_HEARTBEAT, OP_HEARTBEAT, 2, COMMS_BEACON_PERIOD_MS - 10);
+	sch.next_ms[JOB_TLM] = INT64_MAX / 2; /* only the beacon is due */
+	zassert_equal(step_and_send(COMMS_BEACON_PERIOD_MS), 1);
+
+	take_reply(&pkt, keep);
+	zassert_equal(pkt.apid, APID_DL_BEACON);
+	zassert_equal(pkt.data_len, 4 + 3 * CAN_RECORD_LEN);
+}
+
+ZTEST(pipeline, test_can_answers_and_periodic_telemetry_share_one_counter_without_gaps)
+{
+	const uint8_t token[COMMS_PING_TOKEN_LEN] = {1, 2, 3, 4, 5, 6};
+	uint8_t keep[COMMS_BLOCK_LEN];
+	struct can_record ping;
+	struct can_frame answer;
+	struct sp_packet pkt;
+
+	comms_can_ping_record(&ping, CDH_ID, token);
+	cmd_over_the_air(&ping);
+	answer = fake_cdh_answer(&fcan.frames[0]);
+	answer_comes_back(&answer);
+	zassert_equal(step_and_send(COMMS_TLM_PERIOD_MS), 1);
+
+	take_reply(&pkt, keep);
+	zassert_equal(pkt.seq_count, 0);
+	zassert_equal(pkt.data[3], 0, "the answer took counter 0");
+	take_reply(&pkt, keep);
+	zassert_equal(pkt.seq_count, 1);
+	zassert_equal(pkt.data[3], 1, "telemetry took counter 1");
+}
+
+ZTEST(pipeline, test_ten_minutes_of_telemetry_has_no_gaps_in_counter_or_sequence_count)
+{
+	uint8_t keep[COMMS_BLOCK_LEN];
+	struct sp_packet pkt;
+	uint32_t expect = 0;
+
+	broadcast_seen(CDH_ID, CLS_HEARTBEAT, OP_HEARTBEAT, 1, 0);
+	for (int64_t t = 0; t <= 600000; t += 1000) {
+		/* the boards keep broadcasting, so the cached record stays fresh */
+		broadcast_seen(CDH_ID, CLS_HEARTBEAT, OP_HEARTBEAT, 1, t);
+		int sent = step_and_send(t);
+
+		for (int i = 0; i < sent; i++) {
+			take_reply(&pkt, keep);
+			zassert_true(pkt.apid == APID_DL_TLM || pkt.apid == APID_DL_BEACON);
+			zassert_equal(pkt.data[3], (uint8_t)expect, "tlm_counter gap at t=%lld", t);
+			expect++;
+		}
+	}
+	/* 120 telemetry packets at 5 s, 10 beacons at 60 s, the first of each one period after start */
+	zassert_equal(expect, 600000 / COMMS_TLM_PERIOD_MS + 600000 / COMMS_BEACON_PERIOD_MS);
+	zassert_equal(dl.stats.send_errors, 0);
+	zassert_equal(dl.stats.queue_full, 0);
+}
+
+ZTEST(pipeline, test_a_ping_and_a_telemetry_packet_queued_together_both_arrive_intact)
+{
+	uint8_t keep[COMMS_BLOCK_LEN];
+	struct dl_item reply = {.apid = APID_DL_PING, .len = 4};
+	struct sp_packet pkt;
+	bool ping_seen = false, tlm_seen = false;
+
+	zassert_ok(downlink_submit(&dl, &reply));
+	(void)scheduler_step(&sch, COMMS_TLM_PERIOD_MS);
+	zassert_equal(k_msgq_num_used_get(&p_tx_q), 2);
+	zassert_ok(downlink_service_one(&dl, K_NO_WAIT));
+	zassert_ok(downlink_service_one(&dl, K_NO_WAIT));
+	for (int i = 0; i < 2; i++) {
+		take_reply(&pkt, keep);
+		ping_seen |= pkt.apid == APID_DL_PING;
+		tlm_seen |= pkt.apid == APID_DL_TLM;
+	}
+	zassert_true(ping_seen && tlm_seen);
+}
+
+ZTEST(pipeline, test_with_the_tlm_switch_off_the_radio_stays_silent)
+{
+	uint8_t keep[COMMS_BLOCK_LEN];
+	size_t len = COMMS_BLOCK_LEN;
+
+	rt.sw.tlm = false;
+	zassert_equal(step_and_send(COMMS_BEACON_PERIOD_MS), 0);
+	zassert_equal(rfm26w_emul_take_tx(emul, keep, &len), -ENOENT);
 }

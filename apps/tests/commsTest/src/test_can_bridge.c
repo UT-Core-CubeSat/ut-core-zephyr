@@ -164,3 +164,26 @@ ZTEST(can_bridge, test_frames_that_are_not_classic_extended_8_byte_data_are_igno
 	zassert_equal(br.stats.ignored_frame, 3);
 	zassert_equal(br.stats.replies, 0);
 }
+
+/* ---- heartbeat ---- */
+
+ZTEST(can_bridge, test_heartbeat_goes_out_as_one_broadcast_frame_at_the_forced_priority)
+{
+	zassert_ok(can_bridge_send_heartbeat(&br));
+	zassert_equal(fcan.count, 1);
+	zassert_equal((fcan.frames[0].id >> 26) & 7, COMMS_CAN_UPLINK_PRIO);
+	zassert_equal((fcan.frames[0].id >> 14) & 0xFF, COMMS_ID);
+	zassert_equal((fcan.frames[0].id >> 6) & 0xFF, CAN_BROADCAST);
+	zassert_equal(fcan.frames[0].id & 0x3F, CLS_HEARTBEAT);
+	zassert_equal(fcan.frames[0].data[0], COMMS_ID);
+	zassert_equal(fcan.frames[0].data[1], OP_HEARTBEAT);
+	zassert_equal(br.stats.heartbeats, 1);
+}
+
+ZTEST(can_bridge, test_heartbeat_send_failure_is_returned_and_counted_not_as_a_heartbeat)
+{
+	fcan.result = -ENOMEM;
+	zassert_equal(can_bridge_send_heartbeat(&br), -ENOMEM);
+	zassert_equal(br.stats.send_errors, 1);
+	zassert_equal(br.stats.heartbeats, 0);
+}

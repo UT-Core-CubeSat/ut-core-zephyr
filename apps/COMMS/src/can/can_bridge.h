@@ -39,6 +39,7 @@ struct can_bridge_stats {
 	uint32_t replies;       /**< frames from the bus turned into a downlink item */
 	uint32_t ignored_dst;   /**< frames not addressed to GROUND_ID */
 	uint32_t ignored_frame; /**< frames that are not classic 8-byte extended data frames, or have a bad ID */
+	uint32_t heartbeats;    /**< heartbeats put on the bus */
 };
 
 struct can_bridge {
@@ -63,6 +64,13 @@ int can_bridge_forward(struct can_bridge *br, const struct can_record *rec);
  * @return 0 or the negative filter id error
  */
 int can_bridge_add_ground_filter(const struct device *can_dev, struct k_msgq *rxq);
+
+/**
+ * Broadcast COMMS's heartbeat: class CLS_HEARTBEAT, source COMMS_ID, data `{COMMS_ID, OP_HEARTBEAT, 0 x 6}`,
+ * priority COMMS_CAN_UPLINK_PRIO. CDH only checks that it arrives. A failed send is counted in `send_errors`.
+ * @return 0 or the send error
+ */
+int can_bridge_send_heartbeat(struct can_bridge *br);
 
 /**
  * Handle a frame taken from the CAN queue.

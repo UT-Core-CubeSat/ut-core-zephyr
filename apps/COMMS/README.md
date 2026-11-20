@@ -14,16 +14,17 @@ payload data down.
 > behind it. [PLANNED.md](PLANNED.md) is the build plan: what is done, the stages, what to do next, the MVP bench
 > test, the radio driver notes and the open decisions.
 
-## Status (2026-11-09)
+## Status (2026-11-20)
 
-- **Firmware: stage 3a of 7 done.** The link-layer codecs, the pipeline against the radio driver (PING) and the CAN_CMD
-  path (uplink allowlist, CAN bridge, CAN ping and pong to CDH, board answers back down on `0x020`) are written and
-  tested on the host, end to end through the radio model with a fake CAN bus. `src/main.c` starts the radio and the
-  `uplink`, `radio_tx` and `can_proc` threads. CDH has a new `OP_PING` handler. None of it has run on hardware. Next is
-  stage 3b: telemetry cache, TLM, beacon, scheduler, watchdog ([PLANNED.md](PLANNED.md) section 3).
+- **Firmware: stage 3b of 7 done, so the MVP firmware is complete.** The link-layer codecs, the pipeline against the
+  radio driver (PING), the CAN_CMD path (uplink allowlist, CAN bridge, CAN ping and pong to CDH, board answers back down
+  on `0x020`), the telemetry cache, periodic telemetry (`0x020`) and beacon (`0x021`), the CAN heartbeat, the scheduler
+  and the thread supervisor are written and tested on the host, end to end through the radio model with a fake CAN bus.
+  Every downlink packet carries the callsign **K7UTS** in a secondary header. None of it has run on hardware, and the
+  supervisor only reports (no reset yet). Next is stage 4, security ([PLANNED.md](PLANNED.md) section 3).
 - **Radio driver: complete enough for the MVP**, tested against a software radio model. The continuous-wave test and
   PM action are stubs. Its profile table is an empty placeholder until Silicon Labs WDS output exists.
-- **Tests:** 51 firmware host tests and 27 radio driver tests, all passing on `native_sim`.
+- **Tests:** 176 firmware host tests and 27 radio driver tests, all passing on `native_sim`.
 - **Hardware does not exist yet** (at least 2 months away). Nothing has run on a real board or radio. The pins, CAN
   setup and `prj.conf` hold placeholder values copied from CDH. Every placeholder and unconfirmed assumption is
   listed in [PLANNED.md](PLANNED.md) section 4, "Placeholders and assumptions".
@@ -151,7 +152,9 @@ unit-tested on a computer.
 | can | `can/can_record` | The 12-byte CAN-equivalent record, conversion to and from `struct can_frame` | 1 | done |
 | app | `app/radio_port`, `uplink`, `router`, `downlink`, `ping` | Radio to packet to APID dispatch, TX queue, ping | 2 | done |
 | can | `can/can_bridge`, `uplink_policy`, `can_ping` | CAN send and receive filter, who may command what (default-deny allowlist), CAN ping and pong records | 3a | done |
-| can | `can/telemetry`, beacon | Telemetry cache, TLM and beacon builders | 3b | todo |
+| can | `can/telemetry` | Cache of the latest broadcast record per (source, class, opcode), with its age | 3b | done |
+| app | `app/tlm`, `scheduler` | Telemetry and beacon packets, the periodic jobs (CAN heartbeat, TLM, beacon, statistics) | 3b | done |
+| link | `link/callsign` | The 7-byte callsign secondary header | 3b | done |
 | sec | `sec/sdls`, `replay` | AES-GCM frame security, IV replay window | 4 | todo |
 | cfdp | `cfdp/cfdp_pdu`, `cfdp_rx`, `staging` | File transfer receive, storage interface | 5 | todo |
 
@@ -160,7 +163,7 @@ unit-tested on a computer.
 Uplink   radio --block--> radio_port --> uplink: tc_frame_parse [stage 4: sdls + replay] --> sp_parse
                                            --> router (by APID) --> 0x010 commands: uplink_policy --> can_bridge --> CAN
                                                                --> 0x0F0 ping --> downlink queue
-Downlink CAN telemetry --> telemetry cache --> beacon/TLM builders --\
+Downlink CAN broadcasts --> telemetry cache --> scheduler: TLM and beacon builders --\
          ping reply, CFDP replies ----------------------------------- +--> sp_build --> dl_block_pack --> radio_tx --> radio
 ```
 
@@ -169,14 +172,15 @@ Downlink CAN telemetry --> telemetry cache --> beacon/TLM builders --\
 
 | Thread | Does | Stage | Exists |
 |---|---|---|---|
-| `heartbeat` (priority 8) | Logs once a second | 0 | yes |
+| `watchdog` (priority 0) | Supervises the other threads' check-ins (`common/health.h`), feeds the task watchdog. Reports only, no reset yet | 3b | yes |
+| `can_proc` (priority 2) | CAN frames: board answers to the downlink queue, broadcasts to the telemetry cache | 3a | yes |
 | `uplink` (priority 5) | Takes a received block from the queue, frame to packet to router, queues any reply | 2 | yes |
 | `radio_tx` (priority 6) | Sole owner of send: packet to block to radio | 2 | yes |
+| `scheduler` (priority 8) | CAN heartbeat (1 s), telemetry (5 s), beacon (60 s), statistics log (10 s) | 3b | yes |
 
 There is no `radio_rx` thread. The driver's receive callback runs in the driver's work queue and copies each block
-straight into the uplink queue (priority 4 stays unused).
-| `can_proc` (priority 2) | Frames addressed to ground (board answers) to the downlink queue | 3a | yes |
-| `beacon`, `scheduler`, `watchdog` | Periodic beacon, statistics, hardware watchdog | 3b | no |
+straight into the uplink queue (priority 4 stays unused). There is no separate `beacon` thread: queueing a packet never
+waits, so the beacon is a job of the lowest-priority scheduler thread.
 
 There is no `can_rx` thread either: the CAN driver's filters already buffer frames into the queue `can_proc` reads.
 
@@ -198,11 +202,11 @@ Where each stands now (details in [PLANNED.md](PLANNED.md)):
 |---|---|
 | Transmit and receive data (UHF to ground, payload images over S-band) | UHF path designed and partly built (driver, codecs). S-band undecided |
 | Collect data frames from uplink, deserialize, handle partial/dropped broadcasts | Stage 2 (parsing), stage 5 (CFDP retransmission of dropped data) |
-| Collect data frames from CDH output to RF (telemetry, SOH) | Stage 3 (telemetry cache, TLM) |
+| Collect data frames from CDH output to RF (telemetry, SOH) | Stage 3b, done (telemetry cache, TLM) |
 | Package SOH data and send to CDH | Not started. Should resemble what GNSS and ADCS already do |
 | Collect data from the Payload board (a thermal camera for now) and send via S-band | Not started. Needs the S-band radio decision and image buffering |
 | State machine: behave according to the system state sent by CDH over CAN | Stage 7 (state gating with CDH) |
-| Beacon | Stage 3 (APID `0x021`, lowest priority) |
+| Beacon | Stage 3b, done (APID `0x021`, contents and period are placeholders) |
 | ACK / retransmission | Covered by CFDP Class 2 (stage 5), no custom scheme |
 
 Decisions that were open in the original requirements and where they stand:

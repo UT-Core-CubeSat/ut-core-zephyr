@@ -6,6 +6,7 @@
 
 #include <zephyr/logging/log.h>
 
+#include "link/callsign.h"
 #include "link/dl_block.h"
 
 LOG_MODULE_REGISTER(downlink, LOG_LEVEL_INF);
@@ -16,6 +17,13 @@ void downlink_init(struct downlink *d, struct k_msgq *q, struct radio_port *port
 	sp_seq_init(&d->seq);
 	d->q = q;
 	d->port = port;
+	if (COMMS_CALLSIGN_IN_PACKETS) {
+		/* A bad callsign in comms_config.h is a build mistake, so stop at the first boot or test. */
+		int err = callsign_pack(d->sec_hdr, COMMS_CALLSIGN, COMMS_SSID);
+
+		__ASSERT(err == 0, "COMMS_CALLSIGN must be 1 to 6 characters of A-Z, 0-9");
+		ARG_UNUSED(err);
+	}
 }
 
 int downlink_submit(struct downlink *d, const struct dl_item *item)
@@ -31,6 +39,7 @@ int downlink_submit(struct downlink *d, const struct dl_item *item)
 int downlink_service_one(struct downlink *d, k_timeout_t timeout)
 {
 	struct dl_item item;
+	uint8_t data[COMMS_DL_MAX_PACKET - COMMS_SP_HDR_LEN];
 	uint8_t packet[COMMS_DL_MAX_PACKET];
 	uint8_t block[COMMS_BLOCK_LEN];
 	int n;
@@ -46,8 +55,13 @@ int downlink_service_one(struct downlink *d, k_timeout_t timeout)
 
 	/* The sequence count is taken only once the packet is known to be valid, so a bad item does not
 	 * leave a gap that ground would read as a lost packet. */
-	n = sp_build(packet, sizeof(packet), false, false, item.apid, sp_seq_next(&d->seq, item.apid),
-		     item.data, item.len);
+	if (COMMS_CALLSIGN_IN_PACKETS) {
+		memcpy(data, d->sec_hdr, COMMS_SEC_HDR_LEN);
+	}
+	memcpy(&data[COMMS_DL_SEC_HDR_LEN], item.data, item.len);
+
+	n = sp_build(packet, sizeof(packet), false, COMMS_CALLSIGN_IN_PACKETS, item.apid,
+		     sp_seq_next(&d->seq, item.apid), data, COMMS_DL_SEC_HDR_LEN + item.len);
 	if (n < 0 || dl_block_pack(block, packet, (size_t)n) != 0) {
 		d->stats.build_errors++;
 		return 0;
