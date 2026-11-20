@@ -1,0 +1,83 @@
+description: |
+  HopeRF RFM26W sub-GHz transceiver module (Si446x-class), connected over SPI.
+
+  Example:
+
+    &spi2 {
+        rfm26w0: rfm26w@3 {
+            compatible = "hoperf,rfm26w";
+            reg = <3>;
+            spi-max-frequency = <1000000>;
+            int-gpios = <&gpioa 1 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+            sdn-gpios = <&gpioa 2 GPIO_ACTIVE_HIGH>;
+            block-length = <223>;
+            xo-frequency-hz = <30000000>;  /* ASSUMED, check the module, see below */
+        };
+    };
+
+  The reference clock (xo-frequency-hz, xo-tcxo) is an ASSUMPTION. If it changes, the
+  radio profile has to be regenerated (PLANNED.md section 5.4).
+
+compatible: "hoperf,rfm26w"
+
+include: spi-device.yaml
+
+properties:
+  int-gpios:
+    type: phandle-array
+    required: true
+    description: |
+      nIRQ output of the radio. Active low. GPIO_ACTIVE_LOW is required (checked at build
+      time): the driver treats a logical 1 as "interrupt pending".
+
+  sdn-gpios:
+    type: phandle-array
+    required: true
+    description: |
+      SDN shutdown input of the radio. High (active) shuts the radio down completely and
+      loses its configuration. GPIO_ACTIVE_HIGH is required (checked at build time). The driver holds the radio in shutdown until it is started.
+
+  tx-ant-gpios:
+    type: phandle-array
+    description: |
+      TX-ANT antenna switch pin, if it is wired to the host instead of a radio GPIO.
+      Driven opposite to rx-ant-gpios. Must be GPIO_ACTIVE_HIGH (the driver refuses to
+      initialise otherwise).
+
+  rx-ant-gpios:
+    type: phandle-array
+    description: |
+      RX-ANT antenna switch pin, if it is wired to the host instead of a radio GPIO.
+      Driven opposite to tx-ant-gpios. Must be GPIO_ACTIVE_HIGH (the driver refuses to
+      initialise otherwise).
+
+  block-length:
+    type: int
+    default: 223
+    description: |
+      Fixed block length in bytes, in both directions (the START_RX RX_LEN value). The chip's
+      TX_LEN and RX_LEN fields are 16 bits, so at most 65535 (checked at build time).
+
+  xo-frequency-hz:
+    type: int
+    default: 30000000
+    description: |
+      !!! ASSUMPTION, MALLEABLE, MAY NEED ADJUSTING !!!
+      Frequency of the radio's reference clock (crystal, or TCXO if xo-tcxo is set), in Hz.
+      The default is 30 MHz because that is the Si446x default and the RFM26W datasheet's
+      "default crystal". It has NOT been confirmed for the module on the board. Change this
+      value if the module uses something else (the chip accepts 25 to 32 MHz).
+
+      This value is sent to the radio in POWER_UP and used to compute the carrier frequency.
+      The generated radio profile (src/rfm26w_profiles.c) bakes in the same value, so if you
+      change this property you MUST regenerate the profile. See PLANNED.md section 5.4,
+      "Regenerating the radio profile". A wrong value gives a wrong carrier frequency, data
+      rate and deviation, with no error from the chip.
+
+  xo-tcxo:
+    type: boolean
+    description: |
+      !!! ASSUMPTION, MALLEABLE, MAY NEED ADJUSTING !!!
+      Set if the reference clock is a TCXO or an external clock signal instead of a crystal
+      (the TCXO bit of POWER_UP XTAL_OPTIONS). Not set by default, because the module is
+      assumed to use a crystal. Not confirmed for the module on the board.

@@ -1,0 +1,6 @@
+name: rfm26w
+build:
+  cmake: .
+  kconfig: Kconfig
+  settings:
+    dts_root: .
